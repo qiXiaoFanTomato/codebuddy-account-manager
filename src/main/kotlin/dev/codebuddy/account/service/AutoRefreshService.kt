@@ -243,6 +243,35 @@ class AutoRefreshService : Disposable {
         executor.shutdownNow()
     }
 
+    /** 智能调度当前状态（看板卡片展示用） */
+    data class AutoSwitchState(
+        /** 设置里的「自动调度」开关 */
+        val enabled: Boolean,
+        /** 热切换桥接是否可用（CodeBuddy 插件已安装且类可解析） */
+        val hotSwitchAvailable: Boolean,
+        val thresholdPercent: Int,
+        /** 上次自动调度时间戳，0 表示从未调度过 */
+        val lastSwitchAt: Long,
+        /** 是否处于调度冷却期 */
+        val coolingDown: Boolean,
+        val remainingCooldownMs: Long,
+    )
+
+    /** 读取智能调度当前状态，供界面展示（纯查询，无副作用） */
+    fun autoSwitchState(): AutoSwitchState {
+        val s = AccountSettings.getInstance()
+        val last = lastAutoSwitchAt.get()
+        val remain = AUTO_SWITCH_COOLDOWN_MS - (System.currentTimeMillis() - last)
+        return AutoSwitchState(
+            enabled = s.autoSwitchEnabled,
+            hotSwitchAvailable = CodeBuddyBridge.isAvailable(),
+            thresholdPercent = s.autoSwitchThresholdPercent,
+            lastSwitchAt = last,
+            coolingDown = remain in 1 until AUTO_SWITCH_COOLDOWN_MS,
+            remainingCooldownMs = remain.coerceAtLeast(0L),
+        )
+    }
+
     companion object {
         private const val AUTO_SWITCH_COOLDOWN_MS = 10 * 60 * 1000L
 

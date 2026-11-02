@@ -1,7 +1,10 @@
 package dev.codebuddy.account.ui
 
 import com.intellij.ui.JBColor
+import com.intellij.util.ui.JBUI
 import java.awt.Color
+import java.awt.Font
+import javax.swing.UIManager
 
 /**
  * 界面配色集中定义。
@@ -115,3 +118,12 @@ object AccountUiRadius {
     const val inner = 8
     const val chip = 9
 }
+
+/**
+ * 自绘 [javax.swing.JComponent] 的基础字体。
+ *
+ * JComponent 自身没有默认字体，构造期还未挂到父容器上，`getFont()` 返回 null，
+ * 直接 `font.deriveFont(...)` 会 NPE，因此统一用 LAF 的 Label 字体兜底。
+ */
+internal fun baseLabelFont(): Font =
+    UIManager.getFont("Label.font") ?: Font(Font.SANS_SERIF, Font.PLAIN, JBUI.scale(12))

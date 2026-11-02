@@ -89,9 +89,10 @@ object UsageService {
                 401 -> UsagePage(error = "HTTP 401：凭据已过期或不被接受，请重新登录该账号后再试")
                 else -> UsagePage(error = "HTTP ${response.statusCode()}")
             }
-        } catch (e: Exception) {
-            log.warn("请求消耗查询失败: $url", e)
-            UsagePage(error = e.message ?: e.javaClass.simpleName)
+        } catch (t: Throwable) {
+            // 连 Exception 之外的 Error 也接住：调用方要保证「加载中」一定有出口
+            log.warn("请求消耗查询失败: $url", t)
+            UsagePage(error = t.message ?: t.javaClass.simpleName)
         }
     }
 

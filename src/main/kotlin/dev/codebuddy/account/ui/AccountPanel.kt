@@ -14,6 +14,7 @@ import com.intellij.ui.components.ActionLink
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBTextField
 import com.intellij.util.ui.JBUI
+import dev.codebuddy.account.checkin.CheckinTracker
 import dev.codebuddy.account.history.HistoryReader
 import dev.codebuddy.account.hotswap.CodeBuddyBridge
 import dev.codebuddy.account.model.CredentialSnapshot
@@ -24,6 +25,8 @@ import dev.codebuddy.account.service.AccountSettings
 import dev.codebuddy.account.service.SwitchResult
 import java.awt.*
 import java.awt.datatransfer.StringSelection
+import java.awt.event.MouseAdapter
+import java.awt.event.MouseEvent
 import java.nio.file.Files
 import java.nio.file.Paths
 import javax.swing.*
@@ -36,13 +39,14 @@ import javax.swing.event.DocumentListener
 class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
 
     private val library = AccountLibrary.getInstance()
-    private val cardList = AccountCardList()
+    private val gridView = AccountGridView()
     private val statusLabel = JBLabel("就绪")
+    private val rangeLabel = JBLabel("")
     private val filterField = JBTextField(14)
     private var sortMode: AccountSortMode = AccountSortMode.BY_DOMAIN
     private val emptyPanel = buildEmptyPanel()
 
-    /** 当前中心视图：看板 / 账号列表 */
+    /** 当前中心视图：首页看板 / 卡片视图 */
     private var viewMode: String = VIEW_DASHBOARD
 
     private val dashboard = DashboardPanel(
@@ -51,24 +55,36 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
         onOpenQuotaDetail = { QuotaDetailDialog.show(project) },
         onOpenUsageDetail = { UsageDetailDialog.show(project) },
         onOpenHistory = { doOpenHistory() },
+        onOpenReport = { doOpenReport() },
+        onCheckin = { doCheckin() },
+        onOpenSettings = { doOpenSettings() },
     )
 
     private lateinit var boardBtn: JToggleButton
     private lateinit var listBtn: JToggleButton
-    private lateinit var switchBtn: JButton
-    private lateinit var syncHistoryBtn: JButton
-    private lateinit var quotaBtn: JButton
-    private lateinit var deleteBtn: JButton
-    private lateinit var aliasBtn: JButton
+    private lateinit var refreshTile: IconTile
+    private lateinit var batchTile: IconTile
+    private lateinit var selectAllBox: JCheckBox
+    private lateinit var totalChip: Chip
+    private lateinit var selectionBar: JComponent
+    private lateinit var guideBody: JComponent
+    private lateinit var guideArrow: JLabel
+    private lateinit var pagerPanel: JComponent
+    private lateinit var pageLabel: JLabel
+    private lateinit var prevPageBtn: JButton
+    private lateinit var nextPageBtn: JButton
+    private lateinit var pageSizeCombo: JComboBox<String>
 
     init {
         background = AccountUiColors.panelBg
 
-        add(buildToolbar(), BorderLayout.NORTH)
+        add(buildTopBar(), BorderLayout.NORTH)
         add(buildCenter(), BorderLayout.CENTER)
-        add(buildStatusBar(), BorderLayout.SOUTH)
+        add(buildFooterBar(), BorderLayout.SOUTH)
 
-        cardList.onSelectionChanged = { updateButtonState() }
+        gridView.onSelectionChanged = { syncSelectionState() }
+        gridView.onPageChanged = { updatePager() }
+        gridView.onAction = { card, action -> handleGridAction(card, action) }
 
         // 多项目窗口同步：任一窗口改动账号库 / 配额后，其他窗口的面板跟着刷新
         ApplicationManager.getApplication().messageBus.connect(project)
@@ -93,61 +109,147 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
     // 布局
     // ---------------------------------------------------------------
 
-    private fun buildToolbar(): JPanel {
-        val root = JPanel(BorderLayout())
+    private fun buildTopBar(): JComponent {
+        val root = JPanel()
+        root.layout = BoxLayout(root, BoxLayout.Y_AXIS)
         root.background = AccountUiColors.surfaceBg
-
-        // 第一行：操作按钮（按「导入 / 切换 / 额度 / 编辑」分组，用竖线分隔）
-        val actions = JPanel(FlowLayout(FlowLayout.LEFT, 4, 6))
-        actions.isOpaque = false
-        actions.border = JBUI.Borders.compound(
+        root.border = JBUI.Borders.compound(
             JBUI.Borders.customLine(AccountUiColors.border, 0, 0, 1, 0),
-            JBUI.Borders.empty(2, 4)
+            JBUI.Borders.empty(6, 8)
         )
+        root.add(buildGuidePanel())
+        root.add(Box.createVerticalStrut(JBUI.scale(6)))
+        root.add(buildSearchBar())
+        root.add(Box.createVerticalStrut(JBUI.scale(4)))
+        root.add(buildSelectionBar())
+        return root
+    }
 
-        val importBtn = iconButton("从 auth 目录导入", AllIcons.Actions.Download) { doImport() }
-        val historyBtn = iconButton("历史对话", AllIcons.Actions.ListFiles) { doOpenHistory() }
-        syncHistoryBtn = iconButton("历史共享到当前", AllIcons.Actions.Refresh) { doSyncHistoryToCurrent() }
-        val syncAllBtn = iconButton("批量同步全部", null) { doSyncAllAccounts() }
-        switchBtn = iconButton("切换", AllIcons.Actions.Refresh) { doSwitch() }
-        val smartBtn = iconButton("智能调度", AllIcons.General.User) { doSmartSwitch() }
-        quotaBtn = iconButton("刷新额度", AllIcons.Actions.Refresh) { doRefreshQuota() }
-        val detailBtn = iconButton("额度明细", null) { QuotaDetailDialog.show(project) }
-        val usageBtn = iconButton("消耗明细", null) { UsageDetailDialog.show(project) }
-        aliasBtn = iconButton("重命名", AllIcons.Actions.Edit) { doEditAlias() }
-        deleteBtn = iconButton("删除", AllIcons.Actions.GC) { doDelete() }
-        val rollbackBtn = iconButton("回滚", AllIcons.Actions.Rollback) { doRollback() }
-        val logoutBtn = iconButton("强制登出", AllIcons.Actions.Cancel) { doForceLogout() }
+    /** 顶部说明条：可折叠，文案只描述本插件真实读写范围 */
+    private fun buildGuidePanel(): JComponent {
+        val card = object : RoundedCard(
+            AccountUiColors.accentSoft, AccountUiColors.borderActive, AccountUiRadius.inner
+        ) {}
+        card.border = JBUI.Borders.empty(7, 10)
 
-        actions.add(importBtn)
-        actions.add(historyBtn)
-        actions.add(syncHistoryBtn)
-        actions.add(syncAllBtn)
-        actions.add(toolbarSeparator())
-        actions.add(switchBtn)
-        actions.add(smartBtn)
-        actions.add(quotaBtn)
-        actions.add(detailBtn)
-        actions.add(usageBtn)
-        actions.add(toolbarSeparator())
-        actions.add(aliasBtn)
-        actions.add(deleteBtn)
-        actions.add(rollbackBtn)
-        actions.add(logoutBtn)
+        val titleRow = FullWidthRow(BorderLayout())
+        val title = JLabel("CodeBuddy 账号管理说明（点击展开 / 收起）").apply {
+            font = font.deriveFont(Font.BOLD, JBUI.scale(11).toFloat())
+            foreground = AccountUiColors.accent
+        }
+        guideArrow = JLabel("▸").apply {
+            font = font.deriveFont(Font.PLAIN, JBUI.scale(10).toFloat())
+            foreground = AccountUiColors.accent
+        }
+        titleRow.add(title, BorderLayout.WEST)
+        titleRow.add(guideArrow, BorderLayout.EAST)
 
-        // 第二行：筛选 / 排序 / 库操作
-        val filters = JPanel(FlowLayout(FlowLayout.LEFT, 4, 4))
-        filters.isOpaque = false
-        filters.border = JBUI.Borders.empty(0, 4, 2, 4)
-        filterField.toolTipText = "按名称 / UID / 域名 / 手机号筛选账号"
+        guideBody = FullWidthColumn().apply {
+            isVisible = false
+            border = JBUI.Borders.emptyTop(5)
+            add(guideLine("切换账号：读取本机 auth 目录的 .info 凭据写入 IDE 的 secret-storage.xml，写入前自动备份。"))
+            add(guideLine("权限范围：只读写本机 CodeBuddy 凭据与账号库目录，不访问系统钥匙串。"))
+            add(guideLine("网络范围：额度与消耗明细请求 codebuddy.cn / workbuddy.cn 接口；凭据不上传、不代理。"))
+        }
+
+        card.add(titleRow)
+        card.add(guideBody)
+        installGuideToggle(titleRow)
+        return card
+    }
+
+    /** 说明条标题行可点击展开 / 收起 */
+    private fun installGuideToggle(target: Component) {
+        target.addMouseListener(object : MouseAdapter() {
+            override fun mouseClicked(e: MouseEvent) {
+                guideBody.isVisible = !guideBody.isVisible
+                guideArrow.text = if (guideBody.isVisible) "▾" else "▸"
+                var p: Container? = guideBody.parent
+                while (p != null) {
+                    p.revalidate()
+                    p = p.parent
+                }
+                guideBody.repaint()
+            }
+
+            override fun mouseEntered(e: MouseEvent) {
+                target.cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+            }
+
+            override fun mouseExited(e: MouseEvent) {
+                target.cursor = Cursor.getDefaultCursor()
+            }
+        })
+        if (target is Container) {
+            for (child in target.components) installGuideToggle(child)
+        }
+    }
+
+    private fun guideLine(text: String): JLabel = JLabel(text).apply {
+        alignmentX = Component.LEFT_ALIGNMENT
+        font = font.deriveFont(Font.PLAIN, JBUI.scale(10).toFloat())
+        foreground = AccountUiColors.textMuted
+        toolTipText = text
+        border = JBUI.Borders.empty(1, 0)
+    }
+
+    /** 搜索 / 视图切换 / 排序 + 右侧图标操作 */
+    private fun buildSearchBar(): JComponent {
+        val row = FullWidthRow(BorderLayout(JBUI.scale(8), 0))
+
+        val left = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(4), 0)).apply { isOpaque = false }
+
+        boardBtn = JToggleButton("首页", viewMode == VIEW_DASHBOARD).apply {
+            isFocusPainted = false
+            margin = JBUI.insets(3, 10)
+            addActionListener { setView(VIEW_DASHBOARD) }
+        }
+        listBtn = JToggleButton("卡片视图", viewMode == VIEW_LIST).apply {
+            isFocusPainted = false
+            margin = JBUI.insets(3, 10)
+            addActionListener { setView(VIEW_LIST) }
+        }
+        ButtonGroup().apply {
+            add(boardBtn)
+            add(listBtn)
+        }
+
+        filterField.emptyText.text = "搜索 CodeBuddy 账号"
+        filterField.toolTipText = "按名称 / UID / 域名 / 手机号 / 别名筛选"
         filterField.document.addDocumentListener(object : DocumentListener {
             override fun insertUpdate(e: DocumentEvent?) = applyFilter()
             override fun removeUpdate(e: DocumentEvent?) = applyFilter()
             override fun changedUpdate(e: DocumentEvent?) = applyFilter()
         })
 
-        val sortCombo = JComboBox(AccountSortMode.entries.toTypedArray()).apply {
-            selectedItem = sortMode
+        left.add(boardBtn)
+        left.add(listBtn)
+        left.add(Box.createHorizontalStrut(JBUI.scale(6)))
+        left.add(JLabel(AllIcons.Actions.Search))
+        left.add(filterField)
+        left.add(Box.createHorizontalStrut(JBUI.scale(2)))
+        left.add(toolbarLabel("排序"))
+        left.add(buildSortCombo())
+
+        val right = JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(3), 0)).apply { isOpaque = false }
+        right.add(IconTile(AllIcons.General.Add, "从 auth 目录导入账号") { doImport() })
+        batchTile = IconTile(AllIcons.Actions.ListFiles, "批量同步全部账号历史") { doSyncAllAccounts() }
+        right.add(batchTile)
+        refreshTile = IconTile(AllIcons.Actions.Refresh, "刷新额度") { doRefreshQuota() }
+        right.add(refreshTile)
+        right.add(IconTile(AllIcons.ToolbarDecorator.Export, "导出账号库") { doExport() })
+        right.add(IconTile(AllIcons.ToolbarDecorator.Import, "导入账号库") { doImportLibrary() })
+        right.add(IconTile(AllIcons.General.GearPlain, "设置") { doOpenSettings() })
+        right.add(buildMoreMenu())
+
+        row.add(left, BorderLayout.WEST)
+        row.add(right, BorderLayout.EAST)
+        return row
+    }
+
+    private fun buildSortCombo(): JComboBox<AccountSortMode> =
+        JComboBox(AccountSortMode.entries.toTypedArray()).apply {
+            preferredSize = Dimension(JBUI.scale(112), preferredSize.height)
             renderer = object : DefaultListCellRenderer() {
                 override fun getListCellRendererComponent(
                     list: JList<*>?, value: Any?, index: Int, isSelected: Boolean, cellHasFocus: Boolean,
@@ -163,69 +265,71 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
             }
         }
 
-        val exportBtn = iconButton("导出", AllIcons.ToolbarDecorator.Export) { doExport() }
-        val importLibBtn = iconButton("导入库", AllIcons.ToolbarDecorator.Import) { doImportLibrary() }
-        val settingsBtn = iconButton("设置", AllIcons.General.GearPlain) { doOpenSettings() }
+    /** 全选行：复选框 + 账号总数 */
+    private fun buildSelectionBar(): JComponent {
+        val row = FullWidthRow(BorderLayout(JBUI.scale(8), 0))
+        row.border = JBUI.Borders.emptyTop(2)
 
-        // 视图切换：看板 / 账号列表
-        boardBtn = JToggleButton("看板", viewMode == VIEW_DASHBOARD).apply {
+        val left = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(6), 0)).apply { isOpaque = false }
+        selectAllBox = JCheckBox("全选").apply {
+            isOpaque = false
             isFocusPainted = false
-            margin = JBUI.insets(3, 10)
-            addActionListener { setView(VIEW_DASHBOARD) }
+            font = font.deriveFont(Font.PLAIN, JBUI.scale(11).toFloat())
+            addActionListener { gridView.selectAll(isSelected) }
         }
-        listBtn = JToggleButton("账号列表", viewMode == VIEW_LIST).apply {
-            isFocusPainted = false
-            margin = JBUI.insets(3, 10)
-            addActionListener { setView(VIEW_LIST) }
-        }
-        ButtonGroup().apply {
-            add(boardBtn)
-            add(listBtn)
-        }
-        filters.add(boardBtn)
-        filters.add(listBtn)
-        filters.add(Box.createHorizontalStrut(JBUI.scale(10)))
+        totalChip = Chip("全部 0", AccountUiColors.accentSoft, AccountUiColors.accent, arc = 11)
+        left.add(selectAllBox)
+        left.add(totalChip)
 
-        filters.add(JBLabel("筛选:"))
-        filters.add(filterField)
-        filters.add(Box.createHorizontalStrut(JBUI.scale(6)))
-        filters.add(JBLabel("排序:"))
-        filters.add(sortCombo)
-        filters.add(Box.createHorizontalStrut(JBUI.scale(6)))
-        filters.add(exportBtn)
-        filters.add(importLibBtn)
-        filters.add(settingsBtn)
-
-        root.add(actions, BorderLayout.NORTH)
-        root.add(filters, BorderLayout.CENTER)
-        return root
+        row.add(left, BorderLayout.WEST)
+        row.add(toolbarLabel("勾选账号后可批量操作"), BorderLayout.EAST)
+        selectionBar = row
+        return row
     }
 
-    private fun applyFilter() {
-        cardList.setFilter(filterField.text.trim())
-    }
-
-    private fun iconButton(text: String, icon: Icon?, action: () -> Unit): JButton {
-        val btn = JButton(text, icon).apply {
+    /** 更多操作：低频功能收进菜单，避免工具栏拥挤 */
+    private fun buildMoreMenu(): JComponent {
+        val btn = JButton("更多 ▾").apply {
             isFocusPainted = false
-            margin = JBUI.insets(4, 9)
-            addActionListener { action() }
+            margin = JBUI.insets(3, JBUI.scale(8))
+            font = font.deriveFont(Font.PLAIN, JBUI.scale(11).toFloat())
         }
+        val menu = JPopupMenu()
+        fun item(text: String, action: () -> Unit) {
+            menu.add(JMenuItem(text).apply { addActionListener { action() } })
+        }
+        item("切换到此账号") { doSwitch() }
+        item("智能调度") { doSmartSwitch() }
+        item("重命名") { doEditAlias() }
+        item("删除") { doDelete() }
+        menu.addSeparator()
+        item("历史对话") { doOpenHistory() }
+        item("对话日报 / 周报") { doOpenReport() }
+        item("历史共享到当前") { doSyncHistoryToCurrent() }
+        menu.addSeparator()
+        item("额度明细") { QuotaDetailDialog.show(project) }
+        item("消耗明细") { UsageDetailDialog.show(project) }
+        menu.addSeparator()
+        item("回滚上一次切换") { doRollback() }
+        item("强制登出") { doForceLogout() }
+
+        btn.addActionListener { menu.show(btn, 0, btn.height) }
         return btn
     }
 
-    /** 工具栏分组竖线：把 12 个按钮切成可扫视的几段 */
-    private fun toolbarSeparator(): JComponent = JLabel("│").apply {
-        font = font.deriveFont(Font.PLAIN, JBUI.scale(12).toFloat())
-        foreground = AccountUiColors.border
-        border = JBUI.Borders.empty(0, 2)
+    private fun toolbarLabel(text: String): JLabel = JLabel(text).apply {
+        font = font.deriveFont(Font.PLAIN, JBUI.scale(11).toFloat())
+        foreground = AccountUiColors.textMuted
     }
 
+    private fun applyFilter() {
+        gridView.setFilter(filterField.text.trim())
+    }
     private fun buildCenter(): JPanel {
         val stack = JPanel(CardLayout())
         stack.background = AccountUiColors.panelBg
         stack.add(dashboard, VIEW_DASHBOARD)
-        stack.add(cardList, VIEW_LIST)
+        stack.add(gridView, VIEW_LIST)
         stack.add(emptyPanel, VIEW_EMPTY)
         centerStack = stack
         return stack
@@ -239,6 +343,7 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
         viewMode = mode
         boardBtn.isSelected = mode == VIEW_DASHBOARD
         listBtn.isSelected = mode == VIEW_LIST
+        applyViewState()
         refresh()
     }
 
@@ -280,26 +385,70 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
         return panel
     }
 
-    private fun buildStatusBar(): JPanel {
-        val panel = JPanel(BorderLayout())
+    /** 底部条：左侧分页范围与状态、右侧每页条数与翻页 */
+    private fun buildFooterBar(): JPanel {
+        val panel = JPanel(BorderLayout(JBUI.scale(8), 0))
         panel.background = AccountUiColors.surfaceBg
         panel.border = JBUI.Borders.compound(
             JBUI.Borders.customLine(AccountUiColors.border, 1, 0, 0, 0),
-            JBUI.Borders.empty(5, 12)
+            JBUI.Borders.empty(5, 10)
         )
-        statusLabel.foreground = AccountUiColors.textMuted
-        statusLabel.font = statusLabel.font.deriveFont(Font.PLAIN, JBUI.scale(11).toFloat())
 
-        // 左侧状态圆点：让底部栏有明确的「状态区」锚点
-        val left = JPanel(BorderLayout(JBUI.scale(6), 0)).apply {
-            isOpaque = false
-            add(JLabel("●").apply {
-                font = font.deriveFont(Font.PLAIN, JBUI.scale(8).toFloat())
-                foreground = AccountUiColors.accent
-            }, BorderLayout.WEST)
-            add(statusLabel, BorderLayout.CENTER)
-        }
+        val smallFont = font.deriveFont(Font.PLAIN, JBUI.scale(11).toFloat())
+        rangeLabel.font = smallFont
+        rangeLabel.foreground = AccountUiColors.textSecondary
+        statusLabel.font = smallFont
+        statusLabel.foreground = AccountUiColors.textMuted
+
+        val left = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(10), 0)).apply { isOpaque = false }
+        left.add(rangeLabel)
+        left.add(statusLabel)
         panel.add(left, BorderLayout.WEST)
+
+        val right = JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(4), 0)).apply { isOpaque = false }
+        pageSizeCombo = JComboBox(arrayOf("10 条/页", "20 条/页", "50 条/页")).apply {
+            selectedIndex = 1
+            font = smallFont
+            addActionListener {
+                val size = when (selectedIndex) {
+                    0 -> 10
+                    2 -> 50
+                    else -> 20
+                }
+                gridView.setPageSize(size)
+                updatePager()
+            }
+        }
+        prevPageBtn = JButton("上一页").apply {
+            isFocusPainted = false
+            margin = JBUI.insets(2, 8)
+            font = smallFont
+            addActionListener {
+                gridView.setPage(gridView.pageIndex() - 1)
+                updatePager()
+            }
+        }
+        pageLabel = JLabel("第 1 / 1 页").apply {
+            font = smallFont
+            foreground = AccountUiColors.textSecondary
+            border = JBUI.Borders.empty(0, 4)
+        }
+        nextPageBtn = JButton("下一页").apply {
+            isFocusPainted = false
+            margin = JBUI.insets(2, 8)
+            font = smallFont
+            addActionListener {
+                gridView.setPage(gridView.pageIndex() + 1)
+                updatePager()
+            }
+        }
+
+        right.add(pageSizeCombo)
+        right.add(prevPageBtn)
+        right.add(pageLabel)
+        right.add(nextPageBtn)
+        pagerPanel = right
+        panel.add(pagerPanel, BorderLayout.EAST)
         return panel
     }
 
@@ -318,7 +467,7 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
         val sorted = AccountSorter.sort(saved, sortMode, active?.accountKey) { key ->
             quotaMap[key]?.usableRemainPercent
         }
-        cardList.setAccounts(sorted, active?.accountKey, quotaMap, grouped = sortMode == AccountSortMode.BY_DOMAIN)
+        gridView.setAccounts(sorted, active?.accountKey, quotaMap)
         dashboard.update()
 
         val target = when {
@@ -327,8 +476,19 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
             else -> VIEW_LIST
         }
         centerStack?.let { (it.layout as CardLayout).show(it, target) }
+        totalChip.text = "全部 ${saved.size}"
         statusLabel.text = buildSummary(saved, active, quotaMap)
-        updateButtonState()
+        applyViewState()
+        updatePager()
+        syncSelectionState()
+    }
+
+    /** 首页看板不显示全选行与分页控件 */
+    private fun applyViewState() {
+        if (!::selectionBar.isInitialized || !::pagerPanel.isInitialized) return
+        val cardsVisible = viewMode == VIEW_LIST
+        selectionBar.isVisible = cardsVisible
+        pagerPanel.isVisible = cardsVisible
     }
 
     /** 底部概览：账号数 / token 过期数 / 当前账号 / 额度最高账号 */
@@ -353,12 +513,27 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
         }
     }
 
-    private fun updateButtonState() {
-        val hasSelection = cardList.selectedCard() != null
-        switchBtn.isEnabled = hasSelection
-        quotaBtn.isEnabled = hasSelection
-        aliasBtn.isEnabled = hasSelection
-        deleteBtn.isEnabled = hasSelection
+    /** 卡片勾选变化后同步全选复选框 */
+    private fun syncSelectionState() {
+        if (!::selectAllBox.isInitialized) return
+        val total = gridView.totalCount()
+        val checked = gridView.checkedCount()
+        selectAllBox.isSelected = total > 0 && checked >= total
+    }
+
+    /** 分页范围与翻页按钮状态 */
+    private fun updatePager() {
+        if (!::pageLabel.isInitialized) return
+        val total = gridView.totalCount()
+        val pages = gridView.pageCount()
+        val index = gridView.pageIndex()
+        val size = gridView.pageSize()
+        val from = if (total == 0) 0 else index * size + 1
+        val to = minOf(index * size + size, total)
+        rangeLabel.text = "显示 $from - $to 条，共 $total 条"
+        pageLabel.text = "第 ${index + 1} / $pages 页"
+        prevPageBtn.isEnabled = index > 0
+        nextPageBtn.isEnabled = index < pages - 1
     }
 
     // ---------------------------------------------------------------
@@ -375,6 +550,24 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
     private fun doOpenHistory() {
         val labels = library.listSaved().associate { it.uid to it.displayName }
         HistoryDialog.show(project, labels)
+    }
+
+    /** 基于历史对话生成今日日报 / 本周周报（按项目分组，可交给 CodeBuddy 生成正文） */
+    private fun doOpenReport() {
+        val labels = library.listSaved().associate { it.uid to it.displayName }
+        HistoryReportDialog.show(project, labels)
+    }
+
+    /** 一键签到：对所有账号执行每日签到（实验特性，接口非官方） */
+    private fun doCheckin() {
+        if (!AccountSettings.getInstance().checkinEnabled) {
+            notify("今日签到", "签到已在设置中关闭（Settings | Tools | CodeBuddy 账号管理器）", NotificationType.WARNING)
+            return
+        }
+        CheckinTracker.checkinAll { summary ->
+            notify("今日签到", summary)
+            dashboard.update()
+        }
     }
 
     /** 把全部账号的历史会话合并到「当前激活账号」，无需切号 */
@@ -401,7 +594,7 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
         ) == Messages.YES
         if (!ok) return
 
-        syncHistoryBtn.isEnabled = false
+        batchTile.isEnabled = false
         statusLabel.text = "正在把历史会话同步到 ${target.displayName}…"
 
         val copyMessages = AccountSettings.getInstance().copyMessagesOnSync
@@ -409,7 +602,7 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
             val r = library.syncHistoryIndexes(target.uid, copyMessages = copyMessages)
             ApplicationManager.getApplication().invokeLater {
                 HistoryReader.clearCache()
-                syncHistoryBtn.isEnabled = true
+                batchTile.isEnabled = true
                 refresh()
                 if (r.error != null) {
                     notify("历史同步失败", r.error, NotificationType.ERROR)
@@ -427,8 +620,19 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
     }
 
     private fun doSwitch() {
-        val card = cardList.selectedCard() ?: return
+        val card = gridView.selectedCard() ?: return
         switchToWithMode(card.snapshot)
+    }
+
+    /** 卡片底部图标操作 */
+    private fun handleGridAction(card: AccountGridCard, action: GridCardAction) {
+        when (action) {
+            GridCardAction.SWITCH -> switchToWithMode(card.snapshot)
+            GridCardAction.RENAME -> doEditAlias(card.snapshot)
+            GridCardAction.REFRESH -> refreshQuotas(listOf(card.snapshot))
+            GridCardAction.EXPORT -> doExportSingle(card.snapshot)
+            GridCardAction.DELETE -> doDelete(card.snapshot)
+        }
     }
 
     /** 智能调度：先消耗快过期的额度，再看额度富余；支持热切换 */
@@ -558,7 +762,7 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
         if (!ok) return
 
         val copyMessages = AccountSettings.getInstance().copyMessagesOnSync
-        syncHistoryBtn.isEnabled = false
+        batchTile.isEnabled = false
         statusLabel.text = "正在批量同步 ${saved.size} 个账号的历史会话…"
 
         ApplicationManager.getApplication().executeOnPooledThread {
@@ -575,7 +779,7 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
             }
             ApplicationManager.getApplication().invokeLater {
                 HistoryReader.clearCache()
-                syncHistoryBtn.isEnabled = true
+                batchTile.isEnabled = true
                 refresh()
                 notify(
                     "批量同步完成",
@@ -632,7 +836,7 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
     }
 
     private fun doRefreshQuota() {
-        val card = cardList.selectedCard()
+        val card = gridView.selectedCard()
         val targets = when {
             card != null -> listOf(card.snapshot)
             AccountSettings.getInstance().refreshAllWhenNoSelection -> library.listSaved()
@@ -652,7 +856,7 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
             return
         }
         statusLabel.text = "正在查询 ${targets.size} 个账号的额度…"
-        quotaBtn.isEnabled = false
+        refreshTile.isEnabled = false
 
         ApplicationManager.getApplication().executeOnPooledThread {
             var ok = 0
@@ -663,51 +867,70 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
             }
             ApplicationManager.getApplication().invokeLater {
                 refresh()
-                quotaBtn.isEnabled = true
+                refreshTile.isEnabled = true
                 AccountEvents.fireQuotaChanged()
                 notify("额度刷新完成", "成功 $ok 个，失败 $fail 个。")
             }
         }
     }
 
-    private fun doEditAlias() {
-        val card = cardList.selectedCard() ?: return
-        val current = card.snapshot.alias
+    /** @param target 为 null 时作用于当前选中卡片 */
+    private fun doEditAlias(target: CredentialSnapshot? = null) {
+        val snapshot = target ?: gridView.selectedCard()?.snapshot ?: return
         val input = Messages.showInputDialog(
             project,
             "为该账号设置别名（留空则显示原昵称）：",
             "重命名账号",
             Messages.getQuestionIcon(),
-            current,
+            snapshot.alias,
             null
         ) ?: return
-        if (library.setAlias(card.snapshot.accountKey, input)) {
+        if (library.setAlias(snapshot.accountKey, input)) {
             refresh()
         } else {
             notify("重命名失败", "请查看 IDE 日志。", NotificationType.ERROR)
         }
     }
 
-    private fun doDelete() {
-        val card = cardList.selectedCard() ?: return
-        if (card.isActive) {
+    /** @param target 为 null 时作用于当前选中卡片 */
+    private fun doDelete(target: CredentialSnapshot? = null) {
+        val snapshot = target ?: gridView.selectedCard()?.snapshot ?: return
+        if (snapshot.accountKey == library.currentActive()?.accountKey) {
             notify("无法删除", "不能删除当前激活账号。", NotificationType.WARNING)
             return
         }
         val ok = Messages.showYesNoDialog(
             project,
-            "确定从账号库移除 ${card.snapshot.displayName}？\n（不会影响 IDE 当前凭据）",
+            "确定从账号库移除 ${snapshot.displayName}？\n（不会影响 IDE 当前凭据）",
             "删除账号",
             Messages.getQuestionIcon()
         ) == Messages.YES
         if (!ok) return
 
-        if (library.delete(card.snapshot.accountKey)) {
-            library.quotaCache.remove(card.snapshot.accountKey)
+        if (library.delete(snapshot.accountKey)) {
+            library.quotaCache.remove(snapshot.accountKey)
             refresh()
-            notify("已删除", "${card.snapshot.displayName} 已从账号库移除。")
+            notify("已删除", "${snapshot.displayName} 已从账号库移除。")
         } else {
             notify("删除失败", "请查看 IDE 日志。", NotificationType.ERROR)
+        }
+    }
+
+    /** 导出单个账号的凭据快照 */
+    private fun doExportSingle(snapshot: CredentialSnapshot) {
+        val descriptor = FileSaverDescriptor("导出账号凭据", "选择保存位置", "json")
+        val dialog = FileChooserFactory.getInstance().createSaveFileDialog(descriptor, project)
+        val wrapper = dialog.save(null as java.nio.file.Path?, "codebuddy-${snapshot.uid.take(8)}.json")
+            ?: return
+        val path = wrapper.file.toPath()
+        try {
+            Files.writeString(path, library.exportJson(setOf(snapshot.accountKey)))
+            notify(
+                "导出成功",
+                "已导出 ${snapshot.displayName} 到：${path.toAbsolutePath()}\n\n注意：文件包含完整凭据，请妥善保管。"
+            )
+        } catch (e: Exception) {
+            notify("导出失败", e.message ?: "未知错误", NotificationType.ERROR)
         }
     }
 

@@ -53,6 +53,18 @@ open class RoundedCard(
 
     private val arcSize = JBUI.scale(arc)
 
+    /** 整块卡片可点击时，hover 用于替换底色（null 表示不参与 hover 反馈） */
+    var hoverFill: Color? = null
+
+    private var hovering = false
+
+    /** 由点击辅助方法调用，切换 hover 底色 */
+    fun setHovering(value: Boolean) {
+        if (hovering == value) return
+        hovering = value
+        repaint()
+    }
+
     init {
         isOpaque = false
         layout = BoxLayout(this, BoxLayout.Y_AXIS)
@@ -82,9 +94,9 @@ open class RoundedCard(
                 )
             }
 
-            g2.color = fill
+            g2.color = if (hovering && hoverFill != null) hoverFill!! else fill
             g2.fill(shape)
-            g2.color = stroke
+            g2.color = if (hovering && hoverFill != null) AccountUiColors.borderActive else stroke
             g2.stroke = BasicStroke(1f)
             g2.draw(shape)
         } finally {
@@ -218,7 +230,7 @@ class QuotaBar(percent: Double) : JComponent() {
 
 /** 圆角小标签 */
 class Chip(
-    private val text: String,
+    text: String,
     private val fill: Color,
     private val fg: Color,
     arc: Int = 8,
@@ -226,11 +238,23 @@ class Chip(
 
     private val arcSize = JBUI.scale(arc)
 
+    /** 文本可变，供计数类标签随数据刷新 */
+    var text: String = text
+        set(value) {
+            if (field == value) return
+            field = value
+            revalidate()
+            repaint()
+        }
+
     init {
         isOpaque = false
-        font = font.deriveFont(Font.PLAIN, JBUI.scale(10).toFloat())
+        font = baseLabelFont().deriveFont(Font.PLAIN, JBUI.scale(10).toFloat())
         alignmentY = CENTER_ALIGNMENT
     }
+
+    /** JComponent 默认无字体，兜底后再交给绘制与度量 */
+    override fun getFont(): Font = super.getFont() ?: baseLabelFont()
 
     override fun getPreferredSize(): Dimension {
         val fm = getFontMetrics(font)
