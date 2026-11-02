@@ -25,11 +25,7 @@
             <li><b>账号库备份</b>：导出为 JSON 并可重新导入。</li>
         </ul>
 
-        <h3>界面预览</h3>
-        <p><img src="{{SCREENSHOTS_BASE}}/quota-detail.png" alt="额度明细窗口" width="880"/></p>
-        <p><img src="{{SCREENSHOTS_BASE}}/history-browser.png" alt="历史对话窗口" width="1000"/></p>
-        <p><img src="{{SCREENSHOTS_BASE}}/settings.png" alt="设置页" width="880"/></p>
-        <p><img src="{{SCREENSHOTS_BASE}}/status-bar.png" alt="状态栏组件" width="880"/></p>
+        <p>截图中的账号昵称、手机号、UID 与头像已做脱敏处理。</p>
 
         <h3>环境要求</h3>
         <ul>

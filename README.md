@@ -53,16 +53,6 @@ JetBrains IDE 插件：在本地统一管理多个 **CodeBuddy（coding-copilot-
 | 状态栏额度维度 | 总剩余百分比 |
 | 启动时检查 token 过期并提醒 | 开启 |
 
-## 界面预览
-
-| 额度明细 | 历史对话 |
-| --- | --- |
-| ![额度明细](docs/screenshots/quota-detail.png) | ![历史对话](docs/screenshots/history-browser.png) |
-
-| 设置页 | 状态栏 |
-| --- | --- |
-| ![设置页](docs/screenshots/settings.png) | ![状态栏](docs/screenshots/status-bar.png) |
-
 ## 环境要求
 
 - **Windows**：插件依赖 `%LOCALAPPDATA%\CodeBuddyExtension\Data`（WorkBuddy 桌面端数据目录）与 JetBrains 配置目录，其他平台无对应实现。
