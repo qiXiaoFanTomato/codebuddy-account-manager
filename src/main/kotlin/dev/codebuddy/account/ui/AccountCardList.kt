@@ -37,7 +37,7 @@ class AccountCardList : JPanel() {
         layout = BorderLayout()
         container.layout = BoxLayout(container, BoxLayout.Y_AXIS)
         container.background = AccountUiColors.panelBg
-        container.border = JBUI.Borders.empty(8)
+        container.border = JBUI.Borders.empty(10, 12)
 
         scrollPane = JBScrollPane(container).apply {
             border = JBUI.Borders.empty()
@@ -95,7 +95,7 @@ class AccountCardList : JPanel() {
                 }
             })
             container.add(card)
-            container.add(Box.createVerticalStrut(JBUI.scale(6)))
+            container.add(Box.createVerticalStrut(JBUI.scale(8)))
             newCards.add(card)
         }
 
@@ -150,7 +150,11 @@ class AccountCardList : JPanel() {
         alignmentX = Component.LEFT_ALIGNMENT
         font = font.deriveFont(Font.BOLD, JBUI.scale(11).toFloat())
         foreground = AccountUiColors.textMuted
-        border = JBUI.Borders.empty(2, 4, 4, 4)
+        // 左侧 3px 强调线，替代纯文字标题，视觉上区分分组
+        border = JBUI.Borders.compound(
+            JBUI.Borders.customLine(AccountUiColors.accent, 0, 0, 0, 3),
+            JBUI.Borders.empty(3, 6, 5, 4)
+        )
     }
 
     private fun emptyHint(): JLabel = JLabel("没有匹配的账号").apply {

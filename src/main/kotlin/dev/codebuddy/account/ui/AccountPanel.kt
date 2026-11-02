@@ -42,6 +42,19 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
     private var sortMode: AccountSortMode = AccountSortMode.BY_DOMAIN
     private val emptyPanel = buildEmptyPanel()
 
+    /** 当前中心视图：看板 / 账号列表 */
+    private var viewMode: String = VIEW_DASHBOARD
+
+    private val dashboard = DashboardPanel(
+        onOpenList = { setView(VIEW_LIST) },
+        onRefreshAll = { refreshQuotas(library.listSaved()) },
+        onOpenQuotaDetail = { QuotaDetailDialog.show(project) },
+        onOpenUsageDetail = { UsageDetailDialog.show(project) },
+        onOpenHistory = { doOpenHistory() },
+    )
+
+    private lateinit var boardBtn: JToggleButton
+    private lateinit var listBtn: JToggleButton
     private lateinit var switchBtn: JButton
     private lateinit var syncHistoryBtn: JButton
     private lateinit var quotaBtn: JButton
@@ -84,10 +97,13 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
         val root = JPanel(BorderLayout())
         root.background = AccountUiColors.surfaceBg
 
-        // 第一行：操作按钮
-        val actions = JPanel(FlowLayout(FlowLayout.LEFT, 6, 6))
+        // 第一行：操作按钮（按「导入 / 切换 / 额度 / 编辑」分组，用竖线分隔）
+        val actions = JPanel(FlowLayout(FlowLayout.LEFT, 4, 6))
         actions.isOpaque = false
-        actions.border = JBUI.Borders.customLine(AccountUiColors.border, 0, 0, 1, 0)
+        actions.border = JBUI.Borders.compound(
+            JBUI.Borders.customLine(AccountUiColors.border, 0, 0, 1, 0),
+            JBUI.Borders.empty(2, 4)
+        )
 
         val importBtn = iconButton("从 auth 目录导入", AllIcons.Actions.Download) { doImport() }
         val historyBtn = iconButton("历史对话", AllIcons.Actions.ListFiles) { doOpenHistory() }
@@ -97,6 +113,7 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
         val smartBtn = iconButton("智能调度", AllIcons.General.User) { doSmartSwitch() }
         quotaBtn = iconButton("刷新额度", AllIcons.Actions.Refresh) { doRefreshQuota() }
         val detailBtn = iconButton("额度明细", null) { QuotaDetailDialog.show(project) }
+        val usageBtn = iconButton("消耗明细", null) { UsageDetailDialog.show(project) }
         aliasBtn = iconButton("重命名", AllIcons.Actions.Edit) { doEditAlias() }
         deleteBtn = iconButton("删除", AllIcons.Actions.GC) { doDelete() }
         val rollbackBtn = iconButton("回滚", AllIcons.Actions.Rollback) { doRollback() }
@@ -106,18 +123,22 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
         actions.add(historyBtn)
         actions.add(syncHistoryBtn)
         actions.add(syncAllBtn)
+        actions.add(toolbarSeparator())
         actions.add(switchBtn)
         actions.add(smartBtn)
         actions.add(quotaBtn)
         actions.add(detailBtn)
+        actions.add(usageBtn)
+        actions.add(toolbarSeparator())
         actions.add(aliasBtn)
         actions.add(deleteBtn)
         actions.add(rollbackBtn)
         actions.add(logoutBtn)
 
         // 第二行：筛选 / 排序 / 库操作
-        val filters = JPanel(FlowLayout(FlowLayout.LEFT, 6, 4))
+        val filters = JPanel(FlowLayout(FlowLayout.LEFT, 4, 4))
         filters.isOpaque = false
+        filters.border = JBUI.Borders.empty(0, 4, 2, 4)
         filterField.toolTipText = "按名称 / UID / 域名 / 手机号筛选账号"
         filterField.document.addDocumentListener(object : DocumentListener {
             override fun insertUpdate(e: DocumentEvent?) = applyFilter()
@@ -146,6 +167,25 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
         val importLibBtn = iconButton("导入库", AllIcons.ToolbarDecorator.Import) { doImportLibrary() }
         val settingsBtn = iconButton("设置", AllIcons.General.GearPlain) { doOpenSettings() }
 
+        // 视图切换：看板 / 账号列表
+        boardBtn = JToggleButton("看板", viewMode == VIEW_DASHBOARD).apply {
+            isFocusPainted = false
+            margin = JBUI.insets(3, 10)
+            addActionListener { setView(VIEW_DASHBOARD) }
+        }
+        listBtn = JToggleButton("账号列表", viewMode == VIEW_LIST).apply {
+            isFocusPainted = false
+            margin = JBUI.insets(3, 10)
+            addActionListener { setView(VIEW_LIST) }
+        }
+        ButtonGroup().apply {
+            add(boardBtn)
+            add(listBtn)
+        }
+        filters.add(boardBtn)
+        filters.add(listBtn)
+        filters.add(Box.createHorizontalStrut(JBUI.scale(10)))
+
         filters.add(JBLabel("筛选:"))
         filters.add(filterField)
         filters.add(Box.createHorizontalStrut(JBUI.scale(6)))
@@ -168,37 +208,61 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
     private fun iconButton(text: String, icon: Icon?, action: () -> Unit): JButton {
         val btn = JButton(text, icon).apply {
             isFocusPainted = false
-            margin = JBUI.insets(4, 8)
+            margin = JBUI.insets(4, 9)
             addActionListener { action() }
         }
         return btn
     }
 
+    /** 工具栏分组竖线：把 12 个按钮切成可扫视的几段 */
+    private fun toolbarSeparator(): JComponent = JLabel("│").apply {
+        font = font.deriveFont(Font.PLAIN, JBUI.scale(12).toFloat())
+        foreground = AccountUiColors.border
+        border = JBUI.Borders.empty(0, 2)
+    }
+
     private fun buildCenter(): JPanel {
         val stack = JPanel(CardLayout())
-        stack.add(cardList, "list")
-        stack.add(emptyPanel, "empty")
+        stack.background = AccountUiColors.panelBg
+        stack.add(dashboard, VIEW_DASHBOARD)
+        stack.add(cardList, VIEW_LIST)
+        stack.add(emptyPanel, VIEW_EMPTY)
         centerStack = stack
         return stack
     }
 
     private var centerStack: JPanel? = null
 
+    /** 切换中心视图（看板 / 列表），并同步底部状态与按钮状态 */
+    private fun setView(mode: String) {
+        if (viewMode == mode) return
+        viewMode = mode
+        boardBtn.isSelected = mode == VIEW_DASHBOARD
+        listBtn.isSelected = mode == VIEW_LIST
+        refresh()
+    }
+
     private fun buildEmptyPanel(): JPanel {
         val panel = JPanel(GridBagLayout())
         panel.background = AccountUiColors.panelBg
-        val box = JPanel()
-        box.layout = BoxLayout(box, BoxLayout.Y_AXIS)
-        box.isOpaque = false
+
+        // 空态装在卡片里居中：视觉上是一个「待填充」的容器，而不是一段飘着的文字
+        val box = object : RoundedCard(
+            AccountUiColors.cardBg, AccountUiColors.border, AccountUiRadius.card, elevated = true
+        ) {}
+        box.border = JBUI.Borders.empty(26, 32)
+        box.preferredSize = Dimension(JBUI.scale(320), JBUI.scale(196))
 
         val icon = JBLabel(AllIcons.General.User)
         icon.alignmentX = Component.CENTER_ALIGNMENT
         val title = JBLabel("还没有任何账号").apply {
             alignmentX = Component.CENTER_ALIGNMENT
             font = font.deriveFont(Font.BOLD, JBUI.scale(15).toFloat())
+            foreground = AccountUiColors.textPrimary
         }
-        val hint = JBLabel("点击下方按钮从 CodeBuddy auth 目录导入已有账号").apply {
+        val hint = JBLabel("从 CodeBuddy auth 目录导入已有账号").apply {
             alignmentX = Component.CENTER_ALIGNMENT
+            font = font.deriveFont(Font.PLAIN, JBUI.scale(11).toFloat())
             foreground = AccountUiColors.textMuted
         }
         val link = ActionLink("立即导入") { doImport() }.apply {
@@ -206,11 +270,11 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
         }
 
         box.add(icon)
-        box.add(Box.createVerticalStrut(JBUI.scale(12)))
+        box.add(Box.createVerticalStrut(JBUI.scale(14)))
         box.add(title)
         box.add(Box.createVerticalStrut(JBUI.scale(6)))
         box.add(hint)
-        box.add(Box.createVerticalStrut(JBUI.scale(14)))
+        box.add(Box.createVerticalStrut(JBUI.scale(16)))
         box.add(link)
         panel.add(box)
         return panel
@@ -221,10 +285,21 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
         panel.background = AccountUiColors.surfaceBg
         panel.border = JBUI.Borders.compound(
             JBUI.Borders.customLine(AccountUiColors.border, 1, 0, 0, 0),
-            JBUI.Borders.empty(4, 10)
+            JBUI.Borders.empty(5, 12)
         )
         statusLabel.foreground = AccountUiColors.textMuted
-        panel.add(statusLabel, BorderLayout.WEST)
+        statusLabel.font = statusLabel.font.deriveFont(Font.PLAIN, JBUI.scale(11).toFloat())
+
+        // 左侧状态圆点：让底部栏有明确的「状态区」锚点
+        val left = JPanel(BorderLayout(JBUI.scale(6), 0)).apply {
+            isOpaque = false
+            add(JLabel("●").apply {
+                font = font.deriveFont(Font.PLAIN, JBUI.scale(8).toFloat())
+                foreground = AccountUiColors.accent
+            }, BorderLayout.WEST)
+            add(statusLabel, BorderLayout.CENTER)
+        }
+        panel.add(left, BorderLayout.WEST)
         return panel
     }
 
@@ -244,11 +319,14 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
             quotaMap[key]?.usableRemainPercent
         }
         cardList.setAccounts(sorted, active?.accountKey, quotaMap, grouped = sortMode == AccountSortMode.BY_DOMAIN)
-        if (saved.isEmpty()) {
-            centerStack?.let { (it.layout as CardLayout).show(it, "empty") }
-        } else {
-            centerStack?.let { (it.layout as CardLayout).show(it, "list") }
+        dashboard.update()
+
+        val target = when {
+            saved.isEmpty() -> VIEW_EMPTY
+            viewMode == VIEW_DASHBOARD -> VIEW_DASHBOARD
+            else -> VIEW_LIST
         }
+        centerStack?.let { (it.layout as CardLayout).show(it, target) }
         statusLabel.text = buildSummary(saved, active, quotaMap)
         updateButtonState()
     }
@@ -564,7 +642,15 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
             statusLabel.text = "请先选择一个账号（或在设置中开启「未选中时刷新全部」）"
             return
         }
+        refreshQuotas(targets)
+    }
 
+    /** 刷新指定账号的额度（看板与工具栏复用） */
+    private fun refreshQuotas(targets: List<CredentialSnapshot>) {
+        if (targets.isEmpty()) {
+            statusLabel.text = "账号库为空，请先导入账号"
+            return
+        }
         statusLabel.text = "正在查询 ${targets.size} 个账号的额度…"
         quotaBtn.isEnabled = false
 
@@ -668,5 +754,12 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
             .getNotificationGroup("CodeBuddy Account Manager")
             .createNotification(title, content, type)
             .notify(project)
+    }
+
+    private companion object {
+        /** CardLayout 的三个视图名 */
+        const val VIEW_DASHBOARD = "dashboard"
+        const val VIEW_LIST = "list"
+        const val VIEW_EMPTY = "empty"
     }
 }

@@ -8,35 +8,47 @@ import java.awt.Color
  *
  * 全部使用 [JBColor]（浅色 / 深色成对），跟随 IDE 主题；
  * 品牌蓝只用于选中、徽标等高亮语义，不用于大面积背景。
+ *
+ * 层次约定（浅色）：面板底色 < 工具栏底色 < 卡片底色，
+ * 卡片用「更亮的底 + 更淡的边 + 轻阴影」浮起，而不是靠重描边。
  */
 object AccountUiColors {
 
-    /** 面板底色 */
-    val panelBg = JBColor(Color(0xFFFFFF), Color(0x1E1F22))
+    /** 面板底色（列表 / 看板的画布） */
+    val panelBg = JBColor(Color(0xFBFBFC), Color(0x1E1F22))
 
     /** 工具栏 / 状态栏底色 */
-    val surfaceBg = JBColor(Color(0xF7F8FA), Color(0x2B2D30))
+    val surfaceBg = JBColor(Color(0xF5F6F8), Color(0x2B2D30))
 
-    /** 卡片常规底色 */
-    val cardBg = JBColor(Color(0xFAFAFA), Color(0x2B2D30))
+    /** 卡片常规底色（比画布亮一档） */
+    val cardBg = JBColor(Color(0xFFFFFF), Color(0x27282C))
 
     /** 卡片 hover 底色 */
-    val cardHoverBg = JBColor(Color(0xF3F4F6), Color(0x33363B))
+    val cardHoverBg = JBColor(Color(0xF6F8FB), Color(0x303237))
 
     /** 当前激活账号卡片底色 */
-    val cardActiveBg = JBColor(Color(0xF0F7FF), Color(0x24303F))
+    val cardActiveBg = JBColor(Color(0xF3F8FF), Color(0x22303F))
 
     /** 选中态卡片底色 */
-    val cardSelectedBg = JBColor(Color(0xE8F0FE), Color(0x2D3A4F))
+    val cardSelectedBg = JBColor(Color(0xEAF2FE), Color(0x26364A))
 
     /** 常规边框 */
-    val border = JBColor(Color(0xE5E7EB), Color(0x3A3D41))
+    val border = JBColor(Color(0xE4E7EC), Color(0x3A3D41))
+
+    /** 弱分隔线（卡片内部分行） */
+    val divider = JBColor(Color(0xEFF1F5), Color(0x33363B))
+
+    /** 卡片轻阴影（低透明度，用于底部浮起） */
+    val cardShadow = JBColor(Color(15, 23, 42, 14), Color(0, 0, 0, 60))
 
     /** 激活账号边框 */
-    val borderActive = JBColor(Color(0x93C5FD), Color(0x3D6EA5))
+    val borderActive = JBColor(Color(0xBFDBFE), Color(0x3D6EA5))
 
     /** 品牌蓝：选中边框、徽标 */
     val accent = JBColor(Color(0x3B82F6), Color(0x4A9EFF))
+
+    /** 品牌蓝的柔和底色（强调条背景、强调块） */
+    val accentSoft = JBColor(Color(0xE8F1FF), Color(0x1D2E45))
 
     /** 主文本 */
     val textPrimary = JBColor(Color(0x111827), Color(0xE6E6E6))
@@ -45,10 +57,10 @@ object AccountUiColors {
     val textSecondary = JBColor(Color(0x374151), Color(0xD1D5DB))
 
     /** 弱文本 */
-    val textMuted = JBColor(Color(0x6B7280), Color(0x9CA3AF))
+    val textMuted = JBColor(Color(0x5F6B7A), Color(0xA4ACB8))
 
-    /** 最弱文本（占位、未刷新） */
-    val textFaint = JBColor(Color(0x9CA3AF), Color(0x6B7280))
+    /** 最弱文本（占位、未刷新），保持 ≥3:1 对比度 */
+    val textFaint = JBColor(Color(0x8A929E), Color(0x8B939E))
 
     /** 正常 / 有效 */
     val success = JBColor(Color(0x059669), Color(0x34D399))
@@ -60,10 +72,13 @@ object AccountUiColors {
     val danger = JBColor(Color(0xDC2626), Color(0xF87171))
 
     /** 进度条轨道 */
-    val barTrack = border
+    val barTrack = JBColor(Color(0xEDF0F4), Color(0x3A3D42))
 
     /** 进度条充盈（正常） */
     val barFill = JBColor(Color(0x10B981), Color(0x34D399))
+
+    /** 进度条充盈（高亮渐变起点，用于细微立体感） */
+    val barFillTop = JBColor(Color(0x34D399), Color(0x4ADE80))
 
     /** 个人账号标签 */
     val tagPersonalBg = JBColor(Color(0xE0F2FE), Color(0x1B3A4B))
@@ -86,4 +101,17 @@ object AccountUiColors {
         Color(0x3B82F6), Color(0x8B5CF6), Color(0xEC4899), Color(0xF59E0B),
         Color(0x10B981), Color(0x06B6D4), Color(0xEF4444), Color(0x6366F1),
     )
+}
+
+/**
+ * 圆角尺寸阶梯（未落地 UI 缩放，使用处需经 JBUI.scale）。
+ *
+ * - [card]：外层卡片 / 指标块
+ * - [inner]：内层块、标签容器
+ * - [chip]：小徽标
+ */
+object AccountUiRadius {
+    const val card = 12
+    const val inner = 8
+    const val chip = 9
 }
