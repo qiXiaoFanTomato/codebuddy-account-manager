@@ -38,6 +38,12 @@ class AccountSettings : PersistentStateComponent<AccountSettings.State> {
         var autoSwitchEnabled: Boolean = false,
         /** 自动调度的触发阈值（剩余百分比） */
         var autoSwitchThresholdPercent: Int = 10,
+        /** 启用「今日签到」（实验特性，接口非官方，可关闭） */
+        var checkinEnabled: Boolean = true,
+        /** 签到状态查询接口路径（以 / 开头） */
+        var checkinStatusPath: String = dev.codebuddy.account.checkin.CheckinService.DEFAULT_STATUS_PATH,
+        /** 执行签到接口路径（以 / 开头） */
+        var checkinSubmitPath: String = dev.codebuddy.account.checkin.CheckinService.DEFAULT_SUBMIT_PATH,
     )
 
     private var myState = State()
@@ -62,6 +68,13 @@ class AccountSettings : PersistentStateComponent<AccountSettings.State> {
     val hotSwitchEnabled: Boolean get() = myState.hotSwitchEnabled
     val autoSwitchEnabled: Boolean get() = myState.autoSwitchEnabled
     val autoSwitchThresholdPercent: Int get() = myState.autoSwitchThresholdPercent
+    val checkinEnabled: Boolean get() = myState.checkinEnabled
+    val checkinStatusPath: String
+        get() = myState.checkinStatusPath
+            .ifBlank { dev.codebuddy.account.checkin.CheckinService.DEFAULT_STATUS_PATH }
+    val checkinSubmitPath: String
+        get() = myState.checkinSubmitPath
+            .ifBlank { dev.codebuddy.account.checkin.CheckinService.DEFAULT_SUBMIT_PATH }
 
     companion object {
         fun getInstance(): AccountSettings =

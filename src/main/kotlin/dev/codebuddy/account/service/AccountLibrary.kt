@@ -171,6 +171,17 @@ class AccountLibrary {
         } catch (_: Exception) { }
     }
 
+    /** 一次性取所有账号的 accessToken（批量接口用，避免逐个重复读索引） */
+    fun accessTokenMap(): Map<String, String> = listSaved()
+        .mapNotNull { s -> extractAccessToken(s.rawContent)?.let { s.accountKey to it } }
+        .toMap()
+
+    /** 取某账号快照里的 accessToken（签到等自定义请求用） */
+    fun accessTokenOf(accountKey: String): String? {
+        val snapshot = listSaved().firstOrNull { it.accountKey == accountKey } ?: return null
+        return extractAccessToken(snapshot.rawContent)
+    }
+
     private fun extractAccessToken(raw: String): String? = try {
         val root = com.google.gson.JsonParser.parseString(raw).asJsonObject
         val auth = root.getAsJsonObject("auth") ?: return null
@@ -442,11 +453,16 @@ class AccountLibrary {
     // 导出 / 导入
     // ---------------------------------------------------------------
 
-    /** 导出账号库为 JSON 字符串（含完整凭据，注意保密） */
-    fun exportJson(): String {
+    /**
+     * 导出账号库为 JSON 字符串（含完整凭据，注意保密）。
+     *
+     * @param accountKeys 仅导出这些账号；为 null 时导出全部
+     */
+    fun exportJson(accountKeys: Set<String>? = null): String {
         synchronized(lock) {
             val arr = com.google.gson.JsonArray()
             for (s in listSaved()) {
+                if (accountKeys != null && s.accountKey !in accountKeys) continue
                 val o = com.google.gson.JsonObject()
                 o.addProperty("uid", s.uid)
                 o.addProperty("nickname", s.nickname)

@@ -46,6 +46,9 @@ class AccountSettingsConfigurable : Configurable {
         }
     }
     private val packageField = JTextField(16)
+    private val checkinCheck = JCheckBox("启用「今日签到」（实验特性：接口非官方，失效时可关闭）")
+    private val checkinStatusField = JTextField(28)
+    private val checkinSubmitField = JTextField(28)
 
     override fun getDisplayName(): String = "CodeBuddy 账号管理器"
 
@@ -70,6 +73,10 @@ class AccountSettingsConfigurable : Configurable {
             .addLabeledComponent("状态栏额度维度：", modeCombo)
             .addLabeledComponent("指定套餐（分组名包含该文字）：", packageField)
             .addComponent(tokenCheck)
+            .addVerticalGap(JBUI.scale(6))
+            .addComponent(checkinCheck)
+            .addLabeledComponent("签到状态查询路径：", checkinStatusField)
+            .addLabeledComponent("执行签到路径：", checkinSubmitField)
             .addComponentFillVertically(JPanel(), 0)
             .panel
 
@@ -96,7 +103,10 @@ class AccountSettingsConfigurable : Configurable {
             statusBarCheck.isSelected != s.showStatusBarWidget ||
             tokenCheck.isSelected != s.checkTokenOnStartup ||
             (modeCombo.selectedItem as? QuotaDisplayMode) != s.statusBarMode ||
-            packageField.text.trim() != s.statusBarPackage
+            packageField.text.trim() != s.statusBarPackage ||
+            checkinCheck.isSelected != s.checkinEnabled ||
+            checkinStatusField.text.trim() != s.checkinStatusPath ||
+            checkinSubmitField.text.trim() != s.checkinSubmitPath
     }
 
     override fun apply() {
@@ -115,6 +125,9 @@ class AccountSettingsConfigurable : Configurable {
         s.state.checkTokenOnStartup = tokenCheck.isSelected
         s.state.statusBarMode = ((modeCombo.selectedItem as? QuotaDisplayMode) ?: QuotaDisplayMode.TOTAL_PERCENT).name
         s.state.statusBarPackage = packageField.text.trim()
+        s.state.checkinEnabled = checkinCheck.isSelected
+        s.state.checkinStatusPath = checkinStatusField.text.trim()
+        s.state.checkinSubmitPath = checkinSubmitField.text.trim()
 
         alert.setEnabled(alertCheck.isSelected)
         alert.setThreshold(intValue(thresholdSpinner))
@@ -143,6 +156,9 @@ class AccountSettingsConfigurable : Configurable {
         tokenCheck.isSelected = s.checkTokenOnStartup
         modeCombo.selectedItem = s.statusBarMode
         packageField.text = s.statusBarPackage
+        checkinCheck.isSelected = s.checkinEnabled
+        checkinStatusField.text = s.checkinStatusPath
+        checkinSubmitField.text = s.checkinSubmitPath
     }
 
     private fun intValue(spinner: JSpinner): Int = (spinner.value as? Number)?.toInt() ?: 0
