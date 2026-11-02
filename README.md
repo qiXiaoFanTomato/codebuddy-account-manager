@@ -111,6 +111,12 @@ dependencies {
 
 `gradle.properties` 中的 `org.gradle.java.installations.paths` 与 `tools/`、`tmp/`、`*.zip` 等本地工具链目录已被 `.gitignore` 忽略，克隆后按本机环境重新配置即可。
 
+## 发布与更新
+
+版本号、变更说明、`buildPlugin` / `publishPlugin` 与网页上传的完整步骤见 [docs/release.md](docs/release.md)。
+
+插件主页：<https://plugins.jetbrains.com/plugin/35719-codebuddy-account-manager>
+
 ## 已知限制
 
 - 常规切号必须重启 IDE：CodeBuddy 插件启动时读取凭据并缓存。
