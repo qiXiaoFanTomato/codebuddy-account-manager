@@ -9,6 +9,7 @@ import com.intellij.openapi.actionSystem.impl.SimpleDataContext
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.extensions.PluginId
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.wm.ToolWindowManager
 import java.util.Hashtable
 
 /**
@@ -36,6 +37,9 @@ object CodeBuddyBridge {
         "com.tencent.code.intel.apibridge.extension.mainthread.secretstate.SecretStorage"
 
     private const val RESET_ACTION_ID = "com.tencent.code.intel.action.ResetPluginStatusAction"
+
+    /** CodeBuddy 侧边栏（对话 webview）的 ToolWindow id */
+    private const val CHAT_TOOL_WINDOW_ID = "com.tencent.code.intel.extension.WebviewBrowser"
 
     /** CodeBuddy 插件类加载器；未安装返回 null */
     fun pluginClassLoader(): ClassLoader? = try {
@@ -84,6 +88,28 @@ object CodeBuddyBridge {
         } catch (e: Exception) {
             log.warn("读取 CodeBuddy 内存凭据失败", e)
             null
+        }
+    }
+
+    /**
+     * 打开 CodeBuddy 对话侧边栏。
+     *
+     * CodeBuddy 未注册可携带提示词的 action，只能把用户带到对话窗口，
+     * 提示词由调用方复制到剪贴板后由用户粘贴发送。
+     */
+    fun openChatWindow(project: Project): Boolean {
+        return try {
+            val window = ToolWindowManager.getInstance(project).getToolWindow(CHAT_TOOL_WINDOW_ID)
+                ?: run {
+                    log.warn("未找到 CodeBuddy 对话窗口: $CHAT_TOOL_WINDOW_ID")
+                    return false
+                }
+            window.show()
+            window.activate(null)
+            true
+        } catch (e: Exception) {
+            log.warn("打开 CodeBuddy 对话窗口失败", e)
+            false
         }
     }
 

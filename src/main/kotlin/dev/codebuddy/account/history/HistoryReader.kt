@@ -57,6 +57,8 @@ object HistoryReader {
         val messageDir: Path?,
         /** -1 表示尚未统计（扫描阶段不遍历消息目录） */
         val messageCount: Int,
+        /** 会话类型（index.json 的 type 字段，如 craft），可能为空 */
+        val type: String = "",
     ) {
         /** 列表渲染用的单行摘要（避免在渲染器里做类型推断） */
         fun summaryLine(accountLabel: String): String {
@@ -179,6 +181,7 @@ object HistoryReader {
                     sourceUid = uid,
                     messageDir = if (Files.isDirectory(msgDir)) msgDir else null,
                     messageCount = -1,
+                    type = o.str("type") ?: "",
                 )
             )
         }
