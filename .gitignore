@@ -1,0 +1,32 @@
+# Gradle
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+
+# IntelliJ Platform 插件 SDK 缓存
+.intellijPlatform/
+.kotlin/
+.kotlin-cache/
+
+# IDE 本地配置
+.idea/
+*.iml
+out/
+*.ipr
+*.iws
+
+# 本地工具链与离线安装包（体积大，不入库）
+tools/
+tmp/
+*.zip
+jdk*/
+gradle-*/
+
+# 构建日志
+*.log
+*.err.log
+*.out.log
+
+# 插件运行期私有数据（含凭据快照，切勿提交）
+codebuddy-accounts/
+**/secret-storage.xml*
