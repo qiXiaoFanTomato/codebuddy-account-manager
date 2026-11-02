@@ -7,8 +7,6 @@ import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.util.ui.JBUI
 import dev.codebuddy.account.model.CredentialSnapshot
-import dev.codebuddy.account.quota.QuotaGroup
-import dev.codebuddy.account.quota.QuotaPackage
 import dev.codebuddy.account.quota.QuotaSummary
 import dev.codebuddy.account.quota.QuotaTime
 import dev.codebuddy.account.service.AccountEvents
@@ -17,13 +15,13 @@ import java.awt.*
 import javax.swing.*
 
 /**
- * 额度明细：总量 + 分组 + 每条细项。
+ * 额度明细（卡片式）。
  *
  * 数据全部来自接口真实字段：
  *  - 分组 = PackageName（如「CodeBuddy个人体验版」「…运营裂变包」）
  *  - 细项 = 接口 Accounts 数组的一条（SubProductName / used / size / CycleEndTime）
  *
- * 账号下拉选「全部账号」时为多账号汇总视图（仅本地聚合展示，不改变实际扣费账号）。
+ * 账号下拉选「全部账号」时每个账号一张卡片，纵向排列；卡片内按套餐分组折叠展示细项。
  */
 class QuotaDetailDialog(private val project: Project) : DialogWrapper(project) {
 
@@ -32,7 +30,7 @@ class QuotaDetailDialog(private val project: Project) : DialogWrapper(project) {
     private val accountCombo = JComboBox<AccountChoice>()
     private val overviewTitle = JBLabel("正在读取额度…")
     private val overviewSub = JBLabel("")
-    private val overviewBar = ProgressBar(0.0)
+    private val overviewBar = QuotaBar(0.0)
     private val bodyPanel = JPanel()
     private val statusLabel = JBLabel("")
     private val refreshBtn = JButton("刷新额度")
@@ -41,7 +39,7 @@ class QuotaDetailDialog(private val project: Project) : DialogWrapper(project) {
 
     init {
         title = "CodeBuddy 额度明细"
-        setSize(960, 760)
+        setSize(1000, 780)
 
         overviewTitle.font = overviewTitle.font.deriveFont(Font.BOLD, JBUI.scale(14).toFloat())
         overviewSub.foreground = AccountUiColors.textMuted
@@ -53,7 +51,8 @@ class QuotaDetailDialog(private val project: Project) : DialogWrapper(project) {
         refreshBtn.addActionListener { doRefresh() }
 
         bodyPanel.layout = BoxLayout(bodyPanel, BoxLayout.Y_AXIS)
-        bodyPanel.border = JBUI.Borders.empty(8, 10)
+        bodyPanel.background = AccountUiColors.panelBg
+        bodyPanel.border = JBUI.Borders.empty(10, 12)
 
         init()
         reload()
@@ -61,16 +60,19 @@ class QuotaDetailDialog(private val project: Project) : DialogWrapper(project) {
 
     override fun createCenterPanel(): JComponent {
         val root = JPanel(BorderLayout())
+        root.background = AccountUiColors.panelBg
 
         // 顶部：账号选择 + 总览
         val top = JPanel()
         top.layout = BoxLayout(top, BoxLayout.Y_AXIS)
+        top.background = AccountUiColors.surfaceBg
         top.border = JBUI.Borders.compound(
             JBUI.Borders.customLine(AccountUiColors.border, 0, 0, 1, 0),
             JBUI.Borders.empty(8, 10)
         )
 
         val accountRow = JPanel(BorderLayout(8, 0))
+        accountRow.isOpaque = false
         val left = JPanel(FlowLayout(FlowLayout.LEFT, 6, 0))
         left.isOpaque = false
         left.add(JBLabel("账号:"))
@@ -82,12 +84,14 @@ class QuotaDetailDialog(private val project: Project) : DialogWrapper(project) {
 
         val overview = JPanel()
         overview.layout = BoxLayout(overview, BoxLayout.Y_AXIS)
+        overview.isOpaque = false
         overview.border = JBUI.Borders.emptyTop(8)
         overview.add(overviewTitle)
         overview.add(Box.createVerticalStrut(JBUI.scale(4)))
         overview.add(overviewSub)
 
         val barRow = JPanel(BorderLayout(8, 0))
+        barRow.isOpaque = false
         barRow.border = JBUI.Borders.emptyTop(6)
         barRow.add(overviewBar, BorderLayout.CENTER)
 
@@ -95,8 +99,14 @@ class QuotaDetailDialog(private val project: Project) : DialogWrapper(project) {
         top.add(overview)
         top.add(barRow)
 
+        val scroll = JBScrollPane(bodyPanel).apply {
+            border = JBUI.Borders.empty()
+            horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER
+            verticalScrollBar.unitIncrement = 16
+        }
+
         root.add(top, BorderLayout.NORTH)
-        root.add(JBScrollPane(bodyPanel), BorderLayout.CENTER)
+        root.add(scroll, BorderLayout.CENTER)
         return root
     }
 
@@ -139,8 +149,8 @@ class QuotaDetailDialog(private val project: Project) : DialogWrapper(project) {
 
     private fun render() {
         val accountKey = (accountCombo.selectedItem as? AccountChoice)?.key
-        val labels = library.listSaved().associate { it.accountKey to it.displayName }
         val quotas = library.quotaCache.loadAll()
+        val activeKey = library.currentActive()?.accountKey
 
         val targets = if (accountKey == null) {
             val saved = library.listSaved()
@@ -150,25 +160,27 @@ class QuotaDetailDialog(private val project: Project) : DialogWrapper(project) {
                 .ifEmpty { listOfNotNull(library.currentActive()) }
         }
 
-        val summaries = targets.mapNotNull { s -> quotas[s.accountKey]?.takeIf { it.error == null }?.let { s to it } }
+        // 有缓存的才算「有数据」，查询失败也保留卡片（展示失败原因）
+        val cards = targets.map { s -> s to quotas[s.accountKey] }
 
         // 总览：多账号时汇总
-        val size = summaries.sumOf { it.second.usableSize }
-        val remain = summaries.sumOf { it.second.usableRemain }
-        val totalItems = summaries.sumOf { it.second.packages.size }
-        val usableItems = summaries.sumOf { it.second.usablePackages.size }
+        val summaries = cards.mapNotNull { (_, q) -> q?.takeIf { it.error == null } }
+        val size = summaries.sumOf { it.usableSize }
+        val remain = summaries.sumOf { it.usableRemain }
+        val totalItems = summaries.sumOf { it.packages.size }
+        val usableItems = summaries.sumOf { it.usablePackages.size }
         val percent = if (size <= 0) 0.0 else (remain / size * 100.0)
-        val unit = summaries.firstOrNull()?.second?.unit ?: "credits"
+        val unit = summaries.firstOrNull()?.unit ?: "credits"
 
         overviewTitle.text = if (summaries.isEmpty()) {
             "暂无额度数据"
         } else {
-            "${if (accountKey == null) "所有账号合计" else labels[accountKey] ?: "当前账号"}：" +
+            "${if (accountKey == null) "所有账号合计" else cards.firstOrNull()?.first?.displayName ?: "当前账号"}：" +
                 "剩余 ${num(remain)} / ${num(size)} $unit（${"%.0f".format(percent)}%）"
         }
 
         val nearest = summaries.asSequence()
-            .flatMap { it.second.packages.asSequence() }
+            .flatMap { it.packages.asSequence() }
             .filter { it.usable && it.remain > 0 && it.expireMillis != Long.MAX_VALUE }
             .minByOrNull { it.expireMillis }
         overviewSub.text = buildString {
@@ -180,24 +192,26 @@ class QuotaDetailDialog(private val project: Project) : DialogWrapper(project) {
                 append("　|　点击「刷新额度」从接口获取")
             }
         }
-        overviewBar.percent = percent / 100.0
-        overviewBar.repaint()
+        overviewBar.percent = percent
 
-        // 明细
+        // 卡片：当前账号置顶，其余按剩余比例倒序
         bodyPanel.removeAll()
-        if (summaries.isEmpty()) {
-            bodyPanel.add(hintLabel("没有额度缓存，先点「刷新额度」。"))
+        if (cards.isEmpty()) {
+            bodyPanel.add(hintLabel("账号库为空，先导入账号。"))
         } else {
-            for ((snapshot, summary) in summaries) {
-                bodyPanel.add(accountHeader(snapshot, summary))
-                for (group in summary.groups()) {
-                    bodyPanel.add(groupPanel(group))
-                    bodyPanel.add(Box.createVerticalStrut(JBUI.scale(4)))
-                }
+            val ordered = cards.sortedWith(
+                compareByDescending<Pair<CredentialSnapshot, QuotaSummary?>> { it.first.accountKey == activeKey }
+                    .thenByDescending { it.second?.takeIf { q -> q.error == null }?.usableRemainPercent ?: -1.0 }
+                    .thenBy { it.first.displayName }
+            )
+            for ((snapshot, summary) in ordered) {
+                val card = QuotaAccountCard(snapshot, summary, snapshot.accountKey == activeKey)
+                card.alignmentX = Component.LEFT_ALIGNMENT
+                bodyPanel.add(card)
                 bodyPanel.add(Box.createVerticalStrut(JBUI.scale(10)))
             }
+            bodyPanel.add(Box.createVerticalGlue())
         }
-        bodyPanel.add(Box.createVerticalGlue())
         bodyPanel.revalidate()
         bodyPanel.repaint()
     }
@@ -230,135 +244,14 @@ class QuotaDetailDialog(private val project: Project) : DialogWrapper(project) {
     // 组件
     // ---------------------------------------------------------------
 
-    /** 账号标题行：名称 + 该账号总剩余 */
-    private fun accountHeader(snapshot: CredentialSnapshot, summary: QuotaSummary): JPanel {
-        val panel = JPanel(BorderLayout(8, 0))
-        panel.alignmentX = Component.LEFT_ALIGNMENT
-        panel.border = JBUI.Borders.empty(6, 0, 4, 0)
-
-        val title = JBLabel("${snapshot.displayName}（${snapshot.domainHost}）").apply {
-            font = font.deriveFont(Font.BOLD, JBUI.scale(12).toFloat())
-            foreground = AccountUiColors.textPrimary
-        }
-
-        val total = JBLabel(
-            "合计 剩余 ${num(summary.usableRemain)} / ${num(summary.usableSize)} " +
-                "（${"%.0f".format(summary.usableRemainPercent)}%）"
-        ).apply {
-            foreground = AccountUiColors.textMuted
-        }
-
-        panel.add(title, BorderLayout.WEST)
-        panel.add(total, BorderLayout.EAST)
-        return panel
-    }
-
-    /** 一个套餐分组：组头可折叠，展开后逐条显示细项 */
-    private fun groupPanel(group: QuotaGroup): JPanel {
-        val wrapper = JPanel(BorderLayout())
-        wrapper.alignmentX = Component.LEFT_ALIGNMENT
-
-        val items = JPanel()
-        items.layout = BoxLayout(items, BoxLayout.Y_AXIS)
-        items.isVisible = false
-        items.border = JBUI.Borders.emptyLeft(20)
-
-        val baseTitle = "${group.name}（${group.packages.size} 条）　" +
-            "${group.usageText()} ${group.unit}　${"%.0f".format(group.remainPercent)}%"
-        val header = JButton("▸ $baseTitle").apply {
-            isFocusPainted = false
-            horizontalAlignment = SwingConstants.LEFT
-            margin = JBUI.insets(4, 6)
-            background = AccountUiColors.cardBg
-            addActionListener {
-                val expanded = !items.isVisible
-                items.isVisible = expanded
-                text = (if (expanded) "▾ " else "▸ ") + baseTitle
-                wrapper.revalidate()
-                wrapper.repaint()
-            }
-        }
-
-        for (pkg in group.packages.sortedBy { it.expireMillis }) {
-            items.add(packageRow(pkg))
-        }
-
-        wrapper.add(header, BorderLayout.NORTH)
-        wrapper.add(items, BorderLayout.CENTER)
-        return wrapper
-    }
-
-    /** 单条细项：名称 | 已用/总量 | 到期时间 */
-    private fun packageRow(pkg: QuotaPackage): JPanel {
-        val row = JPanel(BorderLayout(8, 0))
-        row.alignmentX = Component.LEFT_ALIGNMENT
-        row.border = JBUI.Borders.empty(3, 8)
-
-        val name = JBLabel(shortName(pkg.subProductName.ifBlank { pkg.name })).apply {
-            foreground = AccountUiColors.textSecondary
-            preferredSize = Dimension(JBUI.scale(320), preferredSize.height)
-        }
-
-        val usage = JBLabel(pkg.usageText()).apply {
-            foreground = if (pkg.expired) AccountUiColors.textFaint else AccountUiColors.success
-        }
-
-        val expireText = when {
-            pkg.expired -> "已过期"
-            pkg.cycleEnd.isNotBlank() -> "到期 ${pkg.cycleEnd}"
-            else -> ""
-        }
-        val expire = JBLabel(expireText).apply {
-            foreground = if (pkg.expired) AccountUiColors.danger else AccountUiColors.textMuted
-        }
-
-        row.add(name, BorderLayout.WEST)
-        row.add(usage, BorderLayout.CENTER)
-        row.add(expire, BorderLayout.EAST)
-        return row
-    }
-
     private fun hintLabel(text: String): JBLabel = JBLabel(text).apply {
         alignmentX = Component.LEFT_ALIGNMENT
         foreground = AccountUiColors.textFaint
         border = JBUI.Borders.empty(16, 6)
     }
 
-    private fun shortName(name: String): String =
-        if (name.length <= 26) name else name.take(25) + "…"
-
     private fun num(v: Double): String =
         if (v == v.toLong().toDouble()) String.format("%,d", v.toLong()) else String.format("%,.2f", v)
-
-    /** 轻量进度条（不依赖 IDE 内部组件） */
-    private class ProgressBar(var percent: Double) : JComponent() {
-        init {
-            preferredSize = Dimension(0, JBUI.scale(8))
-            minimumSize = Dimension(0, JBUI.scale(8))
-        }
-
-        override fun paintComponent(g: Graphics) {
-            val g2 = g.create() as Graphics2D
-            try {
-                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-                val h = height.toFloat()
-                val w = width.toFloat()
-                g2.color = AccountUiColors.barTrack
-                g2.fillRoundRect(0, 0, w.toInt(), h.toInt(), h.toInt(), h.toInt())
-
-                val pct = percent.coerceIn(0.0, 1.0)
-                if (pct <= 0.0) return
-                g2.color = when {
-                    pct <= 0.10 -> AccountUiColors.danger
-                    pct <= 0.30 -> AccountUiColors.warning
-                    else -> AccountUiColors.barFill
-                }
-                g2.fillRoundRect(0, 0, (w * pct).toInt(), h.toInt(), h.toInt(), h.toInt())
-            } finally {
-                g2.dispose()
-            }
-        }
-    }
 
     /** 账号下拉项 */
     private data class AccountChoice(val key: String?, val label: String) {
