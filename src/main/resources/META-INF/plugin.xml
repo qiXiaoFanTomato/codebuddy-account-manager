@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>dev.codebuddy.account.manager</id>
     <name>CodeBuddy Account Manager</name>
-    <vendor>local</vendor>
+    <vendor url="https://github.com/qiXiaoFanTomato/codebuddy-account-manager">qiXiaoFanTomato</vendor>
 
     <description><![CDATA[
         <h2>CodeBuddy Account Manager</h2>
@@ -43,6 +43,21 @@
         </ul>
         <p>本插件是独立的本地工具，不是 CodeBuddy 官方组件。</p>
     ]]></description>
+
+    <change-notes><![CDATA[
+        <h3>0.10.3 — 首个公开版本</h3>
+        <ul>
+            <li>账号库：从 auth 目录与 IDE 凭据导入账号快照，官方入口登录/切号后自动归档。</li>
+            <li>卡片式账号列表：别名、当前激活徽标、企业/个人标签、Token 状态、额度进度条；支持筛选与五种排序。</li>
+            <li>一键切号、回滚上一次切换、强制登出，写入前自动备份 secret-storage.xml，并支持待生效切换补偿。</li>
+            <li>额度监控：自动刷新、低额度提醒、额度明细窗口（套餐分组折叠、细项到期时间、多账号汇总）。</li>
+            <li>智能调度：优先消耗快过期额度，其次选择剩余最多的账号；支持阈值自动切换。</li>
+            <li>状态栏组件：当前账号与额度，五种额度维度，悬停明细，点击打开面板。</li>
+            <li>历史对话：跨账号浏览与搜索、账号过滤、复制、导出 Markdown、打开会话目录；支持历史共享与批量同步。</li>
+            <li>设置页：刷新间隔、提醒阈值、历史同步策略、热切换（实验）、自动调度、状态栏维度、启动时 token 检查。</li>
+            <li>限制：仅 Windows 与 IDEA 2026.2（build 262）；常规切号需重启 IDE。</li>
+        </ul>
+    ]]></change-notes>
 
     <depends>com.intellij.modules.platform</depends>
 
