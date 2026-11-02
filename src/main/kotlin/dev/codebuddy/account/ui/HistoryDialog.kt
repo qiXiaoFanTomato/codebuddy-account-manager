@@ -66,7 +66,7 @@ class HistoryDialog(
     /** 重建下拉框时抑制 action 回调，避免重复过滤 */
     private var suppressCombo = false
 
-    private val timeFmt = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm").withZone(ZoneId.systemDefault())
+    private val timeFmt = DateTimeFormatter.ofPattern("MM-dd HH:mm").withZone(ZoneId.systemDefault())
     private val zone = ZoneId.systemDefault()
 
     init {
@@ -309,7 +309,7 @@ class HistoryDialog(
                     val time = try {
                         if (m.timestamp.isBlank()) "" else " " + timeFmt.format(Instant.parse(m.timestamp))
                     } catch (_: Exception) { "" }
-                    sb.append("── [${m.role}]$time ──\n")
+                    sb.append("── ${roleLabel(m.role)}$time ──\n")
                     sb.append(m.content.trim())
                     sb.append("\n\n")
                 }
@@ -329,6 +329,15 @@ class HistoryDialog(
     // ---------------------------------------------------------------
     // 操作
     // ---------------------------------------------------------------
+
+    /** 角色名转中文，便于阅读 */
+    private fun roleLabel(role: String): String = when (role.lowercase()) {
+        "user" -> "用户"
+        "assistant" -> "助手"
+        "tool" -> "工具"
+        "system" -> "系统"
+        else -> role
+    }
 
     private fun copyContent() {
         val text = contentArea.text
