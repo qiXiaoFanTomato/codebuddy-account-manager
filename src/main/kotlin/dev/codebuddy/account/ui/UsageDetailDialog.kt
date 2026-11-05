@@ -10,6 +10,7 @@ import com.intellij.ui.table.JBTable
 import com.intellij.util.concurrency.AppExecutorUtil
 import com.intellij.util.ui.JBUI
 import dev.codebuddy.account.service.AccountLibrary
+import dev.codebuddy.account.usage.ModelQuotaTracker
 import dev.codebuddy.account.usage.UsagePage
 import dev.codebuddy.account.usage.UsageRecord
 import dev.codebuddy.account.usage.UsageStats
@@ -40,14 +41,30 @@ class UsageDetailDialog(private val project: Project) : DialogWrapper(project) {
 
     private val accountCombo = JComboBox<AccountChoice>()
     private val rangeCombo = JComboBox(RANGE_CHOICES).apply { selectedItem = RANGE_CHOICES[1] }
-    private val refreshBtn = JButton("刷新")
+    private val refreshBtn: JellyButton =
+        JellyButton("刷新", JellyButtonVariant.PRIMARY, null, "重新拉取消耗明细") { load() }
     private val statusLabel = JBLabel("")
     private val summaryTitle = JBLabel("尚未查询消耗明细")
     private val summaryModels = JBLabel("")
-    private val prevBtn = JButton("上一页")
-    private val nextBtn = JButton("下一页")
+    private val modelQuotaPanel = JPanel().apply {
+        layout = BoxLayout(this, BoxLayout.Y_AXIS)
+        isOpaque = false
+    }
+    private val prevBtn: JComponent = JellyButton("上一页", JellyButtonVariant.SECONDARY, null, "上一页") {
+        if (pageIndex > 1) {
+            pageIndex--
+            renderPage()
+        }
+    }
+    private val nextBtn: JComponent = JellyButton("下一页", JellyButtonVariant.SECONDARY, null, "下一页") {
+        if (pageIndex < pageCount()) {
+            pageIndex++
+            renderPage()
+        }
+    }
     private val pageLabel = JBLabel("")
     private val pageSizeCombo = JComboBox(PAGE_SIZES)
+    private lateinit var topBar: DialogTopBar
 
     private val tableModel = UsageTableModel()
     private val table = JBTable(tableModel)
@@ -62,8 +79,9 @@ class UsageDetailDialog(private val project: Project) : DialogWrapper(project) {
         title = "CodeBuddy 消耗明细"
         setSize(1060, 720)
 
-        summaryTitle.font = summaryTitle.font.deriveFont(Font.BOLD, JBUI.scale(13).toFloat())
+        summaryTitle.font = summaryTitle.font.deriveFont(Font.BOLD, AccountUiType.title)
         summaryModels.foreground = AccountUiColors.textMuted
+        modelQuotaPanel.foreground = AccountUiColors.textMuted
         statusLabel.foreground = AccountUiColors.textMuted
         pageLabel.foreground = AccountUiColors.textMuted
 
@@ -83,12 +101,13 @@ class UsageDetailDialog(private val project: Project) : DialogWrapper(project) {
             pageIndex = 1
             renderPage()
         }
-        refreshBtn.addActionListener { load() }
-        prevBtn.addActionListener { if (pageIndex > 1) { pageIndex--; renderPage() } }
-        nextBtn.addActionListener { if (pageIndex < pageCount()) { pageIndex++; renderPage() } }
 
         init()
         reloadAccounts()
+
+        // 模型限额状态：首次打开先展示缓存值，后台统计完成后刷新
+        updateModelQuotaLabel(null)
+        ModelQuotaTracker.ensureFresh { post { updateModelQuotaLabel(currentAccountKey()) } }
     }
 
     override fun createCenterPanel(): JComponent {
@@ -96,51 +115,40 @@ class UsageDetailDialog(private val project: Project) : DialogWrapper(project) {
         root.background = AccountUiColors.panelBg
 
         // ---------- 顶部：筛选 + 汇总 ----------
-        val top = JPanel()
-        top.layout = BoxLayout(top, BoxLayout.Y_AXIS)
-        top.background = AccountUiColors.surfaceBg
-        top.border = JBUI.Borders.compound(
-            JBUI.Borders.customLine(AccountUiColors.border, 0, 0, 1, 0),
-            JBUI.Borders.empty(8, 10)
-        )
-
-        val filterRow = JPanel(BorderLayout(JBUI.scale(8), 0))
+        val filterRow = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(6), 0))
         filterRow.isOpaque = false
-        val left = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(6), 0))
-        left.isOpaque = false
-        left.add(JBLabel("账号:"))
-        accountCombo.preferredSize = Dimension(JBUI.scale(300), accountCombo.preferredSize.height)
-        left.add(accountCombo)
-        left.add(JBLabel("时间:"))
-        left.add(rangeCombo)
-        left.add(refreshBtn)
-        filterRow.add(left, BorderLayout.WEST)
-        filterRow.add(statusLabel, BorderLayout.CENTER)
+        filterRow.add(JBLabel("账号"))
+        accountCombo.preferredSize = Dimension(JBUI.scale(260), accountCombo.preferredSize.height)
+        filterRow.add(accountCombo)
+        filterRow.add(JBLabel("时间"))
+        filterRow.add(rangeCombo)
+        filterRow.add(refreshBtn)
+
+        val top = DialogTopBar("CodeBuddy 消耗明细", "", filterRow)
+        topBar = top
 
         val summary = JPanel()
         summary.layout = BoxLayout(summary, BoxLayout.Y_AXIS)
         summary.isOpaque = false
-        summary.border = JBUI.Borders.emptyTop(8)
+        summary.border = JBUI.Borders.empty(8, 12)
         summary.add(summaryTitle)
-        summary.add(Box.createVerticalStrut(JBUI.scale(3)))
+        summary.add(Box.createVerticalStrut(JBUI.scale(AccountUiSpacing.xs)))
         summary.add(summaryModels)
+        summary.add(Box.createVerticalStrut(JBUI.scale(2)))
+        summary.add(modelQuotaPanel)
 
-        top.add(filterRow)
-        top.add(summary)
+        val topBox = JPanel()
+        topBox.layout = BoxLayout(topBox, BoxLayout.Y_AXIS)
+        topBox.background = AccountUiColors.panelBg
+        topBox.add(top)
+        topBox.add(summary)
 
         // ---------- 中部：明细表 ----------
-        table.rowHeight = JBUI.scale(24)
-        table.showHorizontalLines = false
-        table.showVerticalLines = false
-        table.intercellSpacing = Dimension(0, 0)
         table.fillsViewportHeight = true
         table.autoResizeMode = JTable.AUTO_RESIZE_LAST_COLUMN
         table.tableHeader.reorderingAllowed = false
+        AccountTableStyle.apply(table, intArrayOf(150, 100, 160, 90, 140))
 
-        val widths = intArrayOf(150, 100, 160, 90, 140)
-        for (i in widths.indices) {
-            table.columnModel.getColumn(i).preferredWidth = JBUI.scale(widths[i])
-        }
         // 积分右对齐
         table.columnModel.getColumn(COL_CREDIT).cellRenderer = object : DefaultTableCellRenderer() {
             override fun getTableCellRendererComponent(
@@ -190,7 +198,7 @@ class UsageDetailDialog(private val project: Project) : DialogWrapper(project) {
         pager.add(pagerLeft, BorderLayout.WEST)
         pager.add(pagerRight, BorderLayout.EAST)
 
-        root.add(top, BorderLayout.NORTH)
+        root.add(topBox, BorderLayout.NORTH)
         root.add(scroll, BorderLayout.CENTER)
         root.add(pager, BorderLayout.SOUTH)
         return root
@@ -270,7 +278,7 @@ class UsageDetailDialog(private val project: Project) : DialogWrapper(project) {
 
         ApplicationManager.getApplication().executeOnPooledThread {
             val page = try {
-                library.fetchUsage(choice.key, startTime, endTime)
+                library.fetchUsage(requireNotNull(choice.key) { "账号 key 为空" }, startTime, endTime)
             } catch (t: Throwable) {
                 UsagePage(error = t.message ?: t.javaClass.simpleName)
             }
@@ -318,6 +326,7 @@ class UsageDetailDialog(private val project: Project) : DialogWrapper(project) {
                     .take(4)
                     .joinToString("　·　") { it.text() }
             }
+            updateModelQuotaLabel(choice.key)
             renderPage()
         } catch (t: Throwable) {
             records = emptyList()
@@ -328,7 +337,53 @@ class UsageDetailDialog(private val project: Project) : DialogWrapper(project) {
         }
     }
 
+    /** 当前选中账号的 key */
+    private fun currentAccountKey(): String? = (accountCombo.selectedItem as? AccountChoice)?.key
+
+    /** 顶栏副标题跟随状态文案 */
+    private fun syncTopBar() {
+        if (!::topBar.isInitialized) return
+        val status = statusLabel.text.ifBlank { summaryTitle.text }
+        topBar.update("CodeBuddy 消耗明细", status)
+    }
+
+    /**
+     * 顶部展示目标模型（如 deepseek）的积分限额状态。
+     *
+     * @param accountKey 指定账号则只统计该账号；null 表示展示全部账号合计
+     */
+    private fun updateModelQuotaLabel(accountKey: String?) {
+        val st = ModelQuotaTracker.state()
+        modelQuotaPanel.removeAll()
+        if (!st.enabled || st.rules.isEmpty()) {
+            modelQuotaPanel.revalidate()
+            modelQuotaPanel.repaint()
+            return
+        }
+        for (rule in st.rules) {
+            if (rule.limit <= 0) continue
+            val name = rule.keyword.ifBlank { "目标模型" }
+            val acc = rule.accounts.firstOrNull { it.accountKey == accountKey }
+            val used = acc?.used ?: rule.used
+            val remain = (rule.limit - used).coerceAtLeast(0.0)
+            val exceed = used >= rule.limit
+            modelQuotaPanel.add(JBLabel(buildString {
+                append("$name ${st.periodLabel}积分：")
+                append("${formatCredit(used)} / ${formatCredit(rule.limit)}")
+                append(
+                    if (exceed) "（已达限额，CodeBuddy 侧将不可用）"
+                    else "（剩余 ${formatCredit(remain)}）"
+                )
+            }).apply {
+                foreground = if (exceed) AccountUiColors.danger else AccountUiColors.textMuted
+            })
+        }
+        modelQuotaPanel.revalidate()
+        modelQuotaPanel.repaint()
+    }
+
     private fun renderPage() {
+        syncTopBar()
         val count = pageCount()
         if (pageIndex > count) pageIndex = count
         val from = (pageIndex - 1) * pageSize
@@ -358,11 +413,6 @@ class UsageDetailDialog(private val project: Project) : DialogWrapper(project) {
     // ---------------------------------------------------------------
     // 组件
     // ---------------------------------------------------------------
-
-    /** 账号下拉项 */
-    private data class AccountChoice(val key: String, val label: String) {
-        override fun toString(): String = label
-    }
 
     /** 时间范围下拉项，[days] = 0 表示今天 */
     private class RangeChoice(val label: String, private val days: Int) {

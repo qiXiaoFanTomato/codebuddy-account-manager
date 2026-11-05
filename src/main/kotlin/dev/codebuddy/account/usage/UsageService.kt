@@ -54,6 +54,8 @@ object UsageService {
     /**
      * 查询指定 accessToken 在 [startTime, endTime] 内的请求消耗。
      * 网络/解析失败时返回带 error 的 UsagePage，不抛异常。
+     *
+     * @param pageNum 页码，从 1 开始
      */
     fun fetch(
         domain: String,
@@ -61,6 +63,7 @@ object UsageService {
         startTime: String,
         endTime: String,
         pageSize: Int = MAX_PAGE_SIZE,
+        pageNum: Int = 1,
     ): UsagePage {
         if (accessToken.isBlank()) return UsagePage(error = "accessToken 为空")
 
@@ -69,7 +72,7 @@ object UsageService {
         val body = JsonObject().apply {
             addProperty("startTime", startTime)
             addProperty("endTime", endTime)
-            addProperty("pageNum", 1)
+            addProperty("pageNum", pageNum.coerceAtLeast(1))
             addProperty("pageSize", pageSize.coerceIn(1, MAX_PAGE_SIZE))
         }.toString()
 
@@ -94,6 +97,40 @@ object UsageService {
             log.warn("请求消耗查询失败: $url", t)
             UsagePage(error = t.message ?: t.javaClass.simpleName)
         }
+    }
+
+    /**
+     * 翻页拉取区间内的全部消耗记录（用于周期内按模型聚合统计）。
+     *
+     * 最多拉 [maxPages] 页，避免超大区间把接口打爆；
+     * 首页失败直接返回错误，中途失败则保留已取到的数据并带上 error。
+     */
+    fun fetchAll(
+        domain: String,
+        accessToken: String,
+        startTime: String,
+        endTime: String,
+        pageSize: Int = MAX_PAGE_SIZE,
+        maxPages: Int = 20,
+    ): UsagePage {
+        val records = ArrayList<UsageRecord>()
+        var total = 0
+        var firstError: String? = null
+
+        for (page in 1..maxPages.coerceAtLeast(1)) {
+            val result = fetch(domain, accessToken, startTime, endTime, pageSize, page)
+            if (result.error != null) {
+                if (records.isEmpty()) return result
+                firstError = result.error
+                break
+            }
+            total = maxOf(total, result.total)
+            records.addAll(result.records)
+            if (result.records.isEmpty()) break
+            if (records.size >= result.total) break
+        }
+
+        return UsagePage(records, total, firstError)
     }
 
     private fun parse(body: String): UsagePage {

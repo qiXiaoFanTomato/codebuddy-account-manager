@@ -148,7 +148,7 @@ class AccountCardList : JPanel() {
 
     private fun sectionHeader(text: String): JLabel = JLabel(text).apply {
         alignmentX = Component.LEFT_ALIGNMENT
-        font = font.deriveFont(Font.BOLD, JBUI.scale(11).toFloat())
+        font = font.deriveFont(Font.BOLD, AccountUiType.label)
         foreground = AccountUiColors.textMuted
         // 左侧 3px 强调线，替代纯文字标题，视觉上区分分组
         border = JBUI.Borders.compound(

@@ -157,6 +157,31 @@ class AccountLibrary {
         )
     }
 
+    /**
+     * 翻页查询指定账号在 [startTime, endTime] 内的全部请求消耗。
+     * 用于周期内按模型聚合统计（模型积分限额）；最多拉 [maxPages] 页。
+     * key 为 accountKey；失败信息通过 UsagePage.error 返回，不抛异常。
+     */
+    fun fetchUsageAll(
+        accountKey: String,
+        startTime: String,
+        endTime: String,
+        maxPages: Int = 20,
+    ): dev.codebuddy.account.usage.UsagePage {
+        val snapshot = listSaved().firstOrNull { it.accountKey == accountKey }
+            ?: return dev.codebuddy.account.usage.UsagePage(error = "账号不在账号库中，请先导入")
+        val token = extractAccessToken(snapshot.rawContent)
+            ?: return dev.codebuddy.account.usage.UsagePage(error = "凭据快照中缺少 accessToken")
+        return dev.codebuddy.account.usage.UsageService.fetchAll(
+            domain = snapshot.domain,
+            accessToken = token,
+            startTime = startTime,
+            endTime = endTime,
+            pageSize = dev.codebuddy.account.usage.UsageService.MAX_PAGE_SIZE,
+            maxPages = maxPages,
+        )
+    }
+
     /** 配额过低时发通知 */
     private fun fireQuotaAlert(snapshot: CredentialSnapshot, summary: dev.codebuddy.account.quota.QuotaSummary) {
         try {

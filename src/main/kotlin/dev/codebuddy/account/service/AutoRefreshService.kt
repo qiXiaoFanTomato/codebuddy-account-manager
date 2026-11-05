@@ -76,6 +76,10 @@ class AutoRefreshService : Disposable {
                 log.info("自动刷新配额完成：成功 $ok 个，失败 $fail 个")
                 AccountEvents.fireQuotaChanged()
                 autoSwitchIfNeeded()
+                // 模型积分限额统计（如 DeepSeek 200 积分限制），用于达标提醒
+                if (AccountSettings.getInstance().modelQuotaEnabled) {
+                    dev.codebuddy.account.usage.ModelQuotaTracker.refreshAsync()
+                }
             } catch (e: Exception) {
                 log.warn("自动刷新配额失败", e)
             } finally {

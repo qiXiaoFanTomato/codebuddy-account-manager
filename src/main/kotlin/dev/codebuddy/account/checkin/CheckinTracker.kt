@@ -96,60 +96,13 @@ object CheckinTracker {
         val today = LocalDate.now()
 
         ApplicationManager.getApplication().executeOnPooledThread {
-            val settings = AccountSettings.getInstance()
-            val library = AccountLibrary.getInstance()
-            val saved = try {
-                library.listSaved()
+            val summary = try {
+                submitAll(today)
             } catch (t: Throwable) {
-                log.warn("读取账号库失败", t)
-                emptyList()
-            }
-
-            var success = 0
-            var already = 0
-            var failed = 0
-            var credit = 0.0
-            val firstErrors = ArrayList<String>()
-            val tokens = library.accessTokenMap()
-
-            for (s in saved) {
-                val token = tokens[s.accountKey]
-                if (token == null) {
-                    failed++
-                    firstErrors.add("${s.displayName}：快照中无 accessToken")
-                    continue
-                }
-                val r = CheckinService.submit(
-                    domain = s.domain,
-                    accessToken = token,
-                    uid = s.uid,
-                    path = settings.checkinSubmitPath,
-                )
-                when {
-                    r.error != null -> {
-                        failed++
-                        firstErrors.add("${s.displayName}：${r.error}")
-                    }
-
-                    r.already -> already++
-                    else -> {
-                        success++
-                        credit += r.credit ?: 0.0
-                    }
-                }
-            }
-
-            // 签到后再查一次状态，让界面与服务端一致
-            val items = loadStatuses()
-            publish(today, items)
-            synchronized(lock) { running = false }
-
-            val summary = buildString {
-                append("成功 $success 个")
-                if (already > 0) append("，此前已签到 $already 个")
-                if (failed > 0) append("，失败 $failed 个")
-                if (credit > 0) append("，共获得 ${formatCredit(credit)} credits")
-                if (firstErrors.isNotEmpty()) append("（${firstErrors.take(2).joinToString("；")}）")
+                log.warn("一键签到失败", t)
+                // 异常也要复位 running，否则界面会一直停在「正在执行签到…」
+                finish(today, runCatching { loadStatuses() }.getOrDefault(state.items))
+                "签到失败：${t.message ?: t.javaClass.simpleName}"
             }
 
             onDone?.let { cb ->
@@ -162,6 +115,69 @@ object CheckinTracker {
                 }, ModalityState.any())
             }
         }
+    }
+
+    /** 对所有账号执行签到并刷新状态，返回汇总文案 */
+    private fun submitAll(today: LocalDate): String {
+        val settings = AccountSettings.getInstance()
+        val library = AccountLibrary.getInstance()
+        val saved = try {
+            library.listSaved()
+        } catch (t: Throwable) {
+            log.warn("读取账号库失败", t)
+            emptyList()
+        }
+
+        var success = 0
+        var already = 0
+        var failed = 0
+        var credit = 0.0
+        val firstErrors = ArrayList<String>()
+        val tokens = library.accessTokenMap()
+
+        for (s in saved) {
+            val token = tokens[s.accountKey]
+            if (token == null) {
+                failed++
+                firstErrors.add("${s.displayName}：快照中无 accessToken")
+                continue
+            }
+            val r = CheckinService.submit(
+                domain = s.domain,
+                accessToken = token,
+                uid = s.uid,
+                path = settings.checkinSubmitPath,
+            )
+            when {
+                r.error != null -> {
+                    failed++
+                    firstErrors.add("${s.displayName}：${r.error}")
+                }
+
+                r.already -> already++
+                else -> {
+                    success++
+                    credit += r.credit ?: 0.0
+                }
+            }
+        }
+
+        // 签到后再查一次状态，让界面与服务端一致
+        finish(today, loadStatuses())
+
+        return buildString {
+            append("成功 $success 个")
+            if (already > 0) append("，此前已签到 $already 个")
+            if (failed > 0) append("，失败 $failed 个")
+            if (credit > 0) append("，共获得 ${formatCredit(credit)} credits")
+            if (firstErrors.isNotEmpty()) append("（${firstErrors.take(2).joinToString("；")}）")
+        }
+    }
+
+    /** 结束执行：先复位 running 再发布状态，避免界面停在「正在执行签到…」 */
+    private fun finish(today: LocalDate, items: List<AccountCheckin>) {
+        synchronized(lock) { running = false }
+        publish(today, items)
     }
 
     // ---------------------------------------------------------------
@@ -193,16 +209,16 @@ object CheckinTracker {
     }
 
     private fun publish(today: LocalDate, items: List<AccountCheckin>) {
-        val next = State(
-            date = today,
-            items = items,
-            fetchedAt = System.currentTimeMillis(),
-            loading = false,
-            running = state.running,
-        )
         val pending: List<() -> Unit>
         synchronized(lock) {
-            state = next
+            // running 必须在锁内读取，否则一键签到结束后状态可能仍停在执行中
+            state = State(
+                date = today,
+                items = items,
+                fetchedAt = System.currentTimeMillis(),
+                loading = false,
+                running = running,
+            )
             loading = false
             pending = waiters.toList()
             waiters.clear()

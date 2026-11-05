@@ -51,6 +51,7 @@ class HistoryDialog(
     private val headerLabel = JBLabel("正在扫描历史对话…")
     private val searchField = SearchTextField(false)
     private val accountCombo = JComboBox<AccountChoice>()
+    private lateinit var topBar: DialogTopBar
     private val loadingLabel = JBLabel("")
     private val progressBar = JProgressBar().apply {
         isIndeterminate = true
@@ -114,6 +115,14 @@ class HistoryDialog(
         split.dividerLocation = 460
         split.resizeWeight = 0.38
 
+        // 顶部：标题 + 账号筛选（统一顶栏样式）
+        accountCombo.preferredSize = Dimension(JBUI.scale(240), accountCombo.preferredSize.height)
+        val accountRow = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(6), 0)).apply { isOpaque = false }
+        accountRow.add(JBLabel("账号"))
+        accountRow.add(accountCombo)
+        val top = DialogTopBar("CodeBuddy 历史对话", "", accountRow)
+        topBar = top
+
         // 左侧：筛选 + 列表
         val left = JPanel(BorderLayout())
 
@@ -124,14 +133,7 @@ class HistoryDialog(
         val searchRow = JPanel(BorderLayout())
         searchRow.add(searchField, BorderLayout.CENTER)
 
-        val accountRow = JPanel(BorderLayout(6, 0))
-        accountRow.border = JBUI.Borders.emptyTop(6)
-        accountCombo.preferredSize = Dimension(JBUI.scale(260), accountCombo.preferredSize.height)
-        accountRow.add(JBLabel("账号:"), BorderLayout.WEST)
-        accountRow.add(accountCombo, BorderLayout.CENTER)
-
         filterPanel.add(searchRow)
-        filterPanel.add(accountRow)
 
         left.add(filterPanel, BorderLayout.NORTH)
         left.add(JBScrollPane(convList), BorderLayout.CENTER)
@@ -151,7 +153,11 @@ class HistoryDialog(
         right.add(buildActionBar(), BorderLayout.SOUTH)
         split.rightComponent = right
 
-        return split
+        val root = JPanel(BorderLayout())
+        root.background = AccountUiColors.panelBg
+        root.add(top, BorderLayout.NORTH)
+        root.add(split, BorderLayout.CENTER)
+        return root
     }
 
     private fun buildActionBar(): JPanel {
@@ -162,11 +168,8 @@ class HistoryDialog(
         return bar
     }
 
-    private fun iconButton(text: String, action: () -> Unit): JButton = JButton(text).apply {
-        isFocusPainted = false
-        margin = JBUI.insets(3, 8)
-        addActionListener { action() }
-    }
+    private fun iconButton(text: String, action: () -> Unit): JComponent =
+        JellyButton(text, JellyButtonVariant.SECONDARY, null, text, action)
 
     override fun createActions(): Array<Action> = arrayOf(cancelAction)
 
@@ -222,6 +225,7 @@ class HistoryDialog(
                     } else {
                         loadingLabel.text = "共 ${list.size} 个会话（耗时 $cost ms）"
                     }
+                    syncTopBar()
                 } catch (t: Throwable) {
                     headerLabel.text = "渲染历史会话失败"
                     loadingLabel.text = t.message ?: t.javaClass.simpleName
@@ -246,7 +250,7 @@ class HistoryDialog(
 
     private fun applyFilter() {
         filterText = searchField.text.trim()
-        val accountFilter = (accountCombo.selectedItem as? AccountChoice)?.uid
+        val accountFilter = (accountCombo.selectedItem as? AccountChoice)?.key
 
         val filtered = allConversations.filter { conv ->
             val label = accountLabels[conv.sourceUid] ?: conv.sourceUid
@@ -271,6 +275,13 @@ class HistoryDialog(
 
         loadingLabel.text = "共 ${allConversations.size} 个会话" +
             if (filterText.isNotEmpty() || accountFilter != null) "，匹配 ${filtered.size} 个" else ""
+        syncTopBar()
+    }
+
+    /** 顶栏副标题跟随扫描 / 筛选状态 */
+    private fun syncTopBar() {
+        if (!::topBar.isInitialized) return
+        topBar.update("CodeBuddy 历史对话", loadingLabel.text)
     }
 
     private fun groupOf(lastMessageAt: String): String {
@@ -409,7 +420,7 @@ class HistoryDialog(
 
                 is String -> {
                     c.text = value
-                    c.font = c.font.deriveFont(Font.BOLD, JBUI.scale(11).toFloat())
+                    c.font = c.font.deriveFont(Font.BOLD, AccountUiType.label)
                     c.foreground = AccountUiColors.textMuted
                     c.border = JBUI.Borders.empty(8, 6, 2, 6)
                 }
@@ -419,9 +430,6 @@ class HistoryDialog(
     }
 
     /** 账号筛选项 */
-    private data class AccountChoice(val uid: String?, val label: String) {
-        override fun toString(): String = label
-    }
 
     companion object {
         /** 打开对话框；数据异步加载，因此始终返回 */

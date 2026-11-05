@@ -19,6 +19,9 @@ class CodeBuddyAccountStartup : ProjectActivity {
         if (app.isUnitTestMode || app.isHeadlessEnvironment) return
 
         try {
+            // 0.1 恢复上次选择的界面色调（主色相关字段在启动时就位）
+            dev.codebuddy.account.ui.AccountUiColors.loadPersistedTheme()
+
             // 0. 检查上次切换是否被 IDEA 覆盖
             checkPendingSwitch()
 

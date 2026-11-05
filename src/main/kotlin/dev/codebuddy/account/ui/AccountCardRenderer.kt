@@ -36,9 +36,9 @@ class AccountCard(
 
     init {
         isOpaque = false
-        preferredSize = Dimension(0, JBUI.scale(104))
-        maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(104))
-        border = JBUI.Borders.empty(6, 10)
+        preferredSize = Dimension(0, JBUI.scale(108))
+        maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(108))
+        border = JBUI.Borders.empty(AccountUiSpacing.sm, AccountUiSpacing.md)
     }
 
     override fun paintComponent(g: Graphics) {
@@ -108,7 +108,7 @@ class AccountCard(
             )
             g2.fillOval(ax, ay, d, d)
             g2.color = Color.WHITE
-            g2.font = font.deriveFont(Font.BOLD, JBUI.scale(17).toFloat())
+            g2.font = font.deriveFont(Font.BOLD, AccountUiType.scaled(16))
             val fmInitial = g2.fontMetrics
             val tw = fmInitial.stringWidth(initial)
             g2.drawString(initial, ax + (d - tw) / 2, ay + (d - fmInitial.height) / 2 + fmInitial.ascent)
@@ -119,7 +119,7 @@ class AccountCard(
             var y = (h - blockH) / 2 + JBUI.scale(14)
 
             // ---- 第一行：名称 + 当前徽标 ----
-            g2.font = font.deriveFont(Font.BOLD, JBUI.scale(13).toFloat())
+            g2.font = font.deriveFont(Font.BOLD, AccountUiType.title)
             val fmName = g2.fontMetrics
             val badgeW = JBUI.scale(46)
             val badgeGap = JBUI.scale(8)
@@ -142,14 +142,14 @@ class AccountCard(
                     )
                 )
                 g2.color = Color.WHITE
-                g2.font = font.deriveFont(Font.BOLD, JBUI.scale(10).toFloat())
+                g2.font = font.deriveFont(Font.BOLD, AccountUiType.caption)
                 g2.drawString("当前", badgeX + JBUI.scale(11), y)
             }
 
             // ---- 第二行：类型标签 + 手机号 + 认证域 ----
             y += JBUI.scale(21)
             var x = textX
-            g2.font = font.deriveFont(Font.PLAIN, JBUI.scale(11).toFloat())
+            g2.font = font.deriveFont(Font.PLAIN, AccountUiType.label)
             val fmBody = g2.fontMetrics
             val maxX = w - JBUI.scale(14)
 

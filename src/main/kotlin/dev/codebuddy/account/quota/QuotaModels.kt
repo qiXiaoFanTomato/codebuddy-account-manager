@@ -59,6 +59,9 @@ data class QuotaPackage(
     }
 }
 
+/** 分组摘要的一段：短名 + 剩余 + 总量（供状态栏按数值分段渲染） */
+data class QuotaDetailPart(val name: String, val remain: Double, val size: Double)
+
 /** 一个套餐分组（同一 PackageName 下的所有细项） */
 data class QuotaGroup(
     val name: String,
@@ -134,14 +137,20 @@ data class QuotaSummary(
         return "剩余 ${QuotaPackage.fmt(totalRemain)} / ${QuotaPackage.fmt(totalSize)} $unit"
     }
 
+    /** 各套餐摘要的分段数据，供状态栏按数值分段渲染（与 [detailText] 同源） */
+    fun detailParts(limit: Int = 2): List<QuotaDetailPart> {
+        if (error != null || packages.isEmpty()) return emptyList()
+        return groups().take(limit).map { QuotaDetailPart(shortGroupName(it.name), it.remain, it.size) }
+    }
+
     /** 细分摘要，如 "体验版 0/500 · 赠送包 3496/4019" */
     fun detailText(limit: Int = 2): String {
         if (error != null || packages.isEmpty()) return summaryText()
-        val parts = groups().take(limit).map { g ->
-            "${shortGroupName(g.name)} ${QuotaPackage.fmt(g.remain)}/${QuotaPackage.fmt(g.size)}"
-        }
+        val parts = detailParts(limit)
         val more = if (groups().size > limit) " …" else ""
-        return parts.joinToString(" · ") + more
+        return parts.joinToString(" · ") {
+            "${it.name} ${QuotaPackage.fmt(it.remain)}/${QuotaPackage.fmt(it.size)}"
+        } + more
     }
 
     private fun shortGroupName(name: String): String =

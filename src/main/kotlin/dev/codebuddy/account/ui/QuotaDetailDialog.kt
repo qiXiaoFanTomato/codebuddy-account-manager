@@ -33,7 +33,9 @@ class QuotaDetailDialog(private val project: Project) : DialogWrapper(project) {
     private val overviewBar = QuotaBar(0.0)
     private val bodyPanel = JPanel()
     private val statusLabel = JBLabel("")
-    private val refreshBtn = JButton("刷新额度")
+    private val refreshBtn: JellyButton =
+        JellyButton("刷新额度", JellyButtonVariant.PRIMARY, null, "重新查询额度") { doRefresh() }
+    private lateinit var topBar: DialogTopBar
 
     private var suppressCombo = false
 
@@ -41,18 +43,16 @@ class QuotaDetailDialog(private val project: Project) : DialogWrapper(project) {
         title = "CodeBuddy 额度明细"
         setSize(1000, 780)
 
-        overviewTitle.font = overviewTitle.font.deriveFont(Font.BOLD, JBUI.scale(14).toFloat())
+        overviewTitle.font = overviewTitle.font.deriveFont(Font.BOLD, AccountUiType.title)
         overviewSub.foreground = AccountUiColors.textMuted
         statusLabel.foreground = AccountUiColors.textMuted
 
         accountCombo.addActionListener {
             if (!suppressCombo) render()
         }
-        refreshBtn.addActionListener { doRefresh() }
-
         bodyPanel.layout = BoxLayout(bodyPanel, BoxLayout.Y_AXIS)
         bodyPanel.background = AccountUiColors.panelBg
-        bodyPanel.border = JBUI.Borders.empty(10, 12)
+        bodyPanel.border = JBUI.Borders.empty(AccountUiSpacing.cardGap, AccountUiSpacing.cardPadH)
 
         init()
         reload()
@@ -62,42 +62,16 @@ class QuotaDetailDialog(private val project: Project) : DialogWrapper(project) {
         val root = JPanel(BorderLayout())
         root.background = AccountUiColors.panelBg
 
-        // 顶部：账号选择 + 总览
-        val top = JPanel()
-        top.layout = BoxLayout(top, BoxLayout.Y_AXIS)
-        top.background = AccountUiColors.surfaceBg
-        top.border = JBUI.Borders.compound(
-            JBUI.Borders.customLine(AccountUiColors.border, 0, 0, 1, 0),
-            JBUI.Borders.empty(8, 10)
-        )
+        // 顶部：账号选择 + 状态（统一顶栏样式）
+        val filterRow = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(6), 0))
+        filterRow.isOpaque = false
+        filterRow.add(JBLabel("账号"))
+        accountCombo.preferredSize = Dimension(JBUI.scale(280), accountCombo.preferredSize.height)
+        filterRow.add(accountCombo)
+        filterRow.add(refreshBtn)
 
-        val accountRow = JPanel(BorderLayout(8, 0))
-        accountRow.isOpaque = false
-        val left = JPanel(FlowLayout(FlowLayout.LEFT, 6, 0))
-        left.isOpaque = false
-        left.add(JBLabel("账号:"))
-        accountCombo.preferredSize = Dimension(JBUI.scale(300), accountCombo.preferredSize.height)
-        left.add(accountCombo)
-        left.add(refreshBtn)
-        accountRow.add(left, BorderLayout.WEST)
-        accountRow.add(statusLabel, BorderLayout.CENTER)
-
-        val overview = JPanel()
-        overview.layout = BoxLayout(overview, BoxLayout.Y_AXIS)
-        overview.isOpaque = false
-        overview.border = JBUI.Borders.emptyTop(8)
-        overview.add(overviewTitle)
-        overview.add(Box.createVerticalStrut(JBUI.scale(4)))
-        overview.add(overviewSub)
-
-        val barRow = JPanel(BorderLayout(8, 0))
-        barRow.isOpaque = false
-        barRow.border = JBUI.Borders.emptyTop(6)
-        barRow.add(overviewBar, BorderLayout.CENTER)
-
-        top.add(accountRow)
-        top.add(overview)
-        top.add(barRow)
+        val top = DialogTopBar("CodeBuddy 额度明细", "", filterRow)
+        topBar = top
 
         val scroll = JBScrollPane(bodyPanel).apply {
             border = JBUI.Borders.empty()
@@ -194,8 +168,14 @@ class QuotaDetailDialog(private val project: Project) : DialogWrapper(project) {
         }
         overviewBar.percent = percent
 
+        if (::topBar.isInitialized) {
+            topBar.update("CodeBuddy 额度明细", statusLabel.text.ifBlank { overviewSub.text })
+        }
+
         // 卡片：当前账号置顶，其余按剩余比例倒序
         bodyPanel.removeAll()
+        bodyPanel.add(overviewCard())
+        bodyPanel.add(Box.createVerticalStrut(JBUI.scale(AccountUiSpacing.cardGap)))
         if (cards.isEmpty()) {
             bodyPanel.add(hintLabel("账号库为空，先导入账号。"))
         } else {
@@ -208,7 +188,7 @@ class QuotaDetailDialog(private val project: Project) : DialogWrapper(project) {
                 val card = QuotaAccountCard(snapshot, summary, snapshot.accountKey == activeKey)
                 card.alignmentX = Component.LEFT_ALIGNMENT
                 bodyPanel.add(card)
-                bodyPanel.add(Box.createVerticalStrut(JBUI.scale(10)))
+                bodyPanel.add(Box.createVerticalStrut(JBUI.scale(AccountUiSpacing.cardGap)))
             }
             bodyPanel.add(Box.createVerticalGlue())
         }
@@ -250,13 +230,25 @@ class QuotaDetailDialog(private val project: Project) : DialogWrapper(project) {
         border = JBUI.Borders.empty(16, 6)
     }
 
-    private fun num(v: Double): String =
-        if (v == v.toLong().toDouble()) String.format("%,d", v.toLong()) else String.format("%,.2f", v)
+    /** 概览卡：总览标题 + 说明 + 总进度条，作为内容区第一屏 */
+    private fun overviewCard(): JComponent {
+        val card = object : RoundedCard(
+            AccountUiColors.cardBg, AccountUiColors.border, AccountUiRadius.card, elevated = true
+        ) {}
+        card.alignmentX = Component.LEFT_ALIGNMENT
+        card.border = JBUI.Borders.empty(AccountUiSpacing.cardPadV, AccountUiSpacing.cardPadH)
 
-    /** 账号下拉项 */
-    private data class AccountChoice(val key: String?, val label: String) {
-        override fun toString(): String = label
+        card.add(SectionHeader("额度总览"))
+        card.add(Box.createVerticalStrut(JBUI.scale(AccountUiSpacing.sm)))
+        card.add(overviewTitle)
+        card.add(Box.createVerticalStrut(JBUI.scale(2)))
+        card.add(overviewSub)
+        card.add(Box.createVerticalStrut(JBUI.scale(AccountUiSpacing.sm)))
+        card.add(overviewBar)
+        return card
     }
+
+    private fun num(v: Double): String = AccountUiKit.formatNumber(v)
 
     companion object {
         fun show(project: Project) {

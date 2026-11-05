@@ -24,6 +24,7 @@ import java.awt.datatransfer.StringSelection
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import java.awt.geom.RoundRectangle2D
+import java.nio.file.Files
 import java.time.DayOfWeek
 import java.time.LocalDate
 import java.time.temporal.TemporalAdjusters
@@ -47,12 +48,16 @@ class HistoryReportDialog(
     private val accountLabels: Map<String, String>,
 ) : DialogWrapper(project) {
 
-    private val dayBtn = JToggleButton("今日日报", true)
-    private val weekBtn = JToggleButton("本周周报", false)
+    private val rangeTabs = SegmentedTabs(listOf("今日日报", "本周周报"), 0) { onRangeChanged() }
     private val dimCombo = JComboBox<ReportDimension>()
-    private val refreshBtn = JButton("重新统计")
-    private val genBtn = JButton("用 CodeBuddy 生成")
-    private val copyBtn = JButton("复制 Markdown")
+    private val refreshBtn: JComponent =
+        JellyButton("重新统计", JellyButtonVariant.SECONDARY, null, "重新扫描本机历史会话") { reload(forceScan = true) }
+    private val genBtn: JComponent = JellyButton(
+        "用 CodeBuddy 生成", JellyButtonVariant.PRIMARY, null,
+        "把统计事实写成提示词复制到剪贴板，并打开 CodeBuddy 对话窗口",
+    ) { generateInCodeBuddy() }
+    private val copyBtn: JComponent =
+        JellyButton("复制 Markdown", JellyButtonVariant.SECONDARY, null, "复制当前报告") { copyMarkdown() }
     private val statusLabel = JBLabel("准备中…")
     private val titleLabel = JBLabel("")
     private val searchField = SearchTextField(false)
@@ -64,6 +69,7 @@ class HistoryReportDialog(
     }
     private val tableModel = DetailTableModel()
     private val table = JBTable(tableModel)
+    private lateinit var topBar: DialogTopBar
 
     private var report: HistoryReport? = null
 
@@ -83,20 +89,11 @@ class HistoryReportDialog(
         title = "CodeBuddy 对话日报 / 周报"
         setSize(1060, 720)
 
-        titleLabel.font = titleLabel.font.deriveFont(Font.BOLD, JBUI.scale(14).toFloat())
+        titleLabel.font = titleLabel.font.deriveFont(Font.BOLD, AccountUiType.scaled(15))
         titleLabel.foreground = AccountUiColors.textPrimary
         titleLabel.toolTipText = "会话按最后一条消息的时间归入当天；周报为本周一至今天"
         statusLabel.foreground = AccountUiColors.textMuted
-        statusLabel.font = statusLabel.font.deriveFont(Font.PLAIN, JBUI.scale(11).toFloat())
-
-        ButtonGroup().apply {
-            add(dayBtn)
-            add(weekBtn)
-        }
-        dayBtn.isFocusPainted = false
-        weekBtn.isFocusPainted = false
-        dayBtn.addActionListener { onRangeChanged() }
-        weekBtn.addActionListener { onRangeChanged() }
+        statusLabel.font = statusLabel.font.deriveFont(Font.PLAIN, AccountUiType.label)
 
         dimCombo.renderer = object : DefaultListCellRenderer() {
             override fun getListCellRendererComponent(
@@ -130,13 +127,6 @@ class HistoryReportDialog(
             override fun changedUpdate(e: javax.swing.event.DocumentEvent?) = render(report)
         })
 
-        refreshBtn.isFocusPainted = false
-        refreshBtn.addActionListener { reload(forceScan = true) }
-        genBtn.isFocusPainted = false
-        genBtn.toolTipText = "把统计事实写成提示词复制到剪贴板，并打开 CodeBuddy 对话窗口"
-        genBtn.addActionListener { generateInCodeBuddy() }
-        copyBtn.isFocusPainted = false
-        copyBtn.addActionListener { copyMarkdown() }
 
         init()
         onRangeChanged()
@@ -147,21 +137,12 @@ class HistoryReportDialog(
         root.background = AccountUiColors.panelBg
 
         // ---------- 顶部：区间 / 维度 / 概览 ----------
-        val top = JPanel()
-        top.layout = BoxLayout(top, BoxLayout.Y_AXIS)
-        top.background = AccountUiColors.surfaceBg
-        top.border = JBUI.Borders.compound(
-            JBUI.Borders.customLine(AccountUiColors.border, 0, 0, 1, 0),
-            JBUI.Borders.empty(8, 10)
-        )
-
         val controlRow = JPanel(BorderLayout(JBUI.scale(8), 0))
         controlRow.isOpaque = false
         val left = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(6), 0)).apply { isOpaque = false }
-        left.add(dayBtn)
-        left.add(weekBtn)
+        left.add(rangeTabs)
         left.add(Box.createHorizontalStrut(JBUI.scale(6)))
-        left.add(JBLabel("维度:"))
+        left.add(JBLabel("维度"))
         left.add(dimCombo)
         left.add(refreshBtn)
         controlRow.add(left, BorderLayout.WEST)
@@ -170,35 +151,38 @@ class HistoryReportDialog(
         right.add(copyBtn)
         controlRow.add(right, BorderLayout.EAST)
 
-        val titleRow = JPanel(BorderLayout(JBUI.scale(8), 0)).apply {
-            isOpaque = false
-            border = JBUI.Borders.emptyTop(8)
-        }
-        titleRow.add(titleLabel, BorderLayout.WEST)
-        titleRow.add(statusLabel, BorderLayout.EAST)
+        val top = DialogTopBar("CodeBuddy 对话日报 / 周报", "", controlRow)
+        topBar = top
 
         val kpiWrap = JPanel(BorderLayout()).apply {
             isOpaque = false
-            border = JBUI.Borders.emptyTop(8)
+            border = JBUI.Borders.empty(8, 12)
             add(kpiPanel, BorderLayout.CENTER)
         }
 
-        top.add(controlRow)
-        top.add(titleRow)
-        top.add(kpiWrap)
+        val topBox = JPanel()
+        topBox.layout = BoxLayout(topBox, BoxLayout.Y_AXIS)
+        topBox.background = AccountUiColors.panelBg
+        topBox.add(top)
+        topBox.add(kpiWrap)
 
         // ---------- 中部：维度分布 + 明细表 ----------
-        table.rowHeight = JBUI.scale(24)
-        table.showHorizontalLines = false
-        table.showVerticalLines = false
-        table.intercellSpacing = Dimension(0, 0)
         table.fillsViewportHeight = true
         table.autoResizeMode = JTable.AUTO_RESIZE_LAST_COLUMN
         table.tableHeader.reorderingAllowed = false
-        val widths = intArrayOf(300, 150, 120, 90, 70)
-        for (i in widths.indices) {
-            table.columnModel.getColumn(i).preferredWidth = JBUI.scale(widths[i])
-        }
+        AccountTableStyle.apply(table, intArrayOf(300, 150, 120, 90, 70))
+        table.toolTipText = "双击「项目」列可在资源管理器中打开项目目录"
+        // 双击「项目」列打开对应项目目录
+        table.addMouseListener(object : MouseAdapter() {
+            override fun mouseClicked(e: MouseEvent) {
+                if (e.clickCount != 2 || !SwingUtilities.isLeftMouseButton(e)) return
+                if (table.columnAtPoint(e.point) != PROJECT_COLUMN) return
+                val row = table.rowAtPoint(e.point)
+                if (row < 0) return
+                val path = tableModel.rowAt(row)?.projectPath ?: return
+                openProjectDir(path)
+            }
+        })
 
         val bucketScroll = JBScrollPane(bucketPanel).apply {
             border = JBUI.Borders.empty()
@@ -215,7 +199,7 @@ class HistoryReportDialog(
             border = JBUI.Borders.empty(6, 8)
         }
         quickRow.add(JBLabel("时间").apply {
-            font = font.deriveFont(Font.PLAIN, JBUI.scale(10).toFloat())
+            font = font.deriveFont(Font.PLAIN, AccountUiType.caption)
             foreground = AccountUiColors.textMuted
         })
         quickBtns.values.forEach { quickRow.add(it) }
@@ -236,7 +220,7 @@ class HistoryReportDialog(
         rightPane.add(JBScrollPane(table).apply { border = JBUI.Borders.empty() }, BorderLayout.CENTER)
         body.add(rightPane, BorderLayout.CENTER)
 
-        root.add(top, BorderLayout.NORTH)
+        root.add(topBox, BorderLayout.NORTH)
         root.add(body, BorderLayout.CENTER)
         return root
     }
@@ -250,7 +234,7 @@ class HistoryReportDialog(
     // ---------------------------------------------------------------
 
     /** 是否日报（否则为周报） */
-    private fun isDaily(): Boolean = dayBtn.isSelected
+    private fun isDaily(): Boolean = rangeTabs.selectedIndex() == 0
 
     /** 维度筛选用的天数：日报 1 天，周报按本周一到今天实际跨度 */
     private fun days(): Int = range().let { (s, e) -> (s.until(e).days + 1).coerceAtLeast(1) }
@@ -328,6 +312,9 @@ class HistoryReportDialog(
         val dim = dimCombo.selectedItem as? ReportDimension ?: ReportDimension.ACCOUNT
 
         titleLabel.text = "${r.title} · ${r.rangeLabel}"
+        if (::topBar.isInitialized) {
+            topBar.update(titleLabel.text, statusLabel.text)
+        }
         kpiPanel.removeAll()
         kpiPanel.add(miniKpi("会话", "${r.conversationCount} 个", AccountUiColors.accent))
         kpiPanel.add(miniKpi("消息", "${r.totalMessages} 条", AccountUiColors.success))
@@ -355,15 +342,21 @@ class HistoryReportDialog(
         }
         if (buckets.isEmpty()) {
             bucketPanel.add(JBLabel("该区间没有历史对话").apply {
-                font = font.deriveFont(Font.PLAIN, JBUI.scale(11).toFloat())
+                font = font.deriveFont(Font.PLAIN, AccountUiType.label)
                 foreground = AccountUiColors.textFaint
                 alignmentX = Component.LEFT_ALIGNMENT
                 border = JBUI.Borders.empty(12, 2)
             })
         } else {
             val max = buckets.maxOf { it.conversations }.coerceAtLeast(1)
+            // 按项目维度时项目名可点击：在资源管理器中打开该项目目录
+            val projectPaths = if (dim == ReportDimension.PROJECT) {
+                r.projectGroups.associate { it.project to it.path }
+            } else {
+                emptyMap()
+            }
             for (b in buckets) {
-                bucketPanel.add(bucketRow(b, max, b.label == selectedBucket))
+                bucketPanel.add(bucketRow(b, max, b.label == selectedBucket, projectPaths[b.label]))
                 bucketPanel.add(Box.createVerticalStrut(JBUI.scale(6)))
             }
         }
@@ -438,32 +431,40 @@ class HistoryReportDialog(
             init {
                 border = JBUI.Borders.empty(8, 10)
                 add(JLabel(title).apply {
-                    font = font.deriveFont(Font.PLAIN, JBUI.scale(10).toFloat())
+                    font = font.deriveFont(Font.PLAIN, AccountUiType.caption)
                     foreground = AccountUiColors.textMuted
                     alignmentX = Component.LEFT_ALIGNMENT
                 })
                 add(Box.createVerticalStrut(JBUI.scale(2)))
                 add(JLabel(value).apply {
-                    font = font.deriveFont(Font.BOLD, JBUI.scale(16).toFloat())
+                    font = font.deriveFont(Font.BOLD, AccountUiType.number)
                     foreground = color
                     alignmentX = Component.LEFT_ALIGNMENT
                 })
             }
         }
 
-    private fun bucketRow(b: ReportBucket, max: Int, selected: Boolean): JComponent {
+    private fun bucketRow(b: ReportBucket, max: Int, selected: Boolean, projectPath: String?): JComponent {
         val row = FullWidthColumn()
         if (selected) {
             row.isOpaque = true
             row.background = AccountUiColors.accentSoft
         }
         val head = FullWidthRow(BorderLayout(JBUI.scale(8), 0))
-        head.add(JLabel(b.label).apply {
-            font = font.deriveFont(Font.PLAIN, JBUI.scale(11).toFloat())
-            foreground = if (selected) AccountUiColors.accent else AccountUiColors.textPrimary
-        }, BorderLayout.WEST)
+        // 有项目目录时项目名是链接：点名字开目录，点行的其它区域仍是筛选
+        val nameLabel: JComponent = if (projectPath != null) {
+            ActionLink(b.label) { openProjectDir(projectPath) }.apply {
+                toolTipText = "点击在资源管理器中打开项目目录：$projectPath"
+            }
+        } else {
+            JLabel(b.label).apply {
+                font = font.deriveFont(Font.PLAIN, AccountUiType.label)
+                foreground = if (selected) AccountUiColors.accent else AccountUiColors.textPrimary
+            }
+        }
+        head.add(nameLabel, BorderLayout.WEST)
         head.add(JLabel(b.detail()).apply {
-            font = font.deriveFont(Font.PLAIN, JBUI.scale(10).toFloat())
+            font = font.deriveFont(Font.PLAIN, AccountUiType.caption)
             foreground = AccountUiColors.textFaint
             horizontalAlignment = SwingConstants.RIGHT
         }, BorderLayout.EAST)
@@ -493,6 +494,24 @@ class HistoryReportDialog(
     // ---------------------------------------------------------------
     // 操作
     // ---------------------------------------------------------------
+
+    /** 在系统文件管理器中打开项目目录 */
+    private fun openProjectDir(path: String) {
+        val dir = try {
+            java.nio.file.Path.of(path)
+        } catch (_: Exception) {
+            null
+        }
+        if (dir == null || !Files.isDirectory(dir)) {
+            statusLabel.text = "项目目录不存在：$path"
+            return
+        }
+        try {
+            Desktop.getDesktop().open(dir.toFile())
+        } catch (e: Exception) {
+            statusLabel.text = "无法打开项目目录：${e.message}"
+        }
+    }
 
     /**
      * 把统计事实写成提示词，复制到剪贴板并打开 CodeBuddy 对话窗口。
@@ -586,6 +605,8 @@ class HistoryReportDialog(
             fireTableDataChanged()
         }
 
+        fun rowAt(index: Int): ReportEntry? = rows.getOrNull(index)
+
         override fun getRowCount(): Int = rows.size
 
         override fun getColumnCount(): Int = COLUMNS.size
@@ -607,6 +628,9 @@ class HistoryReportDialog(
 
     companion object {
         private val COLUMNS = arrayOf("会话", "项目", "账号", "类型", "消息", "最近活跃")
+
+        /** 「项目」列下标 */
+        private const val PROJECT_COLUMN = 1
 
         /** 与 AccountPanel 共用的通知组（plugin.xml 中注册） */
         private const val NOTIFICATION_GROUP = "CodeBuddy Account Manager"

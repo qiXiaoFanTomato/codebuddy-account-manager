@@ -16,16 +16,17 @@ import java.time.format.DateTimeFormatter
 import javax.swing.*
 
 /** 卡片底部操作 */
-enum class GridCardAction { SWITCH, RENAME, REFRESH, EXPORT, DELETE }
+enum class GridCardAction { SWITCH, DETAIL, RENAME, REFRESH, EXPORT, DELETE, GROWTH }
 
 /**
- * 网格账号卡片。
+ * 网格账号卡片（档案柜版）。
  *
- * 布局对应设计稿：
- *  - 标题行：复选框 + 账号（手机号脱敏）+ 等级徽标
- *  - 用量状态：左侧说明、右侧语义色状态
- *  - 配额查询：按套餐分组的条目（名称 + 条数 + 已用/总量 + 进度条 + 折叠箭头）
- *  - 底部：最近刷新时间 + 五个图标操作
+ * 布局对应 design/plugin-ui.html 的 `.account-card`：
+ *  - 左上角墨蓝 tab「当前激活」；
+ *  - 标题行：42px 直角头像 + 账号名 + 个人/企业、域名、Token 标签 + 旋转朱印「当前」；
+ *  - 档案号行：UID / 手机号 / 到期，等宽小字；
+ *  - 黄铜读数：剩余额度 / 总量 + 刻度进度条 + 已用明细；
+ *  - 底部虚线：snapshots 文件路径 + 动作条。
  */
 class AccountGridCard(
     val snapshot: CredentialSnapshot,
@@ -48,58 +49,45 @@ class AccountGridCard(
         addActionListener { onCheckedChanged(this@AccountGridCard, isSelected) }
     }
 
-    private var hover = false
-
     var checked: Boolean
         get() = check.isSelected
         set(value) {
             if (check.isSelected == value) return
             check.isSelected = value
+            // 选中态用主色描边，与卡片果冻描边统一
+            accentStroke = if (value) AccountUiColors.accent else null
+            strokeWidth = if (value) 1.8f else 1f
             repaint()
         }
 
     init {
-        border = JBUI.Borders.empty(12, 14)
+        // 顶部留出索引 tab 的高度，内容不会被墨蓝标签压住
+        border = JBUI.Borders.empty(
+            AccountUiSpacing.cardPadV + tabHeightDp + 6,
+            AccountUiSpacing.cardPadH,
+            AccountUiSpacing.cardPadV,
+            AccountUiSpacing.cardPadH,
+        )
+        tabText = if (isActive) "当前激活" else null
+        if (isActive) {
+            accentStroke = AccountUiColors.ink
+            strokeWidth = 1.6f
+        }
         addMouseListener(object : MouseAdapter() {
-            override fun mouseEntered(e: MouseEvent) {
-                hover = true
-                repaint()
-            }
+            override fun mouseEntered(e: MouseEvent) = setHovering(true)
 
-            override fun mouseExited(e: MouseEvent) {
-                hover = false
-                repaint()
-            }
+            override fun mouseExited(e: MouseEvent) = setHovering(false)
         })
 
         add(buildTitle())
-        add(Box.createVerticalStrut(JBUI.scale(8)))
-        add(buildStatus())
-        add(Box.createVerticalStrut(JBUI.scale(10)))
-        add(sectionLabel("配额查询"))
-        add(Box.createVerticalStrut(JBUI.scale(6)))
+        add(Box.createVerticalStrut(JBUI.scale(AccountUiSpacing.blockGap)))
+        add(buildMeta())
+        add(Box.createVerticalStrut(JBUI.scale(AccountUiSpacing.md)))
+        add(buildQuotaBlock())
+        add(Box.createVerticalStrut(JBUI.scale(AccountUiSpacing.md)))
         add(buildPackages())
-        add(Box.createVerticalStrut(JBUI.scale(10)))
+        add(Box.createVerticalStrut(JBUI.scale(AccountUiSpacing.md)))
         add(buildFooter())
-    }
-
-    override fun paintComponent(g: Graphics) {
-        super.paintComponent(g)
-        if (!checked && !hover) return
-        val g2 = g.create() as Graphics2D
-        try {
-            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-            val arc = JBUI.scale(AccountUiRadius.card).toFloat()
-            g2.color = if (checked) AccountUiColors.accent else AccountUiColors.borderActive
-            g2.stroke = BasicStroke(if (checked) 1.6f else 1f)
-            g2.draw(
-                RoundRectangle2D.Float(
-                    0.5f, 0.5f, (width - 1).toFloat(), (height - 1).toFloat(), arc, arc
-                )
-            )
-        } finally {
-            g2.dispose()
-        }
     }
 
     // ---------------------------------------------------------------
@@ -107,59 +95,185 @@ class AccountGridCard(
     // ---------------------------------------------------------------
 
     private fun buildTitle(): JComponent {
-        val row = FullWidthRow(BorderLayout(JBUI.scale(8), 0))
+        val row = FullWidthRow(BorderLayout(JBUI.scale(10), 0))
 
-        val left = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(2), 0)).apply { isOpaque = false }
+        val left = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(9), 0)).apply { isOpaque = false }
         left.add(check)
-        left.add(JLabel(ellipsize(titleText(), 16)).apply {
-            font = font.deriveFont(Font.BOLD, JBUI.scale(13).toFloat())
+        left.add(AvatarBadge(titleText()))
+
+        // 名称在上、标签在下：与 HTML 的 .acct-id 一致
+        val textCol = JPanel().apply {
+            isOpaque = false
+            layout = BoxLayout(this, BoxLayout.Y_AXIS)
+            alignmentY = CENTER_ALIGNMENT
+        }
+        textCol.add(JLabel(ellipsize(titleText(), 16)).apply {
+            alignmentX = Component.LEFT_ALIGNMENT
+            font = baseLabelFont().deriveFont(Font.BOLD, AccountUiType.number)
             foreground = AccountUiColors.textPrimary
             toolTipText = snapshot.displayName
         })
-        if (isActive) {
-            left.add(Chip("当前", AccountUiColors.accent, Color.WHITE))
-        }
+        textCol.add(Box.createVerticalStrut(JBUI.scale(4)))
 
-        row.add(left, BorderLayout.WEST)
-        row.add(tierChip(), BorderLayout.EAST)
+        val tags = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(6), 0)).apply { isOpaque = false }
+        tags.add(tierChip())
+        tags.add(
+            Chip(
+                snapshot.domainHost.ifBlank { "—" },
+                AccountUiColors.tagDomainBg,
+                AccountUiColors.tagDomainFg,
+            )
+        )
+        val tokenOk = !snapshot.isRefreshTokenExpired
+        tags.add(
+            Chip(
+                if (tokenOk) "Token 有效" else "Token 过期",
+                if (tokenOk) JBColor(Color(0xE8F4EC), Color(0x123322)) else AccountUiColors.sealSoft,
+                if (tokenOk) AccountUiColors.success else AccountUiColors.seal,
+            )
+        )
+        textCol.add(tags)
+        left.add(textCol)
+
+        val right = JPanel(FlowLayout(FlowLayout.RIGHT, 0, 0)).apply { isOpaque = false }
+        if (isActive) right.add(SealStamp())
+
+        row.add(left, BorderLayout.CENTER)
+        row.add(right, BorderLayout.EAST)
         return row
+    }
+
+    /**
+     * 档案号行：UID / 手机号 / 到期三行，标签左、值右。
+     *
+     * 对应 plugin-ui.html 的 `.acct-meta`（`dt`/`dd` 两列）；认证域已由上方的
+     * 域名标签承担，这里只补 HTML 里有的到期时间，临期用朱印标出。
+     */
+    private fun buildMeta(): JComponent {
+        val column = FullWidthColumn()
+        column.add(
+            AccountUiKit.fieldLine(
+                "UID",
+                AccountUiKit.valueText(ellipsize(snapshot.uid.ifBlank { "—" }, 26), AccountUiColors.textPrimary),
+            )
+        )
+        column.add(
+            AccountUiKit.fieldLine(
+                "手机号",
+                AccountUiKit.valueText(
+                    maskPhone(snapshot.phoneNumber.ifBlank { "—" }),
+                    AccountUiColors.textPrimary,
+                ),
+            )
+        )
+        column.add(AccountUiKit.fieldLine("到期", expiryText()))
+        return column
+    }
+
+    /** 最近到期时间：取可用套餐里最早的一条，7 天内标「临期」 */
+    private fun expiryText(): JComponent {
+        val nearest = quota
+            ?.takeIf { it.error == null }
+            ?.usablePackages
+            ?.asSequence()
+            ?.filter { it.expireMillis != Long.MAX_VALUE && it.expireMillis > 0L }
+            ?.minOfOrNull { it.expireMillis }
+
+        if (nearest == null) return AccountUiKit.valueText("—", AccountUiColors.textFaint)
+
+        val soon = nearest - System.currentTimeMillis() <= SOON_MS
+        val text = DATE_FMT.format(Instant.ofEpochMilli(nearest)) + if (soon) " · 临期" else ""
+        return AccountUiKit.valueText(
+            text,
+            if (soon) AccountUiColors.seal else AccountUiColors.textSecondary,
+        )
     }
 
     private fun tierChip(): Chip {
         val enterprise = snapshot.type.equals("enterprise", true)
         return if (enterprise) {
-            Chip("企业", AccountUiColors.tagEnterpriseBg, AccountUiColors.tagEnterpriseFg, arc = 11)
+            Chip("企业", AccountUiColors.tagEnterpriseBg, AccountUiColors.tagEnterpriseFg)
         } else {
-            Chip("FREE", AccountUiColors.surfaceBg, AccountUiColors.textMuted, arc = 11)
+            Chip("个人", AccountUiColors.tagPersonalBg, AccountUiColors.tagPersonalFg)
         }
     }
 
-    private fun buildStatus(): JComponent {
-        val row = FullWidthRow(BorderLayout(JBUI.scale(8), 0))
+    /**
+     * 额度主视觉：大号剩余百分比 + 全宽进度条 + 用量明细。
+     *
+     * 卡片以数字为主角，套餐分组退居次级信息。
+     */
+    private fun buildQuotaBlock(): JComponent {
+        val column = FullWidthColumn()
+        val summary = quota
 
-        row.add(JLabel("用量状态").apply {
-            font = font.deriveFont(Font.PLAIN, JBUI.scale(11).toFloat())
-            foreground = AccountUiColors.textMuted
-        }, BorderLayout.WEST)
+        if (summary == null) {
+            column.add(hint("尚未查询额度"))
+            return column
+        }
+        if (summary.error != null) {
+            column.add(hint("查询失败：${summary.error}"))
+            return column
+        }
+        if (summary.packages.isEmpty()) {
+            column.add(hint("接口未返回任何套餐"))
+            return column
+        }
 
-        val (statusText, statusColor) = statusOf(quota)
-        row.add(JLabel(statusText).apply {
-            font = font.deriveFont(Font.BOLD, JBUI.scale(11).toFloat())
-            foreground = statusColor
-        }, BorderLayout.EAST)
-        return row
+        val percent = summary.usableRemainPercent
+        val status = QuotaStatus.of(summary)
+
+        // 黄铜读数：剩余额度 / 总量 credits（对应 .reading-num + .reading-total）
+        val reading = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(8), 0)).apply { isOpaque = false }
+        reading.add(JLabel(fmtNumber(summary.usableRemain)).apply {
+            font = AccountUiType.mono(AccountUiType.display)
+            foreground = if (percent <= 20.0) AccountUiColors.seal else AccountUiColors.brass
+        })
+        reading.add(
+            JLabel("/ ${fmtNumber(summary.usableSize)} ${summary.unit.ifBlank { "credits" }}").apply {
+                font = AccountUiType.mono(AccountUiType.label, Font.PLAIN)
+                foreground = AccountUiColors.textMuted
+            }
+        )
+
+        val numberRow = FullWidthRow(BorderLayout(JBUI.scale(8), 0))
+        numberRow.add(reading, BorderLayout.WEST)
+        numberRow.add(
+            JPanel(FlowLayout(FlowLayout.RIGHT, 0, 0)).apply {
+                isOpaque = false
+                add(AccountUiKit.statusTag(status.text, status.color))
+            },
+            BorderLayout.EAST
+        )
+        column.add(numberRow)
+
+        val fetchedAt = summary.fetchedAt.takeIf { it > 0 } ?: snapshot.importedAt
+        column.add(
+            JLabel("剩余额度 ${"%.0f".format(percent)}% · 刷新于 ${TIME_FMT.format(Instant.ofEpochMilli(fetchedAt))}").apply {
+                alignmentX = Component.LEFT_ALIGNMENT
+                font = AccountUiType.ui(AccountUiType.caption)
+                foreground = AccountUiColors.textSecondary
+            }
+        )
+        column.add(Box.createVerticalStrut(JBUI.scale(AccountUiSpacing.xs)))
+        column.add(QuotaBar(percent))
+        column.add(Box.createVerticalStrut(JBUI.scale(AccountUiSpacing.xs)))
+        // 已用 / 总量：标签左、数值右，多张卡片之间右边缘对齐
+        column.add(
+            AccountUiKit.fieldLine(
+                "已用 / 总量",
+                AccountUiKit.valueText(
+                    "${fmtNumber(summary.usableUsed)} / ${fmtNumber(summary.usableSize)}" +
+                        if (summary.unit.isBlank()) "" else " ${summary.unit}",
+                    AccountUiColors.textSecondary,
+                ),
+            )
+        )
+        return column
     }
 
-    /** 用量状态语义：与额度明细保持同一套口径 */
-    private fun statusOf(summary: QuotaSummary?): Pair<String, Color> = when {
-        summary == null -> "未刷新" to AccountUiColors.textFaint
-        summary.error != null -> "查询失败" to AccountUiColors.danger
-        summary.packages.isEmpty() -> "无套餐" to AccountUiColors.textMuted
-        summary.usableRemain <= 0 -> "已用尽" to AccountUiColors.danger
-        summary.usableRemainPercent <= 10 -> "紧张" to AccountUiColors.danger
-        summary.usableRemainPercent <= 30 -> "偏低" to AccountUiColors.warning
-        else -> "正常" to AccountUiColors.success
-    }
+    /** 千分位数字 */
+    private fun fmtNumber(v: Double): String = AccountUiKit.formatNumber(v)
 
     // ---------------------------------------------------------------
     // 配额列表
@@ -200,16 +314,10 @@ class AccountGridCard(
 
     private fun hint(text: String): JLabel = JLabel(QuotaCardUi.shortName(text)).apply {
         alignmentX = Component.LEFT_ALIGNMENT
-        font = font.deriveFont(Font.PLAIN, JBUI.scale(11).toFloat())
+        font = font.deriveFont(Font.PLAIN, AccountUiType.label)
         foreground = AccountUiColors.textFaint
         toolTipText = text
         border = JBUI.Borders.empty(2, 2)
-    }
-
-    private fun sectionLabel(text: String): JLabel = JLabel(text).apply {
-        alignmentX = Component.LEFT_ALIGNMENT
-        font = font.deriveFont(Font.PLAIN, JBUI.scale(11).toFloat())
-        foreground = AccountUiColors.textMuted
     }
 
     // ---------------------------------------------------------------
@@ -217,39 +325,45 @@ class AccountGridCard(
     // ---------------------------------------------------------------
 
     private fun buildFooter(): JComponent {
-        val row = FullWidthRow(BorderLayout(JBUI.scale(8), 0))
-        row.border = JBUI.Borders.compound(
-            JBUI.Borders.customLine(AccountUiColors.divider, 1, 0, 0, 0),
-            JBUI.Borders.emptyTop(8)
-        )
+        val column = FullWidthColumn()
+        // 虚线分隔 + 档案号 + 动作（对应 .card-foot / .acct-foot 的 dashed border）
+        column.add(DashedRule())
+        column.add(Box.createVerticalStrut(JBUI.scale(AccountUiSpacing.sm)))
 
-        val timestamp = quota?.fetchedAt?.takeIf { it > 0 } ?: snapshot.importedAt
-        val instant = Instant.ofEpochMilli(timestamp)
-        val time = JPanel().apply {
-            isOpaque = false
-            layout = BoxLayout(this, BoxLayout.Y_AXIS)
-            add(JLabel(DATE_FMT.format(instant)).apply {
-                alignmentX = Component.LEFT_ALIGNMENT
-                font = font.deriveFont(Font.PLAIN, JBUI.scale(10).toFloat())
-                foreground = AccountUiColors.textFaint
-            })
-            add(JLabel(TIME_FMT.format(instant)).apply {
-                alignmentX = Component.LEFT_ALIGNMENT
-                font = font.deriveFont(Font.PLAIN, JBUI.scale(10).toFloat())
-                foreground = AccountUiColors.textFaint
-            })
+        val row = FullWidthRow(BorderLayout(JBUI.scale(8), 0))
+        val file = "snapshots/${snapshot.uid.take(8)}@${snapshot.domainHost.ifBlank { "codebuddy.cn" }}.info"
+        val fileNo = JLabel(file).apply {
+            font = AccountUiType.mono(AccountUiType.micro, Font.PLAIN)
+            foreground = AccountUiColors.textMuted
+            toolTipText = file
+            alignmentY = CENTER_ALIGNMENT
         }
 
-        val actions = JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(4), 0)).apply { isOpaque = false }
-        actions.add(IconTile(AllIcons.Actions.Execute, "切换到此账号") { onAction(this, GridCardAction.SWITCH) })
+        val actions = JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(4), 0)).apply {
+            isOpaque = false
+            alignmentY = CENTER_ALIGNMENT
+        }
+        actions.add(
+            JellyButton("切换", JellyButtonVariant.GHOST, null, "切换到此账号") {
+                onAction(this@AccountGridCard, GridCardAction.SWITCH)
+            }.apply { emphasized = true }
+        )
+        // 与 HTML `.acct-foot` 一致：切换之后紧跟「额度明细」文字动作
+        actions.add(
+            JellyButton("额度明细", JellyButtonVariant.GHOST, null, "打开额度明细窗口") {
+                onAction(this@AccountGridCard, GridCardAction.DETAIL)
+            }
+        )
+        actions.add(IconTile(AllIcons.General.InspectionsOK, "一键完成该账号的成长任务") { onAction(this, GridCardAction.GROWTH) })
         actions.add(IconTile(AllIcons.Actions.Edit, "重命名（设置别名）") { onAction(this, GridCardAction.RENAME) })
         actions.add(IconTile(AllIcons.Actions.Refresh, "刷新该账号额度") { onAction(this, GridCardAction.REFRESH) })
         actions.add(IconTile(AllIcons.ToolbarDecorator.Export, "导出该账号凭据") { onAction(this, GridCardAction.EXPORT) })
         actions.add(IconTile(AllIcons.Actions.GC, "从账号库删除") { onAction(this, GridCardAction.DELETE) })
 
-        row.add(time, BorderLayout.WEST)
+        row.add(fileNo, BorderLayout.WEST)
         row.add(actions, BorderLayout.EAST)
-        return row
+        column.add(row)
+        return column
     }
 
     // ---------------------------------------------------------------
@@ -274,7 +388,10 @@ class AccountGridCard(
         /** 卡片内最多展示的套餐分组数，超出折叠为提示文本 */
         const val MAX_GROUPS = 2
 
-        val DATE_FMT: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy/MM/dd").withZone(ZoneId.systemDefault())
+        /** 临期判定窗口：7 天（与看板「7 天内到期」指标同一口径） */
+        const val SOON_MS = 7L * 24 * 60 * 60 * 1000
+
+        val DATE_FMT: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd").withZone(ZoneId.systemDefault())
         val TIME_FMT: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm").withZone(ZoneId.systemDefault())
     }
 }
@@ -283,21 +400,24 @@ class AccountGridCard(
  * 套餐分组条目：左侧语义竖条、名称、条数徽标、已用/总量、进度条，点击折叠细项。
  */
 class QuotaGroupStrip(private val group: QuotaGroup) :
-    RoundedCard(AccountUiColors.cardBg, AccountUiColors.divider, AccountUiRadius.inner) {
+    RoundedCard(
+        AccountUiColors.cardBg, AccountUiColors.divider, AccountUiRadius.inner,
+        material = JellyMaterial.SOFT,
+    ) {
 
     private val itemsPanel = FullWidthColumn().apply { isVisible = false }
-    private val arrow = JLabel("▾").apply {
-        font = font.deriveFont(Font.PLAIN, JBUI.scale(10).toFloat())
+    private val arrow = JLabel("▸").apply {
+        font = font.deriveFont(Font.PLAIN, AccountUiType.caption)
         foreground = AccountUiColors.textMuted
     }
     private var expanded = false
 
     init {
-        border = JBUI.Borders.empty(6, 8, 6, 12)
+        border = JBUI.Borders.empty(AccountUiSpacing.blockGap, AccountUiSpacing.md, AccountUiSpacing.blockGap, AccountUiSpacing.lg)
         val header = buildHeader()
         val bar = QuotaBar(group.remainPercent)
         add(header)
-        add(Box.createVerticalStrut(JBUI.scale(6)))
+        add(Box.createVerticalStrut(JBUI.scale(AccountUiSpacing.sm)))
         add(bar)
         add(itemsPanel)
 
@@ -318,15 +438,15 @@ class QuotaGroupStrip(private val group: QuotaGroup) :
         val left = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(4), 0)).apply { isOpaque = false }
         left.add(glyphBadge())
         left.add(JLabel(ellipsize(group.name, 12)).apply {
-            font = font.deriveFont(Font.PLAIN, JBUI.scale(11).toFloat())
+            font = font.deriveFont(Font.PLAIN, AccountUiType.label)
             foreground = AccountUiColors.textPrimary
             toolTipText = group.name
         })
-        left.add(Chip("(${group.packages.size})", QuotaCardUi.itemBg, AccountUiColors.textMuted, arc = 8))
+        left.add(Chip("(${group.packages.size})", AccountUiColors.itemBg, AccountUiColors.textMuted))
 
         val right = JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(3), 0)).apply { isOpaque = false }
         right.add(JLabel(formatUsage()).apply {
-            font = font.deriveFont(Font.PLAIN, JBUI.scale(11).toFloat())
+            font = font.deriveFont(Font.PLAIN, AccountUiType.label)
             foreground = AccountUiColors.textSecondary
         })
         right.add(arrow)
@@ -380,7 +500,7 @@ class QuotaGroupStrip(private val group: QuotaGroup) :
     private fun toggle() {
         expanded = !expanded
         itemsPanel.isVisible = expanded
-        arrow.text = if (expanded) "▴" else "▾"
+        arrow.text = if (expanded) "▾" else "▸"
         revalidate()
         var p: Container? = parent
         while (p != null) {
@@ -424,7 +544,7 @@ class GlyphBadge(
 
     init {
         isOpaque = false
-        font = baseLabelFont().deriveFont(Font.BOLD, JBUI.scale(10).toFloat())
+        font = baseLabelFont().deriveFont(Font.BOLD, AccountUiType.caption)
         preferredSize = Dimension(box, box)
         minimumSize = preferredSize
         maximumSize = preferredSize
@@ -445,6 +565,15 @@ class GlyphBadge(
                     0f, 0f, box.toFloat(), box.toFloat(), arcSize.toFloat(), arcSize.toFloat()
                 )
             )
+            // 果冻高光：字标同样带一点顶部反光
+            g2.color = Color(255, 255, 255, 40)
+            g2.fill(
+                RoundRectangle2D.Float(
+                    JBUI.scale(2).toFloat(), JBUI.scale(2).toFloat(),
+                    (box - JBUI.scale(4)).toFloat(), (box * 0.36f).toFloat(),
+                    JBUI.scale(4).toFloat(), JBUI.scale(4).toFloat()
+                )
+            )
             g2.font = font
             g2.color = fg
             val fm = g2.fontMetrics
@@ -455,16 +584,24 @@ class GlyphBadge(
     }
 }
 
-/** 方形图标按钮：浅底圆角，hover 加深，用于卡片底部操作 */
+/**
+ * 图标按钮：24×24 圆角 6，hover 只换底色，不缩放、不下沉。
+ *
+ * 是卡片底部操作与工具栏图标键的统一实现；键盘 Space/Enter 可触发。
+ */
 class IconTile(
     private val icon: Icon,
     private val tip: String,
     private val onClick: () -> Unit,
 ) : JComponent() {
 
-    private val side: Int = JBUI.scale(26)
-    private val arcSize: Int = JBUI.scale(8)
-    private var hover = false
+    private val side: Int = JBUI.scale(24)
+
+    /** hover 弹起动画进度 */
+    private val lift = JellyValue(this, 0.0)
+
+    /** 按下进度：1 表示按住，胶囊下沉 1px */
+    private val press = JellyValue(this, 0.0)
 
     init {
         isOpaque = false
@@ -473,34 +610,138 @@ class IconTile(
         minimumSize = preferredSize
         maximumSize = preferredSize
         cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+        isFocusable = true
+
         addMouseListener(object : MouseAdapter() {
             override fun mouseEntered(e: MouseEvent) {
-                hover = true
-                repaint()
+                lift.animateTo(1.0, 170, { t -> Easing.outBack(t) })
             }
 
             override fun mouseExited(e: MouseEvent) {
-                hover = false
-                repaint()
+                lift.animateTo(0.0, 220, { t -> Easing.outCubic(t) })
+                press.animateTo(0.0, 200, { t -> Easing.outBack(t) })
             }
 
-            override fun mouseClicked(e: MouseEvent) {
-                if (isEnabled) onClick()
+            override fun mousePressed(e: MouseEvent) {
+                if (isEnabled) press.animateTo(1.0, 80)
+            }
+
+            override fun mouseReleased(e: MouseEvent) {
+                if (!isEnabled) return
+                press.animateTo(0.0, 260, { t -> Easing.outBack(t) })
+                if (contains(e.point)) fire()
             }
         })
+        addFocusListener(object : java.awt.event.FocusAdapter() {
+            override fun focusGained(e: java.awt.event.FocusEvent) = repaint()
+            override fun focusLost(e: java.awt.event.FocusEvent) = repaint()
+        })
+        inputMap.put(KeyStroke.getKeyStroke("SPACE"), "activate")
+        inputMap.put(KeyStroke.getKeyStroke("ENTER"), "activate")
+        actionMap.put(
+            "activate",
+            object : javax.swing.AbstractAction() {
+                override fun actionPerformed(e: java.awt.event.ActionEvent?) {
+                    if (isEnabled) fire()
+                }
+            }
+        )
+    }
+
+    private fun fire() = onClick()
+
+    /** 禁用态重绘：图标键在批量操作期间会被临时置灰 */
+    override fun setEnabled(enabled: Boolean) {
+        super.setEnabled(enabled)
+        repaint()
     }
 
     override fun paintComponent(g: Graphics) {
         val g2 = g.create() as Graphics2D
         try {
             g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-            g2.color = if (hover) AccountUiColors.cardHoverBg else AccountUiColors.surfaceBg
-            g2.fill(
-                RoundRectangle2D.Float(
-                    0f, 0f, width.toFloat(), height.toFloat(), arcSize.toFloat(), arcSize.toFloat()
-                )
-            )
+            val liftValue = lift.value.toFloat()
+            val alpha = if (isEnabled) 1f else 0.4f
+            val arc = JBUI.scale(AccountUiRadius.chip).toFloat()
+            val shape = Jelly.round(0.5f, 0.5f, width - 1f, height - 1f, arc)
+            if (liftValue > 0.02f) {
+                g2.color = Jelly.alpha(AccountUiColors.surfaceHi, liftValue * alpha)
+                g2.fill(shape)
+                g2.color = Jelly.alpha(AccountUiColors.border, liftValue * alpha)
+                g2.stroke = java.awt.BasicStroke(1f)
+                g2.draw(shape)
+            }
             icon.paintIcon(this, g2, (width - icon.iconWidth) / 2, (height - icon.iconHeight) / 2)
+            Jelly.paintFocusRing(g2, shape, isFocusOwner)
+        } finally {
+            g2.dispose()
+        }
+    }
+}
+
+/** 42px 直角头像：取账号首字，配色池对应设计稿的 .av-1 ~ .av-4 */
+private class AvatarBadge(name: String) : JComponent() {
+
+    private val side = JBUI.scale(42)
+    private val glyph = name.take(1).ifBlank { "?" }
+    private val fill = AccountUiColors.avatarPalette[
+        Math.floorMod(name.hashCode(), AccountUiColors.avatarPalette.size)
+    ]
+
+    init {
+        isOpaque = false
+        preferredSize = Dimension(side, side)
+        minimumSize = preferredSize
+        maximumSize = preferredSize
+        alignmentY = CENTER_ALIGNMENT
+        font = baseLabelFont().deriveFont(Font.BOLD, AccountUiType.number)
+    }
+
+    override fun paintComponent(g: Graphics) {
+        val g2 = g.create() as Graphics2D
+        try {
+            g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON)
+            g2.color = fill
+            g2.fill(java.awt.geom.Rectangle2D.Float(0f, 0f, side.toFloat(), side.toFloat()))
+            g2.font = font
+            g2.color = Color.WHITE
+            val fm = g2.fontMetrics
+            g2.drawString(glyph, (side - fm.stringWidth(glyph)) / 2f, (side - fm.height) / 2f + fm.ascent)
+        } finally {
+            g2.dispose()
+        }
+    }
+}
+
+/** 朱印「当前」：2px 朱红描边 + -7° 旋转，对应 HTML 的 `.seal` */
+private class SealStamp : JComponent() {
+
+    private val w = JBUI.scale(48)
+    private val h = JBUI.scale(30)
+
+    init {
+        isOpaque = false
+        preferredSize = Dimension(w, h)
+        minimumSize = preferredSize
+        maximumSize = preferredSize
+        alignmentY = CENTER_ALIGNMENT
+        font = baseLabelFont().deriveFont(Font.BOLD, AccountUiType.label)
+    }
+
+    override fun paintComponent(g: Graphics) {
+        val g2 = g.create() as Graphics2D
+        try {
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+            g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON)
+            g2.translate(width / 2.0, height / 2.0)
+            g2.rotate(Math.toRadians(-7.0))
+            g2.translate(-width / 2.0, -height / 2.0)
+            g2.color = AccountUiColors.seal
+            g2.stroke = BasicStroke(2f)
+            g2.draw(java.awt.geom.Rectangle2D.Float(2f, 2f, (width - 4).toFloat(), (height - 4).toFloat()))
+            g2.font = font
+            val fm = g2.fontMetrics
+            g2.drawString("当前", (width - fm.stringWidth("当前")) / 2f, (height - fm.height) / 2f + fm.ascent)
         } finally {
             g2.dispose()
         }

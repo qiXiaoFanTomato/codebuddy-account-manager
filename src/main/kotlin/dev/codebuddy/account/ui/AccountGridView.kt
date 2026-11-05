@@ -23,7 +23,11 @@ class AccountGridView : JPanel(BorderLayout()) {
 
     /** 网格容器：宽度跟随视口，高度由 [WrapGridLayout] 按实际行数计算 */
     private val container = object : JPanel(
-        WrapGridLayout(JBUI.scale(10), JBUI.scale(10), JBUI.scale(280))
+        WrapGridLayout(
+            JBUI.scale(AccountUiSpacing.gridGap),
+            JBUI.scale(AccountUiSpacing.gridGap),
+            JBUI.scale(AccountUiSpacing.gridMinColumnWidth),
+        )
     ), Scrollable {
         override fun getPreferredScrollableViewportSize(): Dimension = preferredSize
         override fun getScrollableUnitIncrement(visibleRect: Rectangle, orientation: Int, direction: Int): Int = 16
@@ -61,12 +65,16 @@ class AccountGridView : JPanel(BorderLayout()) {
     init {
         layout = BorderLayout()
         container.background = AccountUiColors.panelBg
-        container.border = JBUI.Borders.empty(10, 12)
+        // 与 `.content` 的 22px 内边距对齐（取 4 基准阶梯上的 18 / 20）
+        container.border = JBUI.Borders.empty(AccountUiSpacing.cardGap, AccountUiSpacing.xl)
 
         scrollPane = JBScrollPane(container).apply {
             border = JBUI.Borders.empty()
             horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER
             verticalScrollBar.unitIncrement = 16
+            // 界面固定浅色：不让 IDE 深色主题把滚动区底色刷成深灰
+            background = AccountUiColors.panelBg
+            viewport.background = AccountUiColors.panelBg
         }
         add(scrollPane, BorderLayout.CENTER)
     }
@@ -153,7 +161,7 @@ class AccountGridView : JPanel(BorderLayout()) {
     private fun render() {
         container.removeAll()
 
-        filtered = if (filterText.isBlank()) rawList else rawList.filter { matches(it, filterText) }
+        filtered = if (filterText.isBlank()) rawList else rawList.filter { it.matchesKeyword(filterText) }
         val pages = pageCount()
         if (pageIndexValue > pages - 1) pageIndexValue = pages - 1
         if (pageIndexValue < 0) pageIndexValue = 0
@@ -188,19 +196,7 @@ class AccountGridView : JPanel(BorderLayout()) {
         onPageChanged?.invoke()
     }
 
-    private fun matches(s: CredentialSnapshot, keyword: String): Boolean =
-        s.displayName.contains(keyword, ignoreCase = true) ||
-            s.uid.contains(keyword, ignoreCase = true) ||
-            s.uin.contains(keyword, ignoreCase = true) ||
-            s.domain.contains(keyword, ignoreCase = true) ||
-            s.domainHost.contains(keyword, ignoreCase = true) ||
-            s.phoneNumber.contains(keyword, ignoreCase = true) ||
-            s.alias.contains(keyword, ignoreCase = true)
-
-    private fun emptyHint(): JLabel = JLabel("没有匹配的账号").apply {
-        alignmentX = Component.LEFT_ALIGNMENT
-        font = font.deriveFont(Font.PLAIN, JBUI.scale(11).toFloat())
-        foreground = AccountUiColors.textFaint
+    private fun emptyHint(): JLabel = UiHint("没有匹配的账号").apply {
         border = JBUI.Borders.empty(16, 6)
     }
 }
