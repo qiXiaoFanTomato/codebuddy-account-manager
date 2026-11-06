@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "dev.codebuddy.account"
-version = "0.22.3"
+version = "0.22.5"
 
 repositories {
     maven { url = uri("https://maven.aliyun.com/repository/public") }
