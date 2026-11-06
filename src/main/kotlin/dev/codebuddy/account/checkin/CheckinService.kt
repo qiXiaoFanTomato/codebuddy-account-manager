@@ -3,6 +3,7 @@ package dev.codebuddy.account.checkin
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.intellij.openapi.diagnostic.logger
+import dev.codebuddy.account.growth.GrowthService
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
@@ -12,32 +13,37 @@ import java.time.Duration
 /**
  * 每日签到（领取积分）。
  *
- * ⚠️ 接口来源说明：以下两个路径来自社区逆向资料，不是官方文档接口，
- * CodeBuddy 客户端内也未内置该能力，因此路径与返回字段名都可能随版本变化。
- * 实现上做了两件事来降低风险：
- *  1. 路径可在设置页修改（默认即下面两个常量）；
- *  2. 响应按「宽松解析」处理：只认 code=0 / code=10001，字段取不到就置 null，
- *     绝不因为字段缺失把结果判成失败以外的异常状态。
+ * 对齐 workbuddy2api-panel 的 DailyCheckin：
+ *  - 只有签到接口，没有「签到状态查询」接口；今日是否已签由 [CheckinTracker] 本地按日记录；
+ *  - 上游对重复签到返回 code!=0（实测 10001 / 14001）且 msg 含「已签到」/「already」，
+ *    按 msg 判定幂等成功，不绑定固定业务码；
+ *  - billing/meter 族按 realm 分流：cn 走 /v2 前缀，global 先试无 /v2、404 再回落 /v2；
+ *  - 5xx / 网络抖动最多补打 2 次（间隔 2s、4s），4xx 与业务错误不重试。
  *
- * 请求与额度 / 消耗接口一致：POST + Bearer accessToken + User-Agent（否则被网关拦）。
- * 实测环境本机凭据里的 accessToken 已失效（额度接口同样 401），因此**未做端到端验证**。
+ * 请求头对齐参考项目 BillingHeaders：Bearer、Accept、X-CodeBuddy-Request、
+ * X-User-Id、X-Domain、Accept-Language 与官方桌面端 billing UA。
+ * 本机没有 X-Device-Token 凭据，按参考项目的降级策略不注入。
+ *
+ * ⚠️ 接口非官方公开接口，路径可在设置页覆盖。
  */
 object CheckinService {
 
     private val log = logger<CheckinService>()
 
-    /** 查询今日签到状态 */
-    const val DEFAULT_STATUS_PATH = "/v2/billing/meter/checkin-activity-status"
-
-    /** 执行签到 */
+    /** CN realm 签到路径（默认） */
     const val DEFAULT_SUBMIT_PATH = "/v2/billing/meter/daily-checkin"
 
-    /** 社区资料中「今天已签到」的业务码 */
-    private const val CODE_ALREADY = 10001
+    /** global realm 首选路径，404 时回落 [DEFAULT_SUBMIT_PATH] */
+    private const val GLOBAL_SUBMIT_PATH = "/billing/meter/daily-checkin"
 
-    private const val USER_AGENT =
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-            "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+    /** 官方桌面端 billing 白名单 UA（wb2api-panel billingUA 默认口径） */
+    private const val USER_AGENT = "WorkBuddy/5.5.4"
+
+    private const val MAX_ATTEMPTS = 3
+    private const val RETRY_BASE_MS = 2_000L
+
+    /** 重复签到的幂等标记（wb2api-panel alreadyCheckinMarkers） */
+    private val ALREADY_MARKERS = listOf("已签到", "already")
 
     private val httpClient: HttpClient by lazy {
         HttpClient.newBuilder()
@@ -46,177 +52,137 @@ object CheckinService {
             .build()
     }
 
-    /** 今日签到状态查询结果 */
-    data class CheckinStatus(
-        /** 今日是否已签到；接口未给出可判断字段时为 null */
-        val checked: Boolean? = null,
-        /** 今日签到可得 / 已得积分 */
-        val credit: Double? = null,
-        /** 连续签到天数 */
-        val continuousDays: Int? = null,
-        /** 接口原始 msg，用于排查 */
-        val message: String? = null,
-        val error: String? = null,
-    ) {
-        val ok: Boolean get() = error == null
-    }
-
     /** 执行签到结果 */
     data class CheckinResult(
-        /** 本次签到成功（拿到积分） */
+        /** 本次签到成功 */
         val success: Boolean = false,
-        /** 今天此前已签到 */
+        /** 今天此前已签到（上游幂等拒绝） */
         val already: Boolean = false,
-        val credit: Double? = null,
         val message: String? = null,
         val error: String? = null,
     ) {
         val ok: Boolean get() = error == null
     }
 
-    private fun host(domain: String): String = if (domain.isBlank()) "www.codebuddy.cn" else domain
+    /** 单次请求结果；transient 表示 5xx / 网络抖动，可重试 */
+    private data class Attempt(
+        val status: Int = -1,
+        val body: String? = null,
+        val transient: Boolean = false,
+    )
 
-    fun queryStatus(domain: String, accessToken: String, uid: String, path: String): CheckinStatus {
-        if (accessToken.isBlank()) return CheckinStatus(error = "accessToken 为空")
-        val (status, body) = post(host(domain), path, accessToken, uid)
-        if (status != 200 || body == null) return CheckinStatus(error = "HTTP $status")
-        return parseStatus(body)
-    }
-
+    /**
+     * 执行签到。
+     *
+     * @param path 设置页自定义路径；使用默认路径且为 global realm 时才做双路径 fallback
+     */
     fun submit(domain: String, accessToken: String, uid: String, path: String): CheckinResult {
         if (accessToken.isBlank()) return CheckinResult(error = "accessToken 为空")
-        val (status, body) = post(host(domain), path, accessToken, uid)
-        if (status != 200 || body == null) return CheckinResult(error = "HTTP $status")
-        return parseResult(body)
+        val paths = candidatePaths(domain, path)
+        var attempt = Attempt()
+        for (i in 1..MAX_ATTEMPTS) {
+            if (i > 1) {
+                try {
+                    Thread.sleep(RETRY_BASE_MS * (i - 1))
+                } catch (e: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    return parse(attempt)
+                }
+            }
+            attempt = tryPaths(domain, accessToken, uid, paths)
+            if (!attempt.transient) break
+        }
+        return parse(attempt)
     }
 
-    // ---------------------------------------------------------------
-    // HTTP
-    // ---------------------------------------------------------------
+    private fun candidatePaths(domain: String, path: String): List<String> {
+        val configured = path.ifBlank { DEFAULT_SUBMIT_PATH }
+        val normalized = if (configured.startsWith("/")) configured else "/$configured"
+        // 自定义路径不做 realm 分流
+        if (normalized != DEFAULT_SUBMIT_PATH || !GrowthService.isGlobal(domain)) return listOf(normalized)
+        return listOf(GLOBAL_SUBMIT_PATH, DEFAULT_SUBMIT_PATH)
+    }
 
-    private fun post(host: String, path: String, token: String, uid: String): Pair<Int, String?> {
-        val url = "https://$host${path.ifBlank { "/" }}"
+    /** 仅 404 换路径；其余错误（含业务 code!=0）直接返回 */
+    private fun tryPaths(domain: String, token: String, uid: String, paths: List<String>): Attempt {
+        var last = Attempt()
+        for ((index, p) in paths.withIndex()) {
+            last = post(domain, p, token, uid)
+            if (last.status != 404 || index == paths.lastIndex) return last
+        }
+        return last
+    }
+
+    private fun post(domain: String, path: String, token: String, uid: String): Attempt {
+        val host = domain.ifBlank { "www.codebuddy.cn" }
+        val url = "https://$host$path"
         return try {
             val builder = HttpRequest.newBuilder()
                 .uri(URI.create(url))
                 .timeout(Duration.ofSeconds(20))
-                .header("Authorization", "Bearer $token")
+                .header("Accept", "application/json")
                 .header("Content-Type", "application/json")
                 .header("User-Agent", USER_AGENT)
+                .header("Authorization", "Bearer $token")
+                .header("X-CodeBuddy-Request", "1")
+                .header("Accept-Language", if (GrowthService.isGlobal(domain)) "en-US" else "zh-CN")
                 .POST(HttpRequest.BodyPublishers.ofString("{}"))
             if (uid.isNotBlank()) builder.header("X-User-Id", uid)
+            if (domain.isNotBlank()) builder.header("X-Domain", domain)
             val response = httpClient.send(builder.build(), HttpResponse.BodyHandlers.ofString())
-            response.statusCode() to response.body()
+            val status = response.statusCode()
+            Attempt(status = status, body = response.body(), transient = status >= 500)
         } catch (t: Throwable) {
             log.warn("签到请求失败: $url", t)
-            -1 to null
+            Attempt(status = -1, transient = true)
         }
     }
 
-    // ---------------------------------------------------------------
-    // 解析（宽松：字段缺失一律置 null，不臆造语义）
-    // ---------------------------------------------------------------
+    private fun parse(attempt: Attempt): CheckinResult {
+        if (attempt.status == -1) return CheckinResult(error = "签到请求失败（网络错误）")
+        val body = attempt.body
+        if (body.isNullOrBlank()) return CheckinResult(error = "HTTP ${attempt.status}（空响应）")
 
-    private fun parseStatus(body: String): CheckinStatus {
-        val root = parseRoot(body) ?: return CheckinStatus(error = "返回不是 JSON")
-        val code = int(root, "code") ?: -1
-        val msg = str(root, "msg").ifBlank { null }
-        if (code != 0) return CheckinStatus(error = "接口返回 code=$code${msg?.let { ": $it" } ?: ""}")
-
-        val data = root.get("data")
-        val scope: JsonObject? = when {
-            data == null || data.isJsonNull -> root
-            data.isJsonObject -> data.asJsonObject
-            else -> root
+        val root = try {
+            JsonParser.parseString(body).takeIf { it.isJsonObject }?.asJsonObject
+        } catch (e: Exception) {
+            log.warn("签到响应解析失败", e)
+            null
         }
-        return CheckinStatus(
-            checked = bool(scope, "checked", "signed", "isCheckin", "hasCheckin", "checkinStatus", "isSigned"),
-            credit = num(scope, "credit", "credits", "amount", "points", "rewardCredit", "todayCredit"),
-            continuousDays = int(scope, "continuousDays", "continueDays", "signDays", "continuousSignDays", "streak") ,
-            message = msg,
-        )
+        val msg = root?.message()
+        if (attempt.status !in 200..299) {
+            // 4xx 也可能带「今天已签到」业务体；非 JSON 文本按原文判定（对齐 doJSON 的错误文案口径）
+            if (isAlready(msg) || isAlready(body)) {
+                return CheckinResult(already = true, message = msg ?: "今天已签到")
+            }
+            return CheckinResult(error = "HTTP ${attempt.status}${msg?.let { ": $it" } ?: ""}")
+        }
+        if (root == null) return CheckinResult(error = "返回不是 JSON")
+
+        val code = root.code() ?: 0
+        return when {
+            code == 0 -> CheckinResult(success = true, message = msg)
+            isAlready(msg) -> CheckinResult(already = true, message = msg)
+            else -> CheckinResult(error = "接口返回 code=$code${msg?.let { ": $it" } ?: ""}")
+        }
     }
 
-    private fun parseResult(body: String): CheckinResult {
-        val root = parseRoot(body) ?: return CheckinResult(error = "返回不是 JSON")
-        val code = int(root, "code") ?: -1
-        val msg = str(root, "msg").ifBlank { null }
-        if (code == CODE_ALREADY) return CheckinResult(already = true, message = msg ?: "今天已签到")
-        if (code != 0) return CheckinResult(error = "接口返回 code=$code${msg?.let { ": $it" } ?: ""}")
-
-        val data = root.get("data")
-        val scope: JsonObject? = when {
-            data == null || data.isJsonNull -> root
-            data.isJsonObject -> data.asJsonObject
-            else -> root
-        }
-        return CheckinResult(
-            success = true,
-            credit = num(scope, "credit", "credits", "amount", "points", "rewardCredit", "todayCredit"),
-            message = msg,
-        )
+    private fun isAlready(msg: String?): Boolean {
+        if (msg.isNullOrBlank()) return false
+        val lower = msg.lowercase()
+        return ALREADY_MARKERS.any { lower.contains(it.lowercase()) }
     }
 
-    private fun parseRoot(body: String): JsonObject? = try {
-        val el = JsonParser.parseString(body)
-        if (el.isJsonObject) el.asJsonObject else null
-    } catch (e: Exception) {
-        log.warn("签到响应解析失败", e)
+    private fun JsonObject.code(): Int? = try {
+        get("code")?.takeIf { it.isJsonPrimitive }?.asInt
+    } catch (_: Exception) {
         null
     }
 
-    private fun str(o: JsonObject?, key: String): String = try {
-        val el = o?.get(key) ?: return ""
-        if (el.isJsonNull) "" else el.asString
+    private fun JsonObject.message(): String? = try {
+        get("msg")?.takeIf { it.isJsonPrimitive }?.asString?.takeIf { it.isNotBlank() }
+            ?: get("message")?.takeIf { it.isJsonPrimitive }?.asString?.takeIf { it.isNotBlank() }
     } catch (_: Exception) {
-        ""
-    }
-
-    private fun int(o: JsonObject?, vararg keys: String): Int? {
-        for (k in keys) {
-            val el = o?.get(k) ?: continue
-            if (el.isJsonNull) continue
-            return try {
-                if (el.isJsonPrimitive && el.asJsonPrimitive.isString) el.asString.toIntOrNull()
-                else el.asInt
-            } catch (_: Exception) {
-                null
-            }
-        }
-        return null
-    }
-
-    private fun num(o: JsonObject?, vararg keys: String): Double? {
-        for (k in keys) {
-            val el = o?.get(k) ?: continue
-            if (el.isJsonNull) continue
-            return try {
-                if (el.isJsonPrimitive && el.asJsonPrimitive.isString) el.asString.toDoubleOrNull()
-                else el.asDouble
-            } catch (_: Exception) {
-                null
-            }
-        }
-        return null
-    }
-
-    /** 布尔字段：兼容 true/false、1/0、"1"/"0" */
-    private fun bool(o: JsonObject?, vararg keys: String): Boolean? {
-        for (k in keys) {
-            val el = o?.get(k) ?: continue
-            if (el.isJsonNull) continue
-            try {
-                return when {
-                    el.isJsonPrimitive && el.asJsonPrimitive.isBoolean -> el.asBoolean
-                    el.isJsonPrimitive && el.asJsonPrimitive.isNumber -> el.asInt != 0
-                    el.isJsonPrimitive && el.asJsonPrimitive.isString ->
-                        el.asString.trim().let { it == "1" || it.equals("true", true) }
-                    else -> null
-                }
-            } catch (_: Exception) {
-                return null
-            }
-        }
-        return null
+        null
     }
 }

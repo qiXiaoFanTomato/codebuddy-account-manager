@@ -9,81 +9,71 @@ import dev.codebuddy.account.service.AccountSettings
 import java.time.LocalDate
 
 /**
- * 今日签到的跨账号聚合（状态查询 + 一键签到）。
+ * 今日签到的跨账号聚合。
  *
- * 与 [dev.codebuddy.account.usage.UsageTodayTracker] 同构：
- * 单实例状态 + 后台线程执行 + EDT 回调刷新界面，缓存 [STALE_MS] 内不重复打接口。
+ * 对齐 workbuddy2api-panel：上游没有「签到状态查询」接口，今日是否已签以本地按日记录
+ * （AccountSettings.checkinDoneDate / checkinDoneKeys）为准，跨天自动失效；
+ * 一键签到逐账号调用 daily-checkin，成功或「今天已签到」都记当日。
  *
- * 只对「凭据快照里有 accessToken」的账号操作；接口错误按账号隔离，不影响其余账号。
+ * 状态快照不再走网络，只有一键签到在后台线程发请求；接口错误按账号隔离。
  */
 object CheckinTracker {
 
     private val log = logger<CheckinTracker>()
 
-    private const val STALE_MS = 5 * 60_000L
-
-    /** 单个账号的签到结果快照 */
+    /** 单个账号的今日签到快照 */
     data class AccountCheckin(
         val accountKey: String,
         val displayName: String,
-        val status: CheckinService.CheckinStatus? = null,
+        /** 今日已签（本地记录或本次执行结果） */
+        val checked: Boolean = false,
+        /** 本次一键签到的执行结果，未执行时为 null */
         val result: CheckinService.CheckinResult? = null,
     ) {
-        /** 今日是否已签到：执行结果优先，其次状态查询 */
-        val checked: Boolean
-            get() = result?.success == true || result?.already == true || status?.checked == true
-
-        val credit: Double?
-            get() = result?.credit ?: status?.credit
-
-        val failed: String?
-            get() = result?.error ?: status?.error
+        val failed: String? get() = result?.error
     }
 
     data class State(
         val date: LocalDate = LocalDate.now(),
         val items: List<AccountCheckin> = emptyList(),
         val fetchedAt: Long = 0L,
-        val loading: Boolean = false,
         val running: Boolean = false,
     ) {
         val loaded: Boolean get() = fetchedAt > 0L
         val checkedCount: Int get() = items.count { it.checked }
         val failedCount: Int get() = items.count { it.failed != null }
-        val totalCredit: Double get() = items.mapNotNull { it.credit }.sum()
     }
 
     @Volatile
     private var state = State()
 
     private val lock = Any()
-    private var loading = false
     private var running = false
     private val waiters = mutableListOf<() -> Unit>()
 
     fun state(): State = state
 
-    /** 查询各账号今日签到状态；缓存有效时不发请求也不回调 */
+    /** 从本地记录构造今日快照，不发网络请求；缓存有效时不重复重建 */
     fun ensureFresh(force: Boolean = false, onLoaded: (() -> Unit)? = null) {
         val today = LocalDate.now()
-        synchronized(lock) {
-            val fresh = !force && state.date == today && state.loaded &&
-                System.currentTimeMillis() - state.fetchedAt < STALE_MS
-            if (fresh) return
-            if (onLoaded != null) waiters.add(onLoaded)
-            if (loading) return
-            loading = true
-            state = (if (state.date == today) state else State(date = today)).copy(loading = true)
+        val fresh = synchronized(lock) {
+            val f = !force && state.date == today && state.loaded
+            if (!f && onLoaded != null && waiters.size < 8) waiters.add(onLoaded)
+            f
         }
+        if (fresh) return
+        publish(today, localItems(today))
+    }
 
-        ApplicationManager.getApplication().executeOnPooledThread {
-            val items = loadStatuses()
-            publish(today, items)
+    /** 签到开关 / 接口路径变更后清快照，让下一次刷新立刻按新配置重读 */
+    fun invalidate() {
+        synchronized(lock) {
+            state = state.copy(fetchedAt = 0L)
         }
     }
 
     /**
-     * 一键签到：对所有账号执行签到，完成后顺带刷新状态。
+     * 一键签到：对所有账号执行签到，完成后重建今日快照。
      *
      * @param onDone 在 EDT 回调，参数为本次汇总文案
      */
@@ -100,8 +90,7 @@ object CheckinTracker {
                 submitAll(today)
             } catch (t: Throwable) {
                 log.warn("一键签到失败", t)
-                // 异常也要复位 running，否则界面会一直停在「正在执行签到…」
-                finish(today, runCatching { loadStatuses() }.getOrDefault(state.items))
+                finish(today, localItems(today))
                 "签到失败：${t.message ?: t.javaClass.simpleName}"
             }
 
@@ -117,59 +106,61 @@ object CheckinTracker {
         }
     }
 
-    /** 对所有账号执行签到并刷新状态，返回汇总文案 */
+    /** 对所有账号执行签到，返回汇总文案 */
     private fun submitAll(today: LocalDate): String {
         val settings = AccountSettings.getInstance()
         val library = AccountLibrary.getInstance()
-        val saved = try {
+        val saved: List<CredentialSnapshot> = try {
             library.listSaved()
         } catch (t: Throwable) {
             log.warn("读取账号库失败", t)
             emptyList()
         }
 
+        val tokens = library.accessTokenMap()
+        val results = HashMap<String, CheckinService.CheckinResult>()
         var success = 0
         var already = 0
         var failed = 0
-        var credit = 0.0
         val firstErrors = ArrayList<String>()
-        val tokens = library.accessTokenMap()
 
         for (s in saved) {
             val token = tokens[s.accountKey]
-            if (token == null) {
-                failed++
-                firstErrors.add("${s.displayName}：快照中无 accessToken")
-                continue
+            val r = if (token == null) {
+                CheckinService.CheckinResult(error = "快照中无 accessToken")
+            } else {
+                CheckinService.submit(
+                    domain = s.domain,
+                    accessToken = token,
+                    uid = s.uid,
+                    path = settings.checkinSubmitPath,
+                )
             }
-            val r = CheckinService.submit(
-                domain = s.domain,
-                accessToken = token,
-                uid = s.uid,
-                path = settings.checkinSubmitPath,
-            )
+            results[s.accountKey] = r
             when {
                 r.error != null -> {
                     failed++
                     firstErrors.add("${s.displayName}：${r.error}")
                 }
 
-                r.already -> already++
+                r.already -> {
+                    already++
+                    settings.markCheckinDoneToday(s.accountKey, today.toString())
+                }
+
                 else -> {
                     success++
-                    credit += r.credit ?: 0.0
+                    settings.markCheckinDoneToday(s.accountKey, today.toString())
                 }
             }
         }
 
-        // 签到后再查一次状态，让界面与服务端一致
-        finish(today, loadStatuses())
+        finish(today, localItems(today, results))
 
         return buildString {
             append("成功 $success 个")
             if (already > 0) append("，此前已签到 $already 个")
             if (failed > 0) append("，失败 $failed 个")
-            if (credit > 0) append("，共获得 ${formatCredit(credit)} credits")
             if (firstErrors.isNotEmpty()) append("（${firstErrors.take(2).joinToString("；")}）")
         }
     }
@@ -180,50 +171,51 @@ object CheckinTracker {
         publish(today, items)
     }
 
-    // ---------------------------------------------------------------
-    // 内部
-    // ---------------------------------------------------------------
-
-    private fun loadStatuses(): List<AccountCheckin> {
+    /** 本地今日签到记录 + 本次执行结果 */
+    private fun localItems(
+        today: LocalDate,
+        results: Map<String, CheckinService.CheckinResult> = emptyMap(),
+    ): List<AccountCheckin> {
         val settings = AccountSettings.getInstance()
         if (!settings.checkinEnabled) return emptyList()
 
-        val library = AccountLibrary.getInstance()
         val saved: List<CredentialSnapshot> = try {
-            library.listSaved()
+            AccountLibrary.getInstance().listSaved()
         } catch (t: Throwable) {
             log.warn("读取账号库失败", t)
             emptyList()
         }
 
-        val tokens = library.accessTokenMap()
+        val day = today.toString()
         return saved.map { s ->
-            val token = tokens[s.accountKey]
-            val status = if (token == null) {
-                CheckinService.CheckinStatus(error = "快照中无 accessToken")
-            } else {
-                CheckinService.queryStatus(s.domain, token, s.uid, settings.checkinStatusPath)
-            }
-            AccountCheckin(s.accountKey, s.displayName, status)
+            val r = results[s.accountKey]
+            AccountCheckin(
+                accountKey = s.accountKey,
+                displayName = s.displayName,
+                checked = settings.isCheckinDoneToday(s.accountKey, day) ||
+                    r?.success == true || r?.already == true,
+                result = r,
+            )
         }
     }
 
     private fun publish(today: LocalDate, items: List<AccountCheckin>) {
         val pending: List<() -> Unit>
         synchronized(lock) {
-            // running 必须在锁内读取，否则一键签到结束后状态可能仍停在执行中
             state = State(
                 date = today,
                 items = items,
                 fetchedAt = System.currentTimeMillis(),
-                loading = false,
                 running = running,
             )
-            loading = false
             pending = waiters.toList()
             waiters.clear()
         }
-        pending.forEach { callback ->
+        dispatch(pending)
+    }
+
+    private fun dispatch(callbacks: List<() -> Unit>) {
+        callbacks.forEach { callback ->
             ApplicationManager.getApplication().invokeLater({
                 try {
                     callback()
@@ -233,7 +225,4 @@ object CheckinTracker {
             }, ModalityState.any())
         }
     }
-
-    private fun formatCredit(v: Double): String =
-        if (v >= 1000) "%,.0f".format(v) else "%.2f".format(v)
 }

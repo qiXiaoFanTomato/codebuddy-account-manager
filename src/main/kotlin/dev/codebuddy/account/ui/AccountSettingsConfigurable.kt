@@ -5,7 +5,9 @@ import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.util.ui.FormBuilder
 import com.intellij.util.ui.JBUI
+import dev.codebuddy.account.checkin.CheckinTracker
 import dev.codebuddy.account.quota.QuotaDisplayMode
+import dev.codebuddy.account.service.AccountEvents
 import dev.codebuddy.account.service.AccountSettings
 import dev.codebuddy.account.service.QuotaAlertSettings
 import dev.codebuddy.account.usage.ModelQuotaPeriod
@@ -51,7 +53,6 @@ class AccountSettingsConfigurable : Configurable {
     }
     private val packageField = JTextField(16)
     private val checkinCheck = JCheckBox("启用「今日签到」（实验特性：接口非官方，失效时可关闭）")
-    private val checkinStatusField = JTextField(28)
     private val checkinSubmitField = JTextField(28)
     private val growthCheck = JCheckBox("启用「成长中心任务」（实验特性：接口非官方，失效时可关闭）")
     private val growthTasksField = JTextField(28)
@@ -128,7 +129,6 @@ class AccountSettingsConfigurable : Configurable {
             .addComponent(tokenCheck)
             .addVerticalGap(JBUI.scale(6))
             .addComponent(checkinCheck)
-            .addLabeledComponent("签到状态查询路径：", checkinStatusField)
             .addLabeledComponent("执行签到路径：", checkinSubmitField)
             .addVerticalGap(JBUI.scale(6))
             .addComponent(growthCheck)
@@ -176,7 +176,6 @@ class AccountSettingsConfigurable : Configurable {
             (modeCombo.selectedItem as? QuotaDisplayMode) != s.statusBarMode ||
             packageField.text.trim() != s.statusBarPackage ||
             checkinCheck.isSelected != s.checkinEnabled ||
-            checkinStatusField.text.trim() != s.checkinStatusPath ||
             checkinSubmitField.text.trim() != s.checkinSubmitPath ||
             growthCheck.isSelected != s.growthEnabled ||
             growthTasksField.text.trim() != s.growthTasksPath ||
@@ -194,6 +193,10 @@ class AccountSettingsConfigurable : Configurable {
         val s = AccountSettings.getInstance()
         val alert = QuotaAlertSettings.getInstance()
 
+        // 改签到开关 / 接口路径后，旧的状态快照必须立刻失效再按新配置重读
+        val checkinChanged = s.checkinEnabled != checkinCheck.isSelected ||
+            s.checkinSubmitPath != checkinSubmitField.text.trim()
+
         val interval = intValue(intervalSpinner)
         s.state.autoRefreshMinutes = interval
         s.state.autoSyncHistoryOnSwitch = autoSyncCheck.isSelected
@@ -207,7 +210,6 @@ class AccountSettingsConfigurable : Configurable {
         s.state.statusBarMode = ((modeCombo.selectedItem as? QuotaDisplayMode) ?: QuotaDisplayMode.TOTAL_PERCENT).name
         s.state.statusBarPackage = packageField.text.trim()
         s.state.checkinEnabled = checkinCheck.isSelected
-        s.state.checkinStatusPath = checkinStatusField.text.trim()
         s.state.checkinSubmitPath = checkinSubmitField.text.trim()
         s.state.growthEnabled = growthCheck.isSelected
         s.state.growthTasksPath = growthTasksField.text.trim()
@@ -233,6 +235,11 @@ class AccountSettingsConfigurable : Configurable {
 
         // 模型限额配置变更后立即重新统计
         refreshModelQuota()
+
+        if (checkinChanged) {
+            CheckinTracker.invalidate()
+            AccountEvents.fireQuotaChanged()
+        }
     }
 
     override fun reset() {
@@ -252,7 +259,6 @@ class AccountSettingsConfigurable : Configurable {
         modeCombo.selectedItem = s.statusBarMode
         packageField.text = s.statusBarPackage
         checkinCheck.isSelected = s.checkinEnabled
-        checkinStatusField.text = s.checkinStatusPath
         checkinSubmitField.text = s.checkinSubmitPath
         growthCheck.isSelected = s.growthEnabled
         growthTasksField.text = s.growthTasksPath

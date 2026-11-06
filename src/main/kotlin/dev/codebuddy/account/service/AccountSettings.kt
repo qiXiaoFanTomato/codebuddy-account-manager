@@ -40,10 +40,12 @@ class AccountSettings : PersistentStateComponent<AccountSettings.State> {
         var autoSwitchThresholdPercent: Int = 10,
         /** 启用「今日签到」（实验特性，接口非官方，可关闭） */
         var checkinEnabled: Boolean = true,
-        /** 签到状态查询接口路径（以 / 开头） */
-        var checkinStatusPath: String = dev.codebuddy.account.checkin.CheckinService.DEFAULT_STATUS_PATH,
         /** 执行签到接口路径（以 / 开头） */
         var checkinSubmitPath: String = dev.codebuddy.account.checkin.CheckinService.DEFAULT_SUBMIT_PATH,
+        /** 本地签到记录所属日期（yyyy-MM-dd），跨天自动失效 */
+        var checkinDoneDate: String = "",
+        /** 该日期下已签到的 accountKey 列表 */
+        var checkinDoneKeys: MutableList<String> = mutableListOf(),
         /** 启用「成长中心任务」（实验特性，接口非官方，可关闭） */
         var growthEnabled: Boolean = true,
         /** 成长任务列表查询路径（以 / 开头） */
@@ -141,13 +143,26 @@ class AccountSettings : PersistentStateComponent<AccountSettings.State> {
     val autoSwitchEnabled: Boolean get() = myState.autoSwitchEnabled
     val autoSwitchThresholdPercent: Int get() = myState.autoSwitchThresholdPercent
     val checkinEnabled: Boolean get() = myState.checkinEnabled
-    val checkinStatusPath: String
-        get() = myState.checkinStatusPath
-            .ifBlank { dev.codebuddy.account.checkin.CheckinService.DEFAULT_STATUS_PATH }
     val checkinSubmitPath: String
         get() = myState.checkinSubmitPath
             .ifBlank { dev.codebuddy.account.checkin.CheckinService.DEFAULT_SUBMIT_PATH }
     val growthEnabled: Boolean get() = myState.growthEnabled
+
+    /** 今日是否已签到：本地记录与传入日期不一致时视为未签 */
+    fun isCheckinDoneToday(accountKey: String, today: String): Boolean = synchronized(this) {
+        myState.checkinDoneDate == today && accountKey in myState.checkinDoneKeys
+    }
+
+    /** 记录今日已签到；日期变化时清空旧记录 */
+    fun markCheckinDoneToday(accountKey: String, today: String) {
+        synchronized(this) {
+            if (myState.checkinDoneDate != today) {
+                myState.checkinDoneDate = today
+                myState.checkinDoneKeys = mutableListOf()
+            }
+            if (accountKey !in myState.checkinDoneKeys) myState.checkinDoneKeys.add(accountKey)
+        }
+    }
     val growthTasksPath: String
         get() = myState.growthTasksPath
             .ifBlank { dev.codebuddy.account.growth.GrowthService.DEFAULT_TASKS_PATH }
