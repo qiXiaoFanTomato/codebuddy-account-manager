@@ -4,7 +4,11 @@ JetBrains IDE 插件：在本地统一管理多个 **CodeBuddy（coding-copilot-
 
 > 本插件是运行在 JetBrains IDE 内的独立工具，不是 CodeBuddy 官方组件。它直接读写本机已有的 CodeBuddy 凭据文件，不会把凭据上传到任何服务器。
 
-![账号管理面板](docs/screenshots/account-panel.png)
+当前版本：**0.23.2**（2026-11-06）。界面静态预览：[产品落地页](https://qixiaofantomato.github.io/codebuddy-account-manager/) · [插件界面复刻页](https://qixiaofantomato.github.io/codebuddy-account-manager/plugin-ui.html)。
+
+![首页看板](docs/screenshots/dashboard.png)
+
+![账号库](docs/screenshots/accounts.png)
 
 ## 功能
 
@@ -31,7 +35,7 @@ JetBrains IDE 插件：在本地统一管理多个 **CodeBuddy（coding-copilot-
 - **热切换（实验特性）**：通过反射调用 CodeBuddy 插件内部桥接，尝试不重启 IDE 生效；任何一步校验失败会安全降级并提示重启。
 
 ### 额度
-- **自动刷新**：可设置刷新间隔（0 表示关闭，默认 15 分钟），由后台服务排程。
+- **自动刷新**：可设置刷新间隔区间（最小 ~ 最大分钟，0 表示关闭，默认 15 ~ 15 分钟），后台每次在区间内随机取一个整数分钟数作为下次刷新间隔。
 - **额度明细窗口**：每个账号一张卡片，卡片内按套餐分组（含进度条、已用 / 总量、百分比）折叠展开细项，细项显示已用量与到期时间；多账号纵向排列。
 - **消耗明细**：按账号 + 时间范围（今天 / 近 7 天 / 近 30 天）拉取每次请求的时间、产品、模型、积分、使用端与提示词摘要，顶部给出合计积分与模型分布，表格内分页；对应网页版「消耗明细」页。
 - **低额度提醒**：低于阈值（默认 20%）时弹通知，每个账号每个周期只提醒一次，额度恢复后自动重置。
@@ -52,7 +56,7 @@ JetBrains IDE 插件：在本地统一管理多个 **CodeBuddy（coding-copilot-
 
 | 设置项 | 默认值 |
 | --- | --- |
-| 配额自动刷新间隔（分钟，0 表示关闭） | 15 |
+| 配额自动刷新间隔（分钟，最小 ~ 最大，0 表示关闭） | 15 ~ 15 |
 | 剩余额度低于阈值时提醒 / 阈值（%） | 开启 / 20 |
 | 切换账号时默认同步历史会话索引 | 开启 |
 | 同步时复制目标账号缺失的消息目录 | 开启 |
@@ -131,6 +135,11 @@ dependencies {
 版本号、变更说明、`buildPlugin` / `publishPlugin` 与网页上传的完整步骤见 [docs/release.md](docs/release.md)。
 
 插件主页：<https://plugins.jetbrains.com/plugin/35719-codebuddy-account-manager>
+
+界面预览页（GitHub Pages，`main` 分支 `/docs`）：
+
+- 产品落地页：<https://qixiaofantomato.github.io/codebuddy-account-manager/>
+- 插件界面复刻页：<https://qixiaofantomato.github.io/codebuddy-account-manager/plugin-ui.html>
 
 ## 已知限制
 
