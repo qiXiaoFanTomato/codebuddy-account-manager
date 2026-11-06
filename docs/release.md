@@ -7,7 +7,7 @@
 `build.gradle.kts`：
 
 ```kotlin
-version = "0.10.4"
+version = "0.23.2"
 ```
 
 版本号遵循 SemVer，Marketplace 的 `SemVer Only` 开关已开启，不合规的版本号会被拒。
@@ -18,6 +18,9 @@ version = "0.10.4"
 
 - `CHANGELOG.md`：新增一个版本小节，写明新增/修复/变更。
 - `src/main/resources/META-INF/plugin.xml` 的 `<change-notes>`：市场版本页展示的就是这段 HTML。
+- `docs/marketplace-description.html` 与 `docs/change-notes.html`：市场编辑页要粘贴的纯 HTML 片段，与 `plugin.xml` 保持同口径。
+- `README.md` 与 `docs/screenshots/`：截图固定为 `dashboard.png`、`accounts.png`，描述里用 `raw.githubusercontent.com` 绝对地址引用；图片发布前必须过滤账号昵称、手机号、UID、凭据路径与状态栏账号信息。
+- `docs/index.html` 与 `docs/plugin-ui.html`：两个静态界面预览页，由 GitHub Pages（`main` 分支 `/docs`）发布；同时维护 `design/` 下的同名源文件，改完同步复制。
 
 ## 3. 构建
 
