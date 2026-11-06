@@ -137,8 +137,7 @@ open class RoundedCard(
     override fun paintComponent(g: Graphics) {
         val g2 = g.create() as Graphics2D
         try {
-            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-            g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON)
+            Jelly.textHints(g2)
             val w = width.toFloat()
             val h = height.toFloat()
             if (w <= 2f || h <= 2f) return
@@ -181,7 +180,7 @@ open class RoundedCard(
         val shape = Jelly.round(x, 0f, w, h, JBUI.scale(AccountUiRadius.card).toFloat())
         Jelly.paintBody(g2, shape, AccountUiColors.ink, JellyMaterial.FLAT)
         g2.color = AccountUiColors.onInk
-        g2.drawString(text, x + padH, (h - fm.height) / 2f + fm.ascent)
+        g2.drawString(text, x.toInt() + padH, (h.toInt() - fm.height) / 2 + fm.ascent)
     }
 }
 
@@ -385,8 +384,7 @@ class Chip(
     override fun paintComponent(g: Graphics) {
         val g2 = g.create() as Graphics2D
         try {
-            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-            g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON)
+            Jelly.textHints(g2)
             val w = (width - 1).toFloat()
             val h = (height - 1).toFloat()
             val radius = if (arc == AccountUiRadius.pill) h else arcSize.toFloat()

@@ -18,6 +18,13 @@ interface AccountEvents {
     /** 配额数据更新（手动 / 自动刷新） */
     fun quotaChanged()
 
+    /**
+     * 看板卡片布局变化（显示 / 隐藏 / 排序 / 尺寸）。
+     *
+     * @param origin 发起变更的看板实例；本窗口已有过渡动画，收到自己的广播时跳过重建
+     */
+    fun dashboardLayoutChanged(origin: Any)
+
     companion object {
 
         val TOPIC: Topic<AccountEvents> =
@@ -36,6 +43,14 @@ interface AccountEvents {
         fun fireQuotaChanged() {
             try {
                 ApplicationManager.getApplication().messageBus.syncPublisher(TOPIC).quotaChanged()
+            } catch (_: Throwable) {
+            }
+        }
+
+        /** 看板布局变化广播 */
+        fun fireDashboardLayoutChanged(origin: Any) {
+            try {
+                ApplicationManager.getApplication().messageBus.syncPublisher(TOPIC).dashboardLayoutChanged(origin)
             } catch (_: Throwable) {
             }
         }

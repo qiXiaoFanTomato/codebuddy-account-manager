@@ -1,6 +1,7 @@
 package dev.codebuddy.account.ui
 
 import com.intellij.util.ui.JBUI
+import java.awt.BasicStroke
 import java.awt.Component
 import java.awt.Container
 import java.awt.Cursor
@@ -320,7 +321,7 @@ class FlowWrapLayout(
 /**
  * 看板卡片外壳：素墨卡片 + 标题栏（可选）+ 内容区。
  *
- * 编辑能力由外壳统一提供，业务侧只管往 [body] 里塞内容：
+ * 编辑能力由外壳统一提供，且只在 [setEditing] 打开编辑模式后可用，业务侧只管往 [body] 里塞内容：
  * - 标题栏拖拽抓手 [dragHandle] 按住拖动 → 重排顺序（DnD 由 [CardTransferHandler] 完成）；
  * - 尺寸档位由看板统一指定（[size]），卡片自身不再单独切换；
  * - [dropLine] 是拖拽落点提示，由 [CardDropTracker] 在拖拽过程中设置。
@@ -333,7 +334,7 @@ class DashboardCard(
     size: DashboardCardSize = DashboardCardSize.DEFAULT,
     /** 跨列数：默认与尺寸档位一致；[DASHBOARD_SPAN_FULL] 表示独占整行（HTML 的 `.dash-card--wide`） */
     private val span: Int = size.columns,
-    private val onRemove: (() -> Unit)? = null,
+    private val onRemove: ((DashboardCard) -> Unit)? = null,
 ) : RoundedCard(AccountUiColors.cardBg, AccountUiColors.border, AccountUiRadius.card, elevated = true) {
 
     /** 卡片内容区：调用方往里 add 业务组件（贴顶） */
@@ -350,6 +351,30 @@ class DashboardCard(
 
     /** 统一的尺寸档位：由看板设置决定，所有卡片相同 */
     val size: DashboardCardSize = size
+
+    /** 编辑态进度：0 常态，1 编辑中，驱动强调色描边淡入淡出 */
+    private val editAnim = JellyValue(this, 0.0)
+
+    /** 编辑模式下才出现的控件（抓手 + 移除按钮） */
+    private val editControls = mutableListOf<JComponent>()
+
+    /** 是否处于编辑模式：拖拽与移除只在编辑态可用 */
+    var editing: Boolean = false
+        private set
+
+    /**
+     * 入场 / 退场进度：1 为完整显示。
+     *
+     * 增删卡片时由看板逐帧驱动，[paint] 里对整块组件（含子组件）做裁剪与位移，
+     * 避免为每个子组件单独做透明度动画。
+     */
+    var reveal: Double = 1.0
+        set(value) {
+            val next = value.coerceIn(0.0, 1.0)
+            if (field == next) return
+            field = next
+            repaint()
+        }
 
     /** 拖拽中：描边转强调色，给被拖起的卡片一个明确的状态 */
     var dragging: Boolean = false
@@ -374,12 +399,15 @@ class DashboardCard(
         border = JBUI.Borders.empty(AccountUiSpacing.cardPadV, AccountUiSpacing.cardPadH)
 
         if (showHeader) {
-            val actions = JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(4), 0)).apply { isOpaque = false }
-            actions.add(dragHandle)
+            val headerActions = JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(4), 0)).apply { isOpaque = false }
+            editControls += dragHandle
+            headerActions.add(dragHandle)
             if (onRemove != null) {
-                actions.add(CardIconButton("✕", "移除卡片") { onRemove.invoke() })
+                val remove = CardIconButton("✕", "移除卡片") { onRemove.invoke(this) }
+                editControls += remove
+                headerActions.add(remove)
             }
-            val header = SectionHeader(title, subtitle, actions)
+            val header = SectionHeader(title, subtitle, headerActions)
             // 标题栏高度固定：卡片被档位拉高时多出来的空间留给内容，不能被标题栏吞掉
             header.maximumSize = Dimension(Int.MAX_VALUE, header.preferredSize.height)
             add(header)
@@ -392,6 +420,44 @@ class DashboardCard(
         // 内容贴顶、动作贴底：档位拉高后的多余空间落在两者之间
         add(javax.swing.Box.createVerticalGlue())
         add(actions)
+        setEditing(false, animate = false)
+    }
+
+    /**
+     * 切换编辑模式：抓手与移除按钮的显隐立即生效，
+     * 强调色描边用补间淡入淡出，避免整屏卡片同时硬切。
+     */
+    fun setEditing(enabled: Boolean, animate: Boolean = true) {
+        val changed = editing != enabled
+        editing = enabled
+        // 初始态也要设一遍：editing 初值就是 false，短路会让抓手常驻可见
+        editControls.forEach { it.isVisible = enabled }
+        if (!changed) return
+        if (animate) {
+            editAnim.animateTo(if (enabled) 1.0 else 0.0, 200)
+        } else {
+            editAnim.jumpTo(if (enabled) 1.0 else 0.0)
+        }
+        revalidate()
+        repaint()
+    }
+
+    /** 增删过渡：裁剪 + 整数像素位移，整块卡片一起滑入 / 收起 */
+    override fun paint(g: Graphics) {
+        if (reveal >= 0.999) {
+            super.paint(g)
+            return
+        }
+        val g2 = g.create() as Graphics2D
+        try {
+            val shown = (height * reveal).toInt().coerceAtLeast(0)
+            val shift = ((1.0 - reveal) * JBUI.scale(12)).toInt()
+            g2.clipRect(0, 0, width, shown)
+            g2.translate(0, shift)
+            super.paint(g2)
+        } finally {
+            g2.dispose()
+        }
     }
 
     /**
@@ -407,10 +473,21 @@ class DashboardCard(
 
     override fun paintComponent(g: Graphics) {
         super.paintComponent(g)
-        val edge = dropLine ?: return
         val g2 = g.create() as Graphics2D
         try {
             g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+            val edit = editAnim.value.toFloat()
+            if (edit > 0.01f) {
+                g2.color = Jelly.alpha(AccountUiColors.accent, 0.8f * edit)
+                g2.stroke = BasicStroke(1.5f)
+                g2.draw(
+                    Jelly.round(
+                        1f, 1f, (width - 2).toFloat(), (height - 2).toFloat(),
+                        JBUI.scale(AccountUiRadius.card).toFloat(),
+                    )
+                )
+            }
+            val edge = dropLine ?: return
             val thickness = JBUI.scale(3).toFloat()
             val y = if (edge == DROP_AFTER) height - thickness else 0f
             g2.color = AccountUiColors.accent
@@ -487,7 +564,7 @@ class CardTransferHandler(
     override fun createTransferable(c: JComponent): Transferable = StringSelection(card.id.name)
 
     override fun canImport(support: TransferHandler.TransferSupport): Boolean {
-        if (!support.isDrop || support.component !== card) return false
+        if (!card.editing || !support.isDrop || support.component !== card) return false
         val from = sourceId(support) ?: return false
         // 只认本看板的卡片名，避免编辑器里拖来的文本也被当成落点
         if (DashboardCardId.of(from) == null || from == card.id.name) {
@@ -500,6 +577,7 @@ class CardTransferHandler(
     }
 
     override fun importData(support: TransferHandler.TransferSupport): Boolean {
+        if (!card.editing) return false
         val from = sourceId(support) ?: return false
         val after = isDropAfter(support)
         tracker.clear()
@@ -573,8 +651,7 @@ class CardIconButton(
     override fun paintComponent(g: Graphics) {
         val g2 = g.create() as Graphics2D
         try {
-            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-            g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON)
+            Jelly.textHints(g2)
             val hover = hoverAnim.value.toFloat()
             val arc = JBUI.scale(AccountUiRadius.chip).toFloat()
             val shape = RoundRectangle2D.Float(0.5f, 0.5f, width - 1f, height - 1f, arc, arc)
@@ -637,6 +714,7 @@ private class CardDragHandle(private val card: DashboardCard) : JComponent() {
 
         addMouseMotionListener(object : MouseMotionAdapter() {
             override fun mouseDragged(e: MouseEvent) {
+                if (!card.editing) return
                 val start = pressPoint ?: return
                 // 阈值：避免「按下即抖」被当成拖拽
                 if (e.point.distance(start) < JBUI.scale(5)) return

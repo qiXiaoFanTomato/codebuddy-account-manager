@@ -90,6 +90,9 @@ class CodeBuddyStatusBarWidget(private val project: Project) :
                 override fun quotaChanged() {
                     requestRefresh()
                 }
+
+                // 看板布局只影响工具窗内容，状态栏读数无需重算
+                override fun dashboardLayoutChanged(origin: Any) = Unit
             }
         )
 

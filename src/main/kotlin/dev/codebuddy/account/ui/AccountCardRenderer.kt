@@ -44,8 +44,7 @@ class AccountCard(
     override fun paintComponent(g: Graphics) {
         val g2 = g.create() as Graphics2D
         try {
-            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-            g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON)
+            Jelly.textHints(g2)
 
             val w = width
             val h = height

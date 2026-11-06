@@ -10,6 +10,7 @@ import dev.codebuddy.account.model.CredentialSnapshot
 import dev.codebuddy.account.quota.QuotaPackage
 import dev.codebuddy.account.quota.QuotaSummary
 import dev.codebuddy.account.quota.QuotaTime
+import dev.codebuddy.account.service.AccountEvents
 import dev.codebuddy.account.service.AccountLibrary
 import dev.codebuddy.account.service.AccountSettings
 import dev.codebuddy.account.service.AutoRefreshService
@@ -31,8 +32,9 @@ import javax.swing.*
 /**
  * 看板：账号 / 额度 / 消耗的总览视图（只读，不改变任何数据）。
  *
- * 全部功能都以卡片形式铺在网格里（[DashboardCardGridLayout]），卡片可拖拽排序、可移除，
- * 也可从「管理卡片」里恢复。工具条上的「尺寸」统一切换全屏卡片的高度档位
+ * 全部功能都以卡片形式铺在网格里（[DashboardCardGridLayout]）。点「管理卡片」进入编辑模式后，
+ * 卡片可拖拽排序、可移除，也能从「＋ 添加卡片」里恢复；增删与重排都带过渡动画。
+ * 工具条上的「尺寸」统一切换全屏卡片的高度档位
  * （2×1 / 2×2 / 2×4）——所有卡片始终同宽同高，内容按档位容量裁剪，不因数据条数高矮不齐。
  *
  * 卡片的可见性、顺序与统一尺寸记在 [AccountSettings]，重开工具窗仍是用户排过的样子。
@@ -78,6 +80,14 @@ class DashboardPanel(
 
     /** 拖拽落点提示：同一时刻只高亮一张卡片 */
     private val dropTracker = CardDropTracker()
+
+    /** 编辑模式：进入后才显示抓手与移除按钮，并允许拖动排序 / 删除 / 添加 */
+    private var editMode = false
+    private var editButton: JellyButton? = null
+    private var addButton: JellyButton? = null
+
+    /** 正在播放的布局位移动画；全量刷新前要先停掉，避免写到已销毁的卡片实例上 */
+    private var layoutTween: Tween? = null
 
     // 上一次刷新用的数据快照：换尺寸时只重建那一张卡的内容，不触发全量刷新
     private var lastSaved: List<CredentialSnapshot> = emptyList()
@@ -130,6 +140,9 @@ class DashboardPanel(
 
     /** 数据变化后重建看板（EDT 调用） */
     fun update() {
+        // 全量重建会换掉所有卡片实例，先停掉可能仍在跑的位移动画
+        layoutTween?.stop()
+        layoutTween = null
         val saved = library.listSaved()
         val active = library.currentActive()
         val quotas = library.quotaCache.loadAll()
@@ -223,10 +236,7 @@ class DashboardPanel(
             subtitle = subtitle,
             size = currentSize(),
             span = span,
-            onRemove = {
-                settings.setDashboardCardVisible(id.name, false)
-                update()
-            },
+            onRemove = { card -> removeCardWithAnimation(card, id) },
         )
         installCardEditing(card)
         fill(card)
@@ -246,6 +256,10 @@ class DashboardPanel(
             val id = DashboardCardId.of(name) ?: continue
             if (id.name in hidden) continue
             buildCard(id, lastSaved, lastActive, lastQuotas, lastThreshold)?.let { grid.add(it) }
+        }
+        // 新建的卡片要继承当前编辑态，否则编辑模式下刷新一次抓手就消失了
+        grid.components.filterIsInstance<DashboardCard>().forEach {
+            it.setEditing(editMode, animate = false)
         }
         grid.revalidate()
         grid.repaint()
@@ -282,23 +296,125 @@ class DashboardPanel(
         if (index < 0) return
         order.add(if (after) index + 1 else index, from)
         settings.setDashboardCardOrder(order)
+        AccountEvents.fireDashboardLayoutChanged(this@DashboardPanel)
         reorderGrid(order)
     }
 
-    /** 按新顺序重排网格里的卡片（隐藏的卡片不在网格里，跳过即可） */
+    /** 按新顺序重排网格里的卡片：只挪组件，旧位置 → 新位置走 FLIP 位移动画 */
     private fun reorderGrid(order: List<String>) {
         val cards = grid.components
             .filterIsInstance<DashboardCard>()
             .associateBy { it.id.name }
         if (cards.isEmpty()) return
+        val before = captureBounds()
         grid.removeAll()
         for (name in order) cards[name]?.let { grid.add(it) }
+        grid.doLayout()
+        animateLayout(before, captureBounds(), entering = null)
+    }
+
+    // ---------------------------------------------------------------
+    // 0.1 编辑模式：切换 / 添加 / 删除 / 过渡动画
+    // ---------------------------------------------------------------
+
+    private fun toggleEditMode() {
+        editMode = !editMode
+        editButton?.text = if (editMode) "完成编辑" else "管理卡片"
+        editButton?.toolTipText = if (editMode) {
+            "退出编辑模式，卡片顺序与增删已保存"
+        } else {
+            "进入编辑模式：拖动排序 / 删除 / 添加卡片"
+        }
+        addButton?.isVisible = editMode
+        editButton?.parent?.let {
+            it.revalidate()
+            it.repaint()
+        }
+        grid.components.filterIsInstance<DashboardCard>().forEach { it.setEditing(editMode) }
         grid.revalidate()
         grid.repaint()
     }
 
+    /** 添加 = 把隐藏的内置卡片放回看板；新卡片走入场动画，其余卡片 FLIP 让位 */
+    private fun addCardWithAnimation(id: DashboardCardId) {
+        if (id.name !in settings.hiddenDashboardCards) return
+        settings.setDashboardCardVisible(id.name, true)
+        AccountEvents.fireDashboardLayoutChanged(this@DashboardPanel)
+        rebuildWithTransition(entering = id.name)
+    }
+
+    /** 删除 = 先播退场动画，动画结束后再写设置并让其余卡片平滑补位 */
+    private fun removeCardWithAnimation(card: DashboardCard, id: DashboardCardId) {
+        if (!editMode) return
+        layoutTween?.stop()
+        val tween = Tween(200, { t -> Easing.inOutCubic(t) }, { p ->
+            card.reveal = 1.0 - p
+            grid.repaint()
+        })
+        tween.onEnd = {
+            settings.setDashboardCardVisible(id.name, false)
+            AccountEvents.fireDashboardLayoutChanged(this@DashboardPanel)
+            rebuildWithTransition()
+        }
+        layoutTween = tween
+        tween.start()
+    }
+
+    /** 重建网格并给「所有位置变化」补间；[entering] 指定的卡片额外播入场动画 */
+    private fun rebuildWithTransition(entering: String? = null) {
+        if (lastSaved.isEmpty()) return
+        val before = captureBounds()
+        rebuildGrid()
+        grid.doLayout()
+        animateLayout(before, captureBounds(), entering)
+    }
+
+    private fun captureBounds(): Map<String, Rectangle> =
+        grid.components.filterIsInstance<DashboardCard>().associate { it.id.name to it.bounds }
+
     /**
-     * 看板标题行右侧的两个入口：统一尺寸 + 管理卡片。
+     * FLIP：先记旧位置、布局到新位置，再把每帧的差值补到 setBounds 上。
+     *
+     * 位移放在组件 bounds 层而不是 paint 层，子组件会跟着一起移动；
+     * 动画结束交还布局权威，网格高度与滚动范围按新卡片数重算。
+     */
+    private fun animateLayout(
+        before: Map<String, Rectangle>,
+        after: Map<String, Rectangle>,
+        entering: String?,
+    ) {
+        layoutTween?.stop()
+        val cards = grid.components.filterIsInstance<DashboardCard>()
+        val shifts = cards.mapNotNull { card ->
+            val from = before[card.id.name] ?: return@mapNotNull null
+            val to = after[card.id.name] ?: return@mapNotNull null
+            card to (from to to)
+        }
+        val enteringCard = entering?.let { name -> cards.firstOrNull { it.id.name == name } }
+        enteringCard?.reveal = 0.0
+
+        val tween = Tween(260, { t -> Easing.outQuint(t) }, { p ->
+            for ((card, pair) in shifts) {
+                val (from, to) = pair
+                val dx = ((from.x - to.x) * (1.0 - p)).toInt()
+                val dy = ((from.y - to.y) * (1.0 - p)).toInt()
+                card.setBounds(to.x + dx, to.y + dy, to.width, to.height)
+            }
+            enteringCard?.reveal = p
+            grid.repaint()
+        })
+        tween.onEnd = {
+            enteringCard?.reveal = 1.0
+            grid.revalidate()
+            content.revalidate()
+            content.repaint()
+        }
+        layoutTween = tween
+        tween.start()
+    }
+
+    /**
+     * 看板标题行右侧：统一尺寸 +「＋ 添加卡片」（仅编辑态）+「管理卡片 / 完成编辑」。
      *
      * 由外部（主面板的 `.view-head`）挂载，看板自身不再单独占一行工具条，
      * 与 design/plugin-ui.html 的 `.view-head` 一行标题 + 右侧操作保持一致。
@@ -313,11 +429,26 @@ class DashboardPanel(
             "统一切换全部卡片的尺寸",
         ) { showSizeMenu(sizeButton) }
         actions.add(sizeButton)
-        actions.add(
-            JellyButton("管理卡片", JellyButtonVariant.SECONDARY, null, "显示 / 隐藏看板卡片") {
-                showCardMenu(actions)
-            }
-        )
+
+        lateinit var add: JellyButton
+        add = JellyButton(
+            "＋ 添加卡片",
+            JellyButtonVariant.SECONDARY,
+            null,
+            "把隐藏的卡片加回看板",
+        ) { showAddCardMenu(add) }
+        add.isVisible = editMode
+        addButton = add
+        actions.add(add)
+
+        val manage = JellyButton(
+            if (editMode) "完成编辑" else "管理卡片",
+            JellyButtonVariant.SECONDARY,
+            null,
+            "进入编辑模式：拖动排序 / 删除 / 添加卡片",
+        ) { toggleEditMode() }
+        editButton = manage
+        actions.add(manage)
         return actions
     }
 
@@ -334,7 +465,8 @@ class DashboardPanel(
             item.addActionListener {
                 settings.setDashboardCardSize(size.name)
                 (anchor as? JellyButton)?.text = "尺寸 ${size.label}"
-                rebuildGrid()
+                AccountEvents.fireDashboardLayoutChanged(this@DashboardPanel)
+                rebuildWithTransition()
             }
             group.add(item)
             menu.add(item)
@@ -342,27 +474,29 @@ class DashboardPanel(
         menu.show(anchor, 0, anchor.height)
     }
 
-    /** 卡片管理菜单：勾选状态即是否显示，末项可一键恢复默认布局 */
-    private fun showCardMenu(anchor: Component) {
+    /** 编辑模式下的「添加卡片」：列出所有已隐藏卡片，末项可一键恢复默认布局 */
+    private fun showAddCardMenu(anchor: JComponent) {
         val menu = JPopupMenu()
         val hidden = settings.hiddenDashboardCards
-        for (id in DashboardCardId.entries) {
-            val item = JCheckBoxMenuItem(id.title, id.name !in hidden)
-            item.addActionListener {
-                settings.setDashboardCardVisible(id.name, item.isSelected)
-                update()
+        val candidates = DashboardCardId.entries.filter { it.name in hidden }
+        if (candidates.isEmpty()) {
+            menu.add(JMenuItem("全部卡片已在看板中").apply { isEnabled = false })
+        } else {
+            menu.add(JMenuItem("添加到看板").apply { isEnabled = false })
+            for (id in candidates) {
+                menu.add(JMenuItem(id.title).apply {
+                    addActionListener { addCardWithAnimation(id) }
+                })
             }
-            menu.add(item)
         }
         menu.addSeparator()
-        menu.add(
-            JMenuItem("恢复默认布局").apply {
-                addActionListener {
-                    settings.resetDashboardLayout()
-                    update()
-                }
+        menu.add(JMenuItem("恢复默认布局").apply {
+            addActionListener {
+                settings.resetDashboardLayout()
+                AccountEvents.fireDashboardLayoutChanged(this@DashboardPanel)
+                rebuildWithTransition()
             }
-        )
+        })
         menu.show(anchor, 0, anchor.height)
     }
 
@@ -519,7 +653,7 @@ class DashboardPanel(
     /** 今日签到：小卡形态，只留关键数字与最近几个账号 */
     private fun fillCheckinCard(card: DashboardCard) {
         card.actions.addAction("一键签到", "对全部账号执行今日签到", primary = true, onClick = onCheckin)
-        card.actions.addAction("刷新", "重新查询今日签到状态", ghost = true) {
+        card.actions.addAction("刷新", "重新读取本地今日签到记录", ghost = true) {
             CheckinTracker.ensureFresh(force = true) { update() }
         }
 
@@ -531,7 +665,7 @@ class DashboardPanel(
         val st = CheckinTracker.state()
         if (st.running) card.body.add(CardNotice("正在执行签到…"))
         if (!st.loaded) {
-            card.body.add(CardNotice("尚未查询今日签到状态，点「刷新」获取。"))
+            card.body.add(CardNotice("暂无今日签到记录，点「一键签到」执行。"))
             return
         }
         if (st.items.isEmpty()) {
@@ -545,11 +679,7 @@ class DashboardPanel(
                 value = "${st.checkedCount}/${st.items.size}",
                 unit = "个账号已签到",
                 tone = if (allDone) AccountUiColors.success else AccountUiColors.textPrimary,
-                trailing = if (st.totalCredit > 0) {
-                    AccountUiKit.fieldPill("+${num(st.totalCredit)} credits", AccountUiColors.success)
-                } else {
-                    null
-                },
+                trailing = null,
             )
         )
         card.body.add(Box.createVerticalStrut(JBUI.scale(CardMetrics.blockGap)))
@@ -562,41 +692,39 @@ class DashboardPanel(
         )
         if (st.failedCount > 0) {
             card.body.add(Box.createVerticalStrut(JBUI.scale(CardMetrics.rowGap)))
+            // 把首个具体原因露出来：token 失效 / HTTP 错误 / 接口业务码可直接区分
+            val first = st.items.firstNotNullOfOrNull { it.failed }
             card.body.add(
-                CardNotice("${st.failedCount} 个账号失败：多为 token 失效或接口不可用", AccountUiColors.danger)
+                CardNotice(
+                    "${st.failedCount} 个账号签到失败${first?.let { "：$it" } ?: ""}",
+                    AccountUiColors.danger,
+                )
             )
         }
     }
 
     private fun checkinRow(item: CheckinTracker.AccountCheckin): JComponent {
         val (statusText, statusColor) = when {
-            item.failed != null -> "查询失败" to AccountUiColors.danger
+            item.failed != null -> "签到失败" to AccountUiColors.danger
             item.result?.already == true -> "今日已签到" to AccountUiColors.success
             item.result?.success == true -> "签到成功" to AccountUiColors.success
-            item.status?.checked == true -> "今日已签到" to AccountUiColors.success
-            item.status?.checked == false -> "未签到" to AccountUiColors.warning
-            else -> "状态未知" to AccountUiColors.textMuted
+            item.checked -> "今日已签到" to AccountUiColors.success
+            else -> "未签到" to AccountUiColors.warning
         }
 
-        val credit = item.credit
         val failed = item.failed
         return CardRow(
             name = item.displayName,
-            value = when {
-                failed != null -> "查询失败"
-                credit != null && credit > 0 -> "+${num(credit)}"
-                else -> ""
-            },
+            value = if (failed != null) "—" else "",
             tag = AccountUiKit.statusTag(statusText, statusColor),
-            valueTone = when {
-                failed != null -> AccountUiColors.danger
-                credit != null && credit > 0 -> AccountUiColors.success
-                else -> AccountUiColors.textMuted
-            },
+            valueTone = if (failed != null) AccountUiColors.danger else AccountUiColors.textMuted,
             tooltip = buildString {
                 append(item.displayName).append(" · ").append(statusText)
-                if (credit != null && credit > 0) append(" · +${num(credit)} credits")
-                if (failed != null) append(" · ").append(failed)
+                if (failed != null) {
+                    append(" · ").append(failed)
+                } else {
+                    item.result?.message?.takeIf { it.isNotBlank() }?.let { append(" · ").append(it) }
+                }
             },
         )
     }
@@ -1183,6 +1311,8 @@ class DashboardPanel(
             component.cursor = hand
             component.addMouseListener(object : MouseAdapter() {
                 override fun mouseClicked(e: MouseEvent) {
+                    // 编辑模式只做排序 / 增删，点卡片不该跳到明细
+                    if (editMode) return
                     if (SwingUtilities.isLeftMouseButton(e)) action()
                 }
 

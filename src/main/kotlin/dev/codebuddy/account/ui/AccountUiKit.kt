@@ -655,8 +655,7 @@ class AnimatedCreditValue : JComponent() {
     override fun paintComponent(g: Graphics) {
         val g2 = g.create() as Graphics2D
         try {
-            g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON)
-            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+            Jelly.textHints(g2)
             val fm = g2.fontMetrics
             val p = pulse.value.toFloat()
             val text = staticText ?: format(anim.value)
@@ -667,11 +666,11 @@ class AnimatedCreditValue : JComponent() {
                 // 数值变化时闪一次朱印，静止后回到黄铜读数
                 Jelly.mix(AccountUiColors.brass, AccountUiColors.seal, p)
             }
-            // 脉冲：以基线为锚点轻微放大，数字不会压到相邻元素
-            val s = 1.0 + 0.02 * p
-            g2.translate(0.0, (height - fm.descent - JBUI.scale(1)).toDouble())
-            if (s != 1.0) g2.scale(s, s)
-            g2.drawString(text, 0f, 0f)
+            // 脉冲只做整数像素上移：分数倍 scale 会让 40px 大字的字形每帧重新栅格化，
+            // 刷新期间持续发虚，改用颜色 + 整数位移表达同样的呼吸感
+            val rise = (p * JBUI.scale(2)).toInt()
+            g2.translate(0, height - fm.descent - JBUI.scale(1) - rise)
+            g2.drawString(text, 0, 0)
         } finally {
             g2.dispose()
         }
@@ -751,15 +750,15 @@ class HeroDeltaBadge : JComponent() {
         if (a <= 0.01f || text.isEmpty()) return
         val g2 = g.create() as Graphics2D
         try {
-            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-            g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON)
+            Jelly.textHints(g2)
             val shape = Jelly.pill(0.5f, 0.5f, (width - 1).toFloat(), (height - 1).toFloat())
             Jelly.paintBody(g2, shape, Jelly.alpha(AccountUiColors.brassSoft, 0.9f * a), JellyMaterial.FLAT)
             Jelly.paintEdge(g2, shape, Jelly.alpha(AccountUiColors.brassInk, 0.45f * a), 1f)
             g2.font = font
-            g2.color = Jelly.alpha(AccountUiColors.brassInk, a)
+            // 淡入淡出用不透明混色表达，避免文字前景带 alpha 后边缘再被摊薄一层
+            g2.color = Jelly.mix(AccountUiColors.cardBg, AccountUiColors.brassInk, a)
             val fm = g2.fontMetrics
-            g2.drawString(text, (width - fm.stringWidth(text)) / 2f, (height - fm.height) / 2f + fm.ascent)
+            g2.drawString(text, Jelly.textX(width, fm.stringWidth(text)), Jelly.textBaseline(height, fm))
         } finally {
             g2.dispose()
         }
@@ -1080,8 +1079,7 @@ class JellyButton(
     override fun paintComponent(g: Graphics) {
         val g2 = g.create() as Graphics2D
         try {
-            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-            g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON)
+            Jelly.textHints(g2)
             val hover = hoverAnim.value.toFloat()
             val press = pressAnim.value.toFloat()
             val w = width.toFloat()
@@ -1151,19 +1149,24 @@ class JellyButton(
                     else AccountUiColors.textPrimary
             }
             g2.font = font
-            g2.color = Jelly.alpha(fg, alpha)
+            // 禁用态不再压低文字 alpha：半透明前景会让字形边缘变淡发虚，
+            // 改成与按钮表面做不透明混色，保持对比度与锐度
+            val disabledSurface = when (variant) {
+                JellyButtonVariant.PRIMARY -> AccountUiColors.accentFill
+                else -> if (onDark) AccountUiColors.ink else AccountUiColors.cardBg
+            }
+            g2.color = if (isEnabled) fg else Jelly.mix(disabledSurface, fg, 0.55f)
 
             val fm = g2.fontMetrics
             val iconW = if (icon != null) icon.iconWidth + JBUI.scale(5) else 0
             val textW = fm.stringWidth(text)
             val totalW = iconW + textW
-            var x = (w - totalW) / 2f
+            var x = (width - totalW) / 2
             if (icon != null) {
-                icon.paintIcon(this, g2, x.toInt(), ((h - icon.iconHeight) / 2f).toInt())
+                icon.paintIcon(this, g2, x, (height - icon.iconHeight) / 2)
                 x += iconW
             }
-            val ty = (h - fm.height) / 2f + fm.ascent
-            g2.drawString(text, x, ty)
+            g2.drawString(text, x, Jelly.textBaseline(height, fm))
 
             if (variant == JellyButtonVariant.GHOST) {
                 // 下划线的 text-underline-offset 约 4px；强调态加粗到 2px 并改用墨蓝
@@ -1177,7 +1180,7 @@ class JellyButton(
                     alpha,
                 )
                 val thickness = if (emphasized) JBUI.scale(2).toFloat() else 1f
-                g2.fill(Rectangle2D.Float(x, h - JBUI.scale(4).toFloat(), textW.toFloat(), thickness))
+                g2.fill(Rectangle2D.Float(x.toFloat(), h - JBUI.scale(4).toFloat(), textW.toFloat(), thickness))
             }
 
             Jelly.paintFocusRing(g2, shape, isFocusOwner)
@@ -1246,8 +1249,7 @@ class ActionPill(
     override fun paintComponent(g: Graphics) {
         val g2 = g.create() as Graphics2D
         try {
-            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-            g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON)
+            Jelly.textHints(g2)
             val hover = hoverAnim.value.toFloat()
             val w = width.toFloat()
             val h = height.toFloat()
@@ -1255,12 +1257,11 @@ class ActionPill(
 
             g2.font = font
             val fm = g2.fontMetrics
-            val tx = (w - fm.stringWidth(text)) / 2f
-            val ty = (h - fm.height) / 2f + fm.ascent
+            val tx = Jelly.textX(width, fm.stringWidth(text))
             // 档案柜的文字动作：下划线，hover 转朱印，不铺色块
             g2.color = if (hover > 0.3f) AccountUiColors.seal else AccountUiColors.textSecondary
-            g2.drawString(text, tx, ty)
-            g2.fill(Rectangle2D.Float(tx, h - JBUI.scale(4).toFloat(), fm.stringWidth(text).toFloat(), 1f))
+            g2.drawString(text, tx, Jelly.textBaseline(height, fm))
+            g2.fill(Rectangle2D.Float(tx.toFloat(), h - JBUI.scale(4).toFloat(), fm.stringWidth(text).toFloat(), 1f))
 
             Jelly.paintFocusRing(g2, shape, isFocusOwner)
         } finally {
@@ -1556,8 +1557,7 @@ class SegmentedTabs(
     override fun paintComponent(g: Graphics) {
         val g2 = g.create() as Graphics2D
         try {
-            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-            g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON)
+            Jelly.textHints(g2)
 
             val h = height.toFloat()
             if (h <= 0f) return
@@ -1579,8 +1579,8 @@ class SegmentedTabs(
                     index == hoverIndex -> if (onDark) AccountUiColors.onInk else AccountUiColors.textSecondary
                     else -> if (onDark) AccountUiColors.onInkDim else AccountUiColors.textMuted
                 }
-                val tx = (x + (w - fm.stringWidth(items[index])) / 2).toFloat()
-                val ty = ((h - JBUI.scale(3) - fm.height) / 2 + fm.ascent).toFloat()
+                val tx = x + (w - fm.stringWidth(items[index])) / 2
+                val ty = (height - JBUI.scale(3) - fm.height) / 2 + fm.ascent
                 g2.drawString(items[index], tx, ty)
 
                 if (active) {

@@ -2,8 +2,11 @@ package dev.codebuddy.account.ui
 
 import java.awt.BasicStroke
 import java.awt.Color
+import java.awt.FontMetrics
 import java.awt.Graphics2D
+import java.awt.RenderingHints
 import java.awt.Shape
+import java.awt.Toolkit
 import java.awt.geom.AffineTransform
 import java.awt.geom.RoundRectangle2D
 import javax.swing.JComponent
@@ -46,6 +49,46 @@ object Jelly {
      */
     @Volatile
     var animationsEnabled: Boolean = System.getProperty("codebuddy.account.ui.animations", "on") != "off"
+
+    /**
+     * 系统桌面字体 hints：Swing LAF 绘制 JLabel 时用的就是这一份配置
+     * （Windows 上通常是 LCD 子像素 AA + 小数度量 + 笔画标准化）。
+     *
+     * 自绘组件此前统一写死 VALUE_TEXT_ANTIALIAS_ON（灰度 AA），与 JLabel 的
+     * 子像素渲染并存，导致同屏里只有自绘文字显得发虚、笔画变细。
+     */
+    private val desktopTextHints: Map<*, *>? by lazy {
+        runCatching {
+            Toolkit.getDefaultToolkit().getDesktopProperty("awt.font.desktophints") as? Map<*, *>
+        }.getOrNull()
+    }
+
+    /**
+     * 自绘文字统一入口：套用与 JLabel 一致的桌面 hints，图形抗锯齿仍开启。
+     *
+     * 无桌面 hints（无头 / 精简 JRE）时回退灰度 AA + 小数度量，
+     * 至少保证字宽一致，不会出现字距跳变。
+     */
+    fun textHints(g2: Graphics2D) {
+        val hints = desktopTextHints
+        if (hints.isNullOrEmpty()) {
+            g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON)
+            g2.setRenderingHint(
+                RenderingHints.KEY_FRACTIONALMETRICS,
+                RenderingHints.VALUE_FRACTIONALMETRICS_ON,
+            )
+        } else {
+            g2.addRenderingHints(hints)
+        }
+        g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+        g2.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_NORMALIZE)
+    }
+
+    /** 整数像素的垂直居中基线：浮点基线会把笔画摊到相邻两行像素上 */
+    fun textBaseline(height: Int, fm: FontMetrics): Int = (height - fm.height) / 2 + fm.ascent
+
+    /** 整数像素的水平居中起点 */
+    fun textX(width: Int, textWidth: Int): Int = (width - textWidth) / 2
 
     /** 胶囊形状：圆角半径取高度一半 */
     fun pill(x: Float, y: Float, w: Float, h: Float): RoundRectangle2D =
@@ -295,6 +338,9 @@ class Tween(
     private var startedAt = 0L
     private var finished = true
 
+    /** 动画自然结束时回调；提前 [stop] 不触发，用于「退场后再改数据」这类串行操作 */
+    var onEnd: (() -> Unit)? = null
+
     /** 是否正在播放 */
     val running: Boolean get() = !finished
 
@@ -304,6 +350,7 @@ class Tween(
         if (!Jelly.animationsEnabled || durationMs <= 0) {
             onUpdate(1.0)
             finished = true
+            onEnd?.invoke()
             return
         }
         startedAt = System.currentTimeMillis()
@@ -321,6 +368,7 @@ class Tween(
             // 缓动曲线的终值未必等于 1，这里补一次精确终值
             onUpdate(1.0)
             finish()
+            onEnd?.invoke()
         }
     }
 

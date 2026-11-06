@@ -132,6 +132,11 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
             .subscribe(AccountEvents.TOPIC, object : AccountEvents {
                 override fun accountsChanged() = scheduleRefresh()
                 override fun quotaChanged() = scheduleRefresh()
+
+                // 本窗口发起的布局变更自带过渡动画，重建会打断它
+                override fun dashboardLayoutChanged(origin: Any) {
+                    if (origin !== dashboard) scheduleRefresh()
+                }
             })
 
         // 色调切换：卡片底色在构造时固定，需要重建一次才能换色
@@ -734,7 +739,7 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
             if (saved.isNotEmpty()) append(" · $domains 个认证域")
             append(" · 数据已脱敏")
         }
-        dashboardMeta.text = "卡片可拖拽排序 · 尺寸由「尺寸」统一切换 · 今天 " + java.time.LocalDate.now()
+        dashboardMeta.text = "「管理卡片」进入编辑模式可排序 / 增删 · 今天 " + java.time.LocalDate.now()
 
         applyViewState()
         updatePager()

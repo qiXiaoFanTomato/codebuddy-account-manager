@@ -557,8 +557,7 @@ class GlyphBadge(
     override fun paintComponent(g: Graphics) {
         val g2 = g.create() as Graphics2D
         try {
-            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-            g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON)
+            Jelly.textHints(g2)
             g2.color = fill
             g2.fill(
                 RoundRectangle2D.Float(
@@ -700,13 +699,17 @@ private class AvatarBadge(name: String) : JComponent() {
     override fun paintComponent(g: Graphics) {
         val g2 = g.create() as Graphics2D
         try {
-            g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON)
+            Jelly.textHints(g2)
             g2.color = fill
             g2.fill(java.awt.geom.Rectangle2D.Float(0f, 0f, side.toFloat(), side.toFloat()))
             g2.font = font
             g2.color = Color.WHITE
             val fm = g2.fontMetrics
-            g2.drawString(glyph, (side - fm.stringWidth(glyph)) / 2f, (side - fm.height) / 2f + fm.ascent)
+            g2.drawString(
+                glyph,
+                Jelly.textX(side, fm.stringWidth(glyph)),
+                Jelly.textBaseline(side, fm),
+            )
         } finally {
             g2.dispose()
         }
@@ -731,8 +734,7 @@ private class SealStamp : JComponent() {
     override fun paintComponent(g: Graphics) {
         val g2 = g.create() as Graphics2D
         try {
-            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-            g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON)
+            Jelly.textHints(g2)
             g2.translate(width / 2.0, height / 2.0)
             g2.rotate(Math.toRadians(-7.0))
             g2.translate(-width / 2.0, -height / 2.0)
@@ -741,7 +743,11 @@ private class SealStamp : JComponent() {
             g2.draw(java.awt.geom.Rectangle2D.Float(2f, 2f, (width - 4).toFloat(), (height - 4).toFloat()))
             g2.font = font
             val fm = g2.fontMetrics
-            g2.drawString("当前", (width - fm.stringWidth("当前")) / 2f, (height - fm.height) / 2f + fm.ascent)
+            g2.drawString(
+                "当前",
+                Jelly.textX(width, fm.stringWidth("当前")),
+                Jelly.textBaseline(height, fm),
+            )
         } finally {
             g2.dispose()
         }
