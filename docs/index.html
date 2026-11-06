@@ -1,0 +1,732 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CodeBuddy Account Manager — 多个账号，一张卡也不丢</title>
+<meta name="description" content="JetBrains IDE 插件：把多个 CodeBuddy 账号的凭据、额度与历史对话收进本地的档案柜。切号、回滚、查账，不离开编辑器。">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+/* ============================================================
+   TOKENS — 「档案柜 / The Cabinet」
+   冷蓝灰档案纸 + 墨蓝字 + 朱印唯一高饱和 + 黄铜读数 + 铅线
+   ============================================================ */
+:root{
+  --paper:#E8ECEF;
+  --card:#F7F9F9;
+  --drawer:#DDE4E8;
+  --ink:#1B2A3A;
+  --ink-soft:#5A6978;
+  --seal:#B23A2C;
+  --brass:#9B7826;
+  --brass-ink:#745617;
+  --rule:#C6D0D7;
+  --track:#D3DBE0;
+
+  --display:"IBM Plex Sans Condensed","PingFang SC","Microsoft YaHei","Noto Sans CJK SC",sans-serif;
+  --body:"IBM Plex Sans","PingFang SC","Microsoft YaHei","Noto Sans CJK SC",sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,"Cascadia Mono",Consolas,Menlo,monospace;
+
+  --wrap:1160px;
+  --gutter:clamp(20px,5vw,64px);
+  --band-y:80px;
+}
+
+/* ============================================================
+   BASE
+   ============================================================ */
+*,*::before,*::after{box-sizing:border-box}
+html{scroll-behavior:smooth;scroll-padding-top:76px}
+body{
+  margin:0;background:var(--paper);color:var(--ink);
+  font-family:var(--body);font-size:16px;line-height:1.7;
+  -webkit-font-smoothing:antialiased;
+}
+a{color:inherit}
+button{font:inherit;cursor:pointer}
+:focus-visible{outline:3px solid var(--brass);outline-offset:3px}
+::selection{background:var(--brass);color:#fff}
+.wrap{max-width:var(--wrap);margin-inline:auto;padding-inline:var(--gutter)}
+.band{padding-block:var(--band-y)}
+.band--hero{--band-y:88px}
+.band--drawer{--band-y:84px;background:var(--drawer);border-block:1px solid var(--rule)}
+.band--tint{background:var(--drawer);border-block:1px solid var(--rule)}
+.band--rule{border-top:1px solid var(--rule)}
+.band--privacy{--band-y:66px;border-top:1px solid var(--rule)}
+
+/* ============================================================
+   COMPONENTS
+   ============================================================ */
+/* 区块标题 */
+.sec-head{display:flex;align-items:baseline;gap:22px;flex-wrap:wrap;margin:0 0 36px}
+.sec-title{font-family:var(--display);font-weight:700;font-size:clamp(27px,3.4vw,38px);line-height:1.1;letter-spacing:-.03em;margin:0}
+.sec-note{font-size:14px;color:var(--ink-soft);max-width:40em;margin:0}
+.sub-title{font-family:var(--display);font-weight:600;font-size:21px;letter-spacing:-.02em;margin:0 0 22px}
+
+/* 按钮 */
+.btn{
+  font-family:var(--display);font-weight:600;font-size:15px;letter-spacing:.01em;
+  padding:12px 22px;border-radius:2px;border:1px solid var(--ink);
+  background:var(--ink);color:var(--card);transition:background .16s ease,color .16s ease;
+}
+.btn:hover{background:#2C4257}
+.btn:active{background:var(--ink)}
+.btn--quiet{background:transparent;border-color:transparent;color:var(--ink);padding-inline:0;text-decoration:underline;text-decoration-thickness:1px;text-underline-offset:5px}
+.btn--quiet:hover{background:transparent;color:var(--seal)}
+
+/* 档案卡 */
+.account-card{
+  position:relative;background:var(--card);border:1px solid var(--rule);border-radius:3px;
+  box-shadow:0 1px 0 rgba(27,42,58,.07);
+  padding:30px 30px 0;margin-top:14px;
+}
+.card-tab{
+  position:absolute;top:-32px;left:26px;
+  background:var(--ink);color:var(--card);
+  font-family:var(--display);font-weight:600;font-size:13px;letter-spacing:.02em;
+  padding:6px 15px 8px;border-radius:3px 3px 0 0;
+}
+.card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:24px}
+.card-kicker{font-family:var(--mono);font-size:11px;color:var(--ink-soft);margin:0 0 6px}
+.card-domain{font-family:var(--mono);font-size:14px;font-weight:500;margin:0}
+.seal{
+  flex:none;border:2px solid var(--seal);color:var(--seal);
+  font-family:var(--display);font-weight:700;font-size:15px;letter-spacing:.14em;
+  padding:5px 9px 6px;transform:rotate(-7deg);line-height:1;
+}
+.reading{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap;margin-bottom:6px}
+.reading-num{font-family:var(--mono);font-weight:600;font-size:clamp(30px,3.5vw,42px);line-height:1;color:var(--brass);letter-spacing:-.045em;font-variant-numeric:tabular-nums}
+.reading-total{font-family:var(--mono);font-size:12px;color:var(--ink-soft)}
+.reading-label{font-size:13px;color:var(--ink-soft);margin:0 0 18px}
+.meter{height:9px;background:var(--track);position:relative;overflow:hidden}
+.meter-fill{height:100%;width:98%;background:var(--brass);transition:width .55s cubic-bezier(.2,.7,.25,1)}
+.meter::after{
+  content:"";position:absolute;inset:0;pointer-events:none;
+  background:repeating-linear-gradient(to right,transparent 0 9px,rgba(27,42,58,.22) 9px 10px);
+}
+.card-foot{
+  margin-top:26px;padding:12px 0 14px;border-top:1px dashed var(--rule);
+  display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;
+}
+.file-no{font-family:var(--mono);font-size:10.5px;color:var(--ink-soft)}
+.card-btns{display:flex;align-items:center;gap:18px}
+.card-btns .btn{padding:8px 16px;font-size:13.5px}
+.card-btns .btn--quiet{font-size:13.5px;padding:8px 0}
+.switch-log{
+  border-top:1px solid var(--rule);margin-top:2px;padding:11px 0 14px;
+  font-family:var(--mono);font-size:10.5px;line-height:1.85;color:var(--ink-soft);
+}
+.switch-log p{margin:0}
+.switch-log .log-added{color:var(--ink)}
+.switch-log .log-added::before{content:"› ";color:var(--seal)}
+.switch-log .notice{color:var(--brass-ink);font-weight:600}
+.flash{animation:flash .9s ease-out}
+@keyframes flash{0%{color:var(--brass);text-shadow:0 0 0 rgba(155,120,38,.5)}25%{color:var(--seal);text-shadow:0 0 14px rgba(178,58,44,.45)}100%{color:var(--brass);text-shadow:none}}
+
+/* 索引卡 */
+.drawer-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:22px;align-items:start}
+.index-card{
+  position:relative;background:var(--card);border:1px solid var(--rule);border-radius:3px;
+  padding:0 24px 20px;min-height:250px;display:flex;flex-direction:column;
+}
+.index-card:nth-child(1){margin-top:0}
+.index-card:nth-child(2){margin-top:26px}
+.index-card:nth-child(3){margin-top:11px}
+.index-tab{
+  display:inline-block;align-self:flex-start;transform:translateY(-12px);
+  background:var(--ink);color:var(--card);font-family:var(--display);font-weight:600;font-size:12.5px;
+  padding:5px 13px 7px;margin-bottom:22px;letter-spacing:.02em;
+}
+.index-card h3{font-family:var(--display);font-weight:600;font-size:22px;line-height:1.25;letter-spacing:-.02em;margin:0 0 12px}
+.index-card p{font-size:14px;line-height:1.75;color:var(--ink-soft);margin:0 0 22px;max-width:36ch}
+.index-foot{margin-top:auto;padding-top:13px;border-top:1px dashed var(--rule);font-family:var(--mono);font-size:10.5px;color:var(--ink-soft);word-break:break-all}
+
+/* 账本表格 */
+.table-scroll{overflow-x:auto}
+.ledger{width:100%;border-collapse:collapse;min-width:620px;font-size:14px}
+.ledger caption{text-align:left;font-size:13px;color:var(--ink-soft);padding-bottom:14px}
+.ledger thead th{
+  font-family:var(--mono);font-weight:500;font-size:11px;color:var(--ink-soft);
+  text-align:left;padding:0 14px 11px 0;border-bottom:1.5px solid var(--ink);white-space:nowrap;
+}
+.ledger tbody td{padding:14px 14px 14px 0;border-bottom:1px solid var(--rule);vertical-align:middle}
+.ledger tbody tr:hover{background:rgba(255,255,255,.5)}
+.ledger .num{font-family:var(--mono);font-variant-numeric:tabular-nums;white-space:nowrap;text-align:right;padding-right:0}
+.ledger .acct{font-family:var(--display);font-weight:600;font-size:17px;letter-spacing:-.01em;white-space:nowrap}
+.ledger .plan{color:var(--ink-soft)}
+.ledger .due{font-family:var(--mono);font-size:12px;white-space:nowrap}
+.ledger .due--soon{color:var(--seal);font-weight:600}
+.ledger .key{font-size:14px}
+.ledger .val{font-family:var(--mono);font-size:12px;text-align:right;white-space:nowrap;padding-right:0}
+.remain{display:flex;align-items:center;justify-content:flex-end;gap:12px}
+.remain-bar{width:76px;height:5px;background:var(--track);flex:none}
+.remain-bar i{display:block;height:100%;background:var(--brass)}
+.remain-bar i.low{background:var(--seal)}
+.remain-val{font-family:var(--mono);font-size:12px;font-variant-numeric:tabular-nums;min-width:38px;text-align:right}
+.remain-val.low{color:var(--seal);font-weight:600}
+
+/* 账本式清单 */
+.plain-list{margin:0;border-top:1.5px solid var(--ink)}
+.plain-list > div{display:grid;grid-template-columns:minmax(140px,1.1fr) minmax(0,2fr);gap:20px;padding:13px 0;border-bottom:1px solid var(--rule);align-items:baseline}
+.plain-list .pl-k{font-family:var(--display);font-weight:600;font-size:16px;letter-spacing:-.01em}
+.plain-list .pl-v{font-size:13.5px;color:var(--ink-soft);line-height:1.65}
+.plain-list .pl-v code,.reqs code,.steps code,.sec-note code,.privacy code{font-family:var(--mono);font-size:.88em;background:rgba(27,42,58,.06);padding:1px 5px;border-radius:2px}
+
+/* 两列分栏 */
+.split{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,.85fr);gap:clamp(36px,6vw,80px)}
+
+/* 步骤 */
+.steps{list-style:none;margin:0;padding:0;counter-reset:step}
+.steps li{counter-increment:step;position:relative;padding:0 0 20px 38px;border-left:1px solid var(--rule);margin-left:6px}
+.steps li:last-child{border-left-color:transparent;padding-bottom:0}
+.steps li::before{
+  content:counter(step) ".";position:absolute;left:-7px;top:-2px;
+  background:var(--paper);font-family:var(--mono);font-size:12px;color:var(--ink-soft);
+  padding:0 6px 0 0;line-height:1.6;
+}
+.steps strong{display:block;font-weight:600;font-size:15px;margin-bottom:3px}
+.steps span{font-size:13.5px;color:var(--ink-soft)}
+
+/* 环境清单 */
+.reqs{margin:0}
+.reqs div{display:grid;grid-template-columns:118px 1fr;gap:16px;padding:11px 0;border-bottom:1px solid var(--rule);font-size:13.5px}
+.reqs div:first-child{border-top:1px solid var(--rule)}
+.reqs dt{font-family:var(--mono);font-size:11px;color:var(--ink-soft)}
+.reqs dd{margin:0;font-family:var(--mono);font-size:12px}
+
+/* 写入记录 */
+.write-log{background:var(--card);border:1px solid var(--rule);border-radius:3px;padding:24px 26px;font-family:var(--mono);font-size:12px;line-height:2.1}
+.write-log .wl-row{display:grid;grid-template-columns:150px 1fr;gap:18px;border-bottom:1px dashed var(--rule);padding:5px 0}
+.write-log .wl-row:last-child{border-bottom:0}
+.write-log .wl-k{color:var(--ink-soft);font-size:10.5px}
+.write-log .wl-v{word-break:break-all}
+.write-log .mark{color:var(--seal);font-weight:600}
+.write-log .gold{color:var(--brass-ink);font-weight:600}
+
+/* ============================================================
+   SECTIONS
+   ============================================================ */
+/* 顶栏：常驻，呼应插件状态栏 */
+.topbar{position:sticky;top:0;z-index:20;background:var(--paper);border-bottom:1px solid var(--rule)}
+.topbar-inner{
+  max-width:var(--wrap);margin-inline:auto;padding-inline:var(--gutter);
+  min-height:58px;display:flex;align-items:center;gap:clamp(18px,3vw,40px);
+}
+.brand{display:flex;align-items:center;gap:10px;font-family:var(--display);font-weight:700;font-size:17px;letter-spacing:-.01em;text-decoration:none;white-space:nowrap}
+.brand-mark{width:18px;height:18px;flex:none;border:2px solid var(--ink);display:grid;place-items:center}
+.brand-mark::after{content:"";width:6px;height:6px;background:var(--seal)}
+.nav{display:flex;align-items:center;gap:clamp(14px,2vw,24px);overflow-x:auto;scrollbar-width:none;white-space:nowrap}
+.nav::-webkit-scrollbar{display:none}
+.nav a{font-family:var(--display);font-size:14px;font-weight:500;text-decoration:none;color:var(--ink-soft);padding:4px 0;border-bottom:2px solid transparent;transition:color .15s ease,border-color .15s ease}
+.nav a:hover{color:var(--ink)}
+.nav a.is-current{color:var(--ink);border-bottom-color:var(--seal)}
+.topbar-ver{margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--ink-soft);white-space:nowrap}
+
+/* 入场：一次编排 */
+@keyframes settle{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+.enter{animation:settle .62s cubic-bezier(.2,.7,.25,1) both}
+.d1{animation-delay:.04s}.d2{animation-delay:.13s}.d3{animation-delay:.23s}.d4{animation-delay:.34s}
+
+.hero-grid{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,.85fr);gap:clamp(36px,6vw,80px);align-items:center}
+.hero-title{
+  font-family:var(--display);font-weight:700;
+  font-size:clamp(40px,6.1vw,80px);line-height:1.02;letter-spacing:-.042em;
+  margin:0 0 26px;
+}
+.hero-title .line{display:block}
+.hero-lede{max-width:36em;margin:0 0 34px;color:var(--ink-soft);font-size:16.5px;line-height:1.8}
+.hero-actions{display:flex;align-items:center;gap:26px;flex-wrap:wrap}
+
+/* 状态栏读数带 */
+.statusbar{background:var(--ink);color:var(--card)}
+.statusbar-inner{
+  max-width:var(--wrap);margin-inline:auto;padding-inline:var(--gutter);
+  min-height:52px;display:flex;align-items:center;justify-content:space-between;gap:20px;flex-wrap:wrap;
+  font-family:var(--mono);font-size:13px;
+}
+.status-readout{display:flex;align-items:center;gap:11px;font-variant-numeric:tabular-nums}
+.status-dot{width:8px;height:8px;background:var(--seal);flex:none}
+.status-aside{color:rgba(247,249,249,.55);font-size:11px}
+
+/* 隐私 */
+.privacy{border-left:4px solid var(--seal);padding-left:clamp(20px,3vw,34px);max-width:74ch}
+.privacy h2{font-family:var(--display);font-weight:700;font-size:clamp(26px,3.2vw,36px);letter-spacing:-.03em;line-height:1.2;margin:0 0 14px}
+.privacy p{color:var(--ink-soft);font-size:15px;margin:0 0 10px}
+.privacy .disclaimer{font-family:var(--mono);font-size:11.5px;color:var(--ink-soft);margin-top:18px}
+
+/* 页脚 */
+.footer{border-top:1px solid var(--rule);padding-block:30px 40px}
+.footer-inner{display:flex;justify-content:space-between;gap:32px;flex-wrap:wrap;align-items:flex-start}
+.footer-col{display:grid;gap:3px}
+.footer-col .lbl{font-family:var(--mono);font-size:10px;color:var(--ink-soft)}
+.footer-col .val{font-family:var(--mono);font-size:12px}
+.footer a{text-decoration:underline;text-underline-offset:4px;text-decoration-thickness:1px}
+.footer a:hover{color:var(--seal)}
+
+/* ============================================================
+   RESPONSIVE
+   ============================================================ */
+@media(max-width:1000px){
+  .drawer-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .index-card:nth-child(3){margin-top:0}
+}
+@media(max-width:900px){
+  .hero-grid,.split{grid-template-columns:1fr;gap:44px}
+  .account-card{max-width:520px}
+  .drawer-grid{grid-template-columns:1fr;gap:30px}
+  .index-card:nth-child(n){margin-top:0;min-height:0}
+  .band{--band-y:58px}
+  .topbar-ver{display:none}
+  .nav{gap:18px}
+}
+@media(max-width:600px){
+  .hero-title{font-size:clamp(36px,10vw,52px)}
+  .card-head{gap:10px}
+  .statusbar-inner{padding-block:12px}
+  .sec-head{gap:10px}
+  .reqs div,.plain-list > div,.write-log .wl-row{grid-template-columns:1fr;gap:4px}
+  .topbar-inner{gap:16px}
+  .brand{font-size:15px}
+}
+@media(prefers-reduced-motion:reduce){
+  html{scroll-behavior:auto}
+  *,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}
+}
+</style>
+</head>
+<body>
+
+<header class="topbar enter d1">
+  <div class="topbar-inner">
+    <a class="brand" href="#top"><span class="brand-mark" aria-hidden="true"></span>CodeBuddy Accounts</a>
+    <nav class="nav" aria-label="站内导航">
+      <a href="#drawer">抽屉</a>
+      <a href="#switch">切号</a>
+      <a href="#ledger">台账</a>
+      <a href="#history">历史</a>
+      <a href="#settings">设置</a>
+      <a href="#privacy">隐私</a>
+    </nav>
+    <span class="topbar-ver">0.23.2</span>
+  </div>
+</header>
+
+<main id="top">
+
+  <!-- HERO -->
+  <section class="band band--hero" aria-labelledby="hero-title">
+    <div class="wrap hero-grid">
+      <div class="enter d2">
+        <h1 class="hero-title" id="hero-title">
+          <span class="line">多个账号，</span>
+          <span class="line">一张卡也不丢。</span>
+        </h1>
+        <p class="hero-lede">
+          CodeBuddy Account Manager 把散在各处的凭据、额度和历史对话，收进 IDE 右侧的一个抽屉。
+          切号、回滚、查账，都不用离开编辑器。
+        </p>
+        <div class="hero-actions">
+          <a class="btn" href="#start">从 auth 目录导入</a>
+          <a class="btn btn--quiet" href="#drawer">看看抽屉里有什么</a>
+        </div>
+      </div>
+
+      <div class="account-card enter d3" aria-label="当前激活账号的档案卡">
+        <span class="card-tab">当前激活</span>
+        <div class="card-head">
+          <div>
+            <p class="card-kicker">ACCOUNT / <span id="card-alias">夜航船</span></p>
+            <p class="card-domain" id="card-domain">www.codebuddy.cn</p>
+          </div>
+          <span class="seal" aria-label="当前">当前</span>
+        </div>
+
+        <div class="reading">
+          <span class="reading-num" id="card-remain">2262.05</span>
+          <span class="reading-total" id="card-total">/ 2300 credits</span>
+        </div>
+        <p class="reading-label">可用额度 · 写入凭据前会自动备份</p>
+        <div class="meter" role="img" aria-label="剩余额度 98%"><span class="meter-fill" id="card-meter"></span></div>
+
+        <div class="card-foot">
+          <span class="file-no" id="card-file">snapshots/uid@codebuddy.cn.info</span>
+          <div class="card-btns">
+            <button class="btn" type="button" id="btn-switch">切换</button>
+            <button class="btn btn--quiet" type="button" id="btn-rollback">回滚</button>
+          </div>
+        </div>
+        <div class="switch-log" id="switch-log" aria-live="polite">
+          <p>写入前会生成 secret-storage.xml.bak-&lt;时间戳&gt;</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 状态栏读数带 -->
+  <div class="statusbar enter d4" role="status" aria-label="IDE 状态栏预览">
+    <div class="statusbar-inner">
+      <div class="status-readout">
+        <span class="status-dot" aria-hidden="true"></span>
+        <span id="status-text">CodeBuddy: 夜航船 · 2262.05 / 2300 credits</span>
+      </div>
+      <span class="status-aside">常驻在 IDE 状态栏，点一下打开面板</span>
+    </div>
+  </div>
+
+  <!-- 抽屉 -->
+  <section class="band band--drawer" id="drawer" aria-labelledby="drawer-title">
+    <div class="wrap">
+      <div class="sec-head">
+        <h2 class="sec-title" id="drawer-title">抽屉里有什么</h2>
+        <p class="sec-note">每张卡管一件事。插件读的是本机已有的文件，不替你保管任何密钥。</p>
+      </div>
+      <div class="drawer-grid">
+        <article class="index-card">
+          <span class="index-tab">账号库</span>
+          <h3>登录过的账号，自动归档</h3>
+          <p>从 auth 目录的 .info 快照和 secret-storage.xml 里读出来。官方入口登录或切号后 1.5 秒，新凭据就进了库。支持筛选、五种排序、重命名与 JSON 导入导出。</p>
+          <div class="index-foot">codebuddy-accounts/snapshots/&lt;uid&gt;@&lt;domain&gt;.info</div>
+        </article>
+        <article class="index-card">
+          <span class="index-tab">额度</span>
+          <h3>快过期的，先用掉</h3>
+          <p>每个账号一张额度卡，套餐分组、细项到期、今日消耗都在里面。状态栏有五种读数维度；低额度提醒、自动刷新与智能调度按你设的阈值跑。</p>
+          <div class="index-foot">刷新间隔 15 min · 阈值 20% · 冷却 10 min</div>
+        </article>
+        <article class="index-card">
+          <span class="index-tab">历史</span>
+          <h3>对话不跟着账号走</h3>
+          <p>跨账号搜会话、按项目看日报周报，也能把别的账号的历史合并进当前账号——只新增，不覆盖、不删除。支持复制、导出 Markdown 与打开会话目录。</p>
+          <div class="index-foot">history/&lt;workspace&gt;/index.json → index.json.bak</div>
+        </article>
+      </div>
+
+      <div class="plain-list" style="margin-top:52px">
+        <div><span class="pl-k">今日签到</span><span class="pl-v">对账号库所有账号执行每日签到，逐账号显示已签到与获得积分。接口非官方，可在设置页改路径或整体关闭。</span></div>
+        <div><span class="pl-k">成长中心</span><span class="pl-v">逐账号展示任务完成数、待领奖与进行中进度；「一键完成」= 接取 + 上报客户端行为事件 + 领奖，另附独立窗口与旅行巡检、保活、补签。</span></div>
+        <div><span class="pl-k">模型限额</span><span class="pl-v">同时监控多个模型，每条规则独立限额（如 <code>deepseek 200</code>、<code>gpt-5 100</code>），达标提醒切号，剩余低于阈值时预警。</span></div>
+        <div><span class="pl-k">消耗明细</span><span class="pl-v">按账号与时间范围拉取每次请求的时间、产品、模型、积分、使用端与提示词摘要，含合计积分与模型分布，支持分页。</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 切号 -->
+  <section class="band band--rule" id="switch" aria-labelledby="switch-title">
+    <div class="wrap split">
+      <div>
+        <div class="sec-head">
+          <h2 class="sec-title" id="switch-title">切号是一次可以反悔的写入</h2>
+        </div>
+        <p class="sec-note" style="margin-bottom:30px">写回 IDE 的 secret-storage.xml 之前先留一份备份；切换不生效、IDE 退出时用旧值覆盖、热切换校验失败，三种情况都有兜底。</p>
+        <ol class="steps">
+          <li><strong>选中卡片，点「切换」</strong><span>会询问是否同步历史会话索引，当前激活账号不可删除。</span></li>
+          <li><strong>写入凭据</strong><span>把选定账号的快照写回 <code>secret-storage.xml</code>。</span></li>
+          <li><strong>同目录留一份备份</strong><span><code>secret-storage.xml.bak-&lt;时间戳&gt;</code>，回滚就是从这里取。</span></li>
+          <li><strong>重启 IDE 生效</strong><span>CodeBuddy 插件启动时才重新读取凭据。热切换是实验特性，校验失败会安全降级并提示重启。</span></li>
+          <li><strong>想反悔，点「回滚」</strong><span>恢复上一次切换前的凭据；也能一键强制登出当前账号。</span></li>
+        </ol>
+      </div>
+      <div>
+        <h3 class="sub-title">一次切换留下的文件痕迹</h3>
+        <div class="write-log" aria-label="切换写入记录示例">
+          <div class="wl-row"><span class="wl-k">TARGET</span><span class="wl-v">secret-storage.xml</span></div>
+          <div class="wl-row"><span class="wl-k">BACKUP</span><span class="wl-v">secret-storage.xml.bak-20261104-171302</span></div>
+          <div class="wl-row"><span class="wl-k">SNAPSHOT</span><span class="wl-v">snapshots/uid@workbuddy.ai.info</span></div>
+          <div class="wl-row"><span class="wl-k">PENDING</span><span class="wl-v">写入待生效标记，下次启动补写</span></div>
+          <div class="wl-row"><span class="wl-k">HOT SWAP</span><span class="wl-v mark">校验失败 → 降级为重启生效</span></div>
+          <div class="wl-row"><span class="wl-k">RESULT</span><span class="wl-v gold">已切换 · 重启 IDE 后生效</span></div>
+        </div>
+        <p style="font-size:13px;color:var(--ink-soft);margin:18px 0 0">待生效补偿：IDE 退出时若用内存旧值覆盖了凭据，下次启动会自动补写并提示再重启一次。</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 台账 -->
+  <section class="band band--tint" id="ledger" aria-labelledby="ledger-title">
+    <div class="wrap">
+      <div class="sec-head">
+        <h2 class="sec-title" id="ledger-title">台账</h2>
+        <p class="sec-note">额度明细按套餐分组，细项逐条列出到期时间。数字取自本机缓存，刷新时才回服务端取数。</p>
+      </div>
+      <div class="table-scroll">
+        <table class="ledger">
+          <caption>账号额度速览 · 数据已脱敏</caption>
+          <thead>
+            <tr>
+              <th scope="col">账号</th>
+              <th scope="col">套餐</th>
+              <th scope="col" style="text-align:right">已用 / 总量</th>
+              <th scope="col">到期</th>
+              <th scope="col" style="text-align:right">剩余</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="acct">夜航船</td><td class="plan">基础套餐</td>
+              <td class="num">37.95 / 2300</td><td class="due">2026-11-30</td>
+              <td class="num"><div class="remain"><span class="remain-bar"><i style="width:98%"></i></span><span class="remain-val">98%</span></div></td>
+            </tr>
+            <tr>
+              <td class="acct">沙丘</td><td class="plan">加赠包</td>
+              <td class="num">1022.83 / 4519</td><td class="due due--soon">2026-11-12</td>
+              <td class="num"><div class="remain"><span class="remain-bar"><i style="width:77%"></i></span><span class="remain-val">77%</span></div></td>
+            </tr>
+            <tr>
+              <td class="acct">北岸</td><td class="plan">基础套餐</td>
+              <td class="num">2987.40 / 4519</td><td class="due">2026-12-28</td>
+              <td class="num"><div class="remain"><span class="remain-bar"><i style="width:34%"></i></span><span class="remain-val">34%</span></div></td>
+            </tr>
+            <tr>
+              <td class="acct">松间</td><td class="plan">试用包</td>
+              <td class="num">200 / 200</td><td class="due due--soon">2026-11-07</td>
+              <td class="num"><div class="remain"><span class="remain-bar"><i class="low" style="width:0%"></i></span><span class="remain-val low">耗尽</span></div></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="split" style="margin-top:48px">
+        <div>
+          <h3 class="sub-title">看板上的读数</h3>
+          <div class="plain-list">
+            <div><span class="pl-k">今日消耗积分</span><span class="pl-v">加大号数字，数值变化时从旧值滚动到新值，瞬间的增量以香槟金高亮，位数变化不挤动布局。</span></div>
+            <div><span class="pl-k">30 天到期看板</span><span class="pl-v">按套餐类型合并，显示同类型在多个账号上的账号数、细项数与剩余合计。</span></div>
+            <div><span class="pl-k">状态栏额度</span><span class="pl-v">五种维度可选；数值下降时平滑递减，上升时直接显示新值。</span></div>
+          </div>
+        </div>
+        <div>
+          <h3 class="sub-title">模型限额规则</h3>
+          <div class="write-log" aria-label="模型限额规则示例">
+            <div class="wl-row"><span class="wl-k">PERIOD</span><span class="wl-v">本月</span></div>
+            <div class="wl-row"><span class="wl-k">deepseek</span><span class="wl-v">已用 142.6 / 限额 200 · 剩余 57.4</span></div>
+            <div class="wl-row"><span class="wl-k">gpt-5</span><span class="wl-v mark">已用 96.2 / 限额 100 · 剩余 3.8</span></div>
+            <div class="wl-row"><span class="wl-k">预警阈值</span><span class="wl-v">剩余低于 20% 时提醒一次</span></div>
+            <div class="wl-row"><span class="wl-k">模型来源</span><span class="wl-v">GET /v3/config 下拉选择，或手填关键字</span></div>
+          </div>
+          <p style="font-size:13px;color:var(--ink-soft);margin:16px 0 0">限额只做统计与预警，不会拦截客户端的模型调用。</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 历史 -->
+  <section class="band band--rule" id="history" aria-labelledby="history-title">
+    <div class="wrap split">
+      <div>
+        <div class="sec-head">
+          <h2 class="sec-title" id="history-title">历史是所有账号共用的</h2>
+        </div>
+        <p class="sec-note" style="margin-bottom:30px">扫描各账号 <code>history/&lt;工作区&gt;/index.json</code>，按今天 / 昨天 / 最近 7 天 / 更早分组，消息按 createdAt 排序，文本与工具调用分块渲染，工具结果只显示摘要。</p>
+        <div class="plain-list">
+          <div><span class="pl-k">日报 / 周报</span><span class="pl-v">默认按项目统计，项目名由会话消息里的绝对路径反推，解析不到时回退为 <code>项目 &lt;hash 前 8 位&gt;</code>；另有账号 / 日期 / 时段 / 会话类型维度。</span></div>
+          <div><span class="pl-k">左侧筛选</span><span class="pl-v">维度分布条与「今天 / 昨天 / 本周」快捷按钮都可点选，筛选结果同时作用于复制 Markdown 与生成提示词。</span></div>
+          <div><span class="pl-k">用 CodeBuddy 生成</span><span class="pl-v">把统计事实拼成提示词复制到剪贴板并打开对话窗口，粘贴发送后由模型生成正文。</span></div>
+          <div><span class="pl-k">历史共享</span><span class="pl-v">把全部账号的会话索引合并进当前激活账号，复制目标账号缺失的消息目录；也可批量同步全部账号。</span></div>
+        </div>
+      </div>
+      <div>
+        <h3 class="sub-title">同步时遵守的三条</h3>
+        <div class="write-log">
+          <div class="wl-row"><span class="wl-k">01</span><span class="wl-v">只处理目标账号已存在的工作区目录</span></div>
+          <div class="wl-row"><span class="wl-k">02</span><span class="wl-v">只新增，不覆盖、不删除</span></div>
+          <div class="wl-row"><span class="wl-k">03</span><span class="wl-v">单个会话消息复制上限 2000 个文件</span></div>
+          <div class="wl-row"><span class="wl-k">备份</span><span class="wl-v">覆盖历史索引前生成 index.json.bak</span></div>
+          <div class="wl-row"><span class="wl-k">主键</span><span class="wl-v gold">uid@domain（同 UID 不同域名算两个账号）</span></div>
+        </div>
+        <p style="font-size:13px;color:var(--ink-soft);margin:16px 0 0">同步后重启 IDE，让 CodeBuddy 侧边栏刷新。</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 设置 -->
+  <section class="band band--tint" id="settings" aria-labelledby="settings-title">
+    <div class="wrap">
+      <div class="sec-head">
+        <h2 class="sec-title" id="settings-title">设置</h2>
+        <p class="sec-note"><code>Settings | Tools | CodeBuddy 账号管理器</code>。默认值取自项目 README，接口类路径都可改或整体关闭。</p>
+      </div>
+      <div class="table-scroll">
+        <table class="ledger">
+          <caption>常用设置项与默认值</caption>
+          <thead>
+            <tr><th scope="col">设置项</th><th scope="col" style="text-align:right">默认值</th></tr>
+          </thead>
+          <tbody>
+            <tr><td class="key">配额自动刷新间隔（分钟，0 表示关闭）</td><td class="val">15</td></tr>
+            <tr><td class="key">剩余额度低于阈值时提醒 / 阈值</td><td class="val">开启 / 20%</td></tr>
+            <tr><td class="key">切换账号时默认同步历史会话索引</td><td class="val">开启</td></tr>
+            <tr><td class="key">同步时复制目标账号缺失的消息目录</td><td class="val">开启</td></tr>
+            <tr><td class="key">切号时尝试热切换（实验特性）</td><td class="val">关闭</td></tr>
+            <tr><td class="key">当前账号额度低于阈值时自动调度 / 触发阈值</td><td class="val">关闭 / 10%</td></tr>
+            <tr><td class="key">状态栏额度维度</td><td class="val">总剩余百分比</td></tr>
+            <tr><td class="key">模型限额规则</td><td class="val">deepseek = 200</td></tr>
+            <tr><td class="key">统计周期 / 接近限额预警阈值</td><td class="val">本月 / 20%</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- 开始用 / 环境 / 限制 -->
+  <section class="band band--rule" id="start" aria-labelledby="start-title">
+    <div class="wrap split">
+      <div>
+        <h2 class="sub-title" id="start-title">三步开始用</h2>
+        <ol class="steps">
+          <li><strong>打开面板</strong><span><code>Tools | CodeBuddy Account Manager</code>，或者点状态栏上的读数。</span></li>
+          <li><strong>把账号收进库</strong><span>点「从 auth 目录导入」，本机已有的账号就变成一张张卡片。</span></li>
+          <li><strong>选中，切换</strong><span>写入前自动备份，按提示重启 IDE 生效；想反悔就点「回滚」。</span></li>
+        </ol>
+
+        <h2 class="sub-title" style="margin-top:44px">已知限制</h2>
+        <div class="plain-list">
+          <div><span class="pl-k">常规切号要重启</span><span class="pl-v">CodeBuddy 插件启动时才读取凭据并缓存。</span></div>
+          <div><span class="pl-k">热切换会降级</span><span class="pl-v">依赖插件内部类，CodeBuddy 版本变更时自动退回重启生效。</span></div>
+          <div><span class="pl-k">平台范围</span><span class="pl-v">仅 Windows 与 IntelliJ IDEA 2026.2（build 262）。</span></div>
+          <div><span class="pl-k">搜索索引</span><span class="pl-v">设置页与动作未参与 IDE 全局搜索索引。</span></div>
+          <div><span class="pl-k">逆向接口</span><span class="pl-v">签到与成长中心接口非官方公开，字段可能随版本变化，失败只提示不影响账号。</span></div>
+        </div>
+      </div>
+      <div>
+        <h2 class="sub-title">跑在这台机器上</h2>
+        <dl class="reqs">
+          <div><dt>OS</dt><dd>Windows</dd></div>
+          <div><dt>IDE</dt><dd>IntelliJ IDEA 2026.2 (262)</dd></div>
+          <div><dt>依赖插件</dt><dd>com.tencent.cloud.codingcopilot</dd></div>
+          <div><dt>构建</dt><dd>JDK 21 · Kotlin 2.4.0</dd></div>
+          <div><dt>凭据位置</dt><dd>&lt;IDE config&gt;/codebuddy-accounts/</dd></div>
+        </dl>
+        <div class="write-log" style="margin-top:28px">
+          <div class="wl-row"><span class="wl-k">index.json</span><span class="wl-v">账号库索引</span></div>
+          <div class="wl-row"><span class="wl-k">snapshots/</span><span class="wl-v">凭据快照目录</span></div>
+          <div class="wl-row"><span class="wl-k">quota-cache.json</span><span class="wl-v">额度缓存</span></div>
+          <div class="wl-row"><span class="wl-k">*.bak</span><span class="wl-v">写入前的时间戳备份</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 隐私 -->
+  <section class="band band--privacy" id="privacy" aria-labelledby="privacy-title">
+    <div class="wrap">
+      <div class="privacy">
+        <h2 id="privacy-title">凭据只留在这台机器。</h2>
+        <p>插件直接读写本机已有的 CodeBuddy 凭据文件与历史目录，不上传、不代理任何账号数据。额度查询只在本机与 CodeBuddy 服务端之间进行；成长中心与签到请求也只与官方服务端通信。导出的 JSON 与 Markdown 包含完整凭据，由你自己保管。</p>
+        <p>写入 <code>secret-storage.xml</code> 前生成带时间戳的 .bak 备份，覆盖历史索引前生成 <code>index.json.bak</code>。所有降级路径都只提示，不改写别的账号。</p>
+        <p class="disclaimer">本插件是独立的本地工具，不是 CodeBuddy 官方组件。使用前请确认符合你所使用服务的使用条款。</p>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="footer">
+  <div class="wrap footer-inner">
+    <div class="footer-col"><span class="lbl">VERSION</span><span class="val">0.23.2</span></div>
+    <div class="footer-col"><span class="lbl">BUILD</span><span class="val">sinceBuild 262 / untilBuild 262.*</span></div>
+    <div class="footer-col"><span class="lbl">PREVIEW</span><span class="val"><a href="plugin-ui.html">插件界面复刻页</a></span></div>
+    <div class="footer-col"><span class="lbl">SOURCE</span><span class="val"><a href="https://github.com/qiXiaoFanTomato/codebuddy-account-manager" target="_blank" rel="noopener">GitHub</a></span></div>
+    <div class="footer-col"><span class="lbl">INSTALL</span><span class="val"><a href="https://plugins.jetbrains.com/plugin/35719-codebuddy-account-manager" target="_blank" rel="noopener">JetBrains Marketplace</a></span></div>
+    <div class="footer-col"><span class="lbl">STATUS</span><span class="val">本地运行 · 无服务端</span></div>
+  </div>
+</footer>
+
+<script>
+(function(){
+  /* ---------- 档案卡：切换 / 回滚 ---------- */
+  var initial = {
+    alias:"夜航船", domain:"www.codebuddy.cn", remain:"2262.05",
+    total:"/ 2300 credits", pct:98, file:"snapshots/uid@codebuddy.cn.info",
+    readout:"CodeBuddy: 夜航船 · 2262.05 / 2300 credits"
+  };
+  var next = {
+    alias:"沙丘", domain:"www.workbuddy.ai", remain:"3496.17",
+    total:"/ 4519 credits", pct:77, file:"snapshots/uid@workbuddy.ai.info",
+    readout:"CodeBuddy: 沙丘 · 3496.17 / 4519 credits"
+  };
+
+  var el = {
+    alias:document.getElementById("card-alias"),
+    domain:document.getElementById("card-domain"),
+    remain:document.getElementById("card-remain"),
+    total:document.getElementById("card-total"),
+    meter:document.getElementById("card-meter"),
+    file:document.getElementById("card-file"),
+    status:document.getElementById("status-text"),
+    log:document.getElementById("switch-log"),
+    switchBtn:document.getElementById("btn-switch"),
+    rollbackBtn:document.getElementById("btn-rollback")
+  };
+  var switched = false;
+
+  function stamp(){
+    var d = new Date(), p = function(n){ return String(n).padStart(2,"0"); };
+    return d.getFullYear() + p(d.getMonth()+1) + p(d.getDate()) + "-" + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds());
+  }
+
+  function paint(s){
+    el.alias.textContent = s.alias;
+    el.domain.textContent = s.domain;
+    el.remain.textContent = s.remain;
+    el.total.textContent = s.total;
+    el.meter.style.width = s.pct + "%";
+    el.file.textContent = s.file;
+    el.status.textContent = s.readout;
+    document.querySelector(".meter").setAttribute("aria-label", "剩余额度 " + s.pct + "%");
+    el.remain.classList.remove("flash");
+    void el.remain.offsetWidth;
+    el.remain.classList.add("flash");
+  }
+
+  function addLog(lines){
+    var frag = document.createDocumentFragment();
+    lines.forEach(function(text, i){
+      var p = document.createElement("p");
+      p.className = i === lines.length - 1 ? "notice" : "log-added";
+      p.textContent = text;
+      frag.appendChild(p);
+    });
+    el.log.appendChild(frag);
+  }
+
+  el.switchBtn.addEventListener("click", function(){
+    if(switched) return;
+    switched = true;
+    paint(next);
+    addLog([
+      "已写入 secret-storage.xml",
+      "已备份 secret-storage.xml.bak-" + stamp(),
+      "已切换。重启 IDE 后生效。"
+    ]);
+  });
+
+  el.rollbackBtn.addEventListener("click", function(){
+    if(!switched) return;
+    switched = false;
+    paint(initial);
+    addLog([
+      "已恢复上一次切换前的凭据",
+      "已回滚。重启 IDE 后生效。"
+    ]);
+  });
+
+  /* ---------- 站内导航：当前区块高亮 ---------- */
+  var links = Array.prototype.slice.call(document.querySelectorAll(".nav a"));
+  var targets = links.map(function(a){ return document.querySelector(a.getAttribute("href")); }).filter(Boolean);
+  if("IntersectionObserver" in window && targets.length){
+    var visible = {};
+    var observer = new IntersectionObserver(function(entries){
+      entries.forEach(function(entry){ visible[entry.target.id] = entry.isIntersecting; });
+      var current = targets.filter(function(t){ return visible[t.id]; })[0];
+      links.forEach(function(a){
+        a.classList.toggle("is-current", !!current && a.getAttribute("href") === "#" + current.id);
+      });
+    }, { rootMargin: "-20% 0px -70% 0px", threshold: 0 });
+    targets.forEach(function(t){ observer.observe(t); });
+  }
+})();
+</script>
+</body>
+</html>
