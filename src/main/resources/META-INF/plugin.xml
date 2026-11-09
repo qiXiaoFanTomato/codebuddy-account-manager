@@ -52,11 +52,23 @@
             <li>今日签到与成长中心接口非官方公开接口，路径与字段可能随版本变化，失败只提示且可在设置页改路径或关闭。</li>
             <li>模型限额只做统计与预警，不会拦截 CodeBuddy 客户端的模型调用。</li>
         </ul>
+        <h3>源码与反馈</h3>
+        <p>源码仓库：<a href="https://github.com/qiXiaoFanTomato/codebuddy-account-manager">github.com/qiXiaoFanTomato/codebuddy-account-manager</a>。</p>
+        <p>问题反馈与功能建议统一走 <a href="https://github.com/qiXiaoFanTomato/codebuddy-account-manager/issues">GitHub Issues</a>：请附 IDE 版本、CodeBuddy 插件版本与复现步骤，不要粘贴 token 等凭据内容。</p>
         <p>本插件是独立的本地工具，不是 CodeBuddy 官方组件。</p>
     ]]></description>
 
     <change-notes><![CDATA[
-        <h3>0.23.2 — 当前版本</h3>
+        <h3>0.24.1 — 当前版本</h3>
+        <ul>
+            <li>额度台账新增跨账号共享额度池与临期额度视图：明细窗口可按账号查看 7 天内到期额度，共享池按到期时间给出跨账号消耗顺序。</li>
+            <li>成长中心旅行巡检补报预计回来时间，任务明细展示更完整。</li>
+            <li>对话日报 / 周报改用 git log 短指令生成：只把区间与口径交给 CodeBuddy 在当前项目执行，不再搬运提交数据，避免大量变更文件导致粘贴截断。</li>
+            <li>修复深色主题下浅色「档案柜」纸面弹窗文字读不出的问题。</li>
+            <li>市场描述补充 GitHub 源码地址与 Issues 反馈入口。</li>
+        </ul>
+
+        <h3>0.23.2</h3>
         <ul>
             <li>配额自动刷新支持「最小 ~ 最大分钟」区间，后台每轮随机取下次间隔；默认 15 ~ 15 分钟。</li>
             <li>目录扫描整合进历史对话窗口：目录选择、包含子目录、扫描 / 停止、进度与跳过 / 错误明细；移除独立扫描窗口与 Tools 菜单动作。</li>

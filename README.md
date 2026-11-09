@@ -4,7 +4,7 @@ JetBrains IDE 插件：在本地统一管理多个 **CodeBuddy（coding-copilot-
 
 > 本插件是运行在 JetBrains IDE 内的独立工具，不是 CodeBuddy 官方组件。它直接读写本机已有的 CodeBuddy 凭据文件，不会把凭据上传到任何服务器。
 
-当前版本：**0.23.2**（2026-11-06）。界面静态预览：[产品落地页](https://qixiaofantomato.github.io/codebuddy-account-manager/) · [插件界面复刻页](https://qixiaofantomato.github.io/codebuddy-account-manager/plugin-ui.html)。
+当前版本：**0.24.1**（2026-11-09）。源码仓库：<https://github.com/qiXiaoFanTomato/codebuddy-account-manager>。界面静态预览：[产品落地页](https://qixiaofantomato.github.io/codebuddy-account-manager/) · [插件界面复刻页](https://qixiaofantomato.github.io/codebuddy-account-manager/plugin-ui.html)。
 
 ![首页看板](docs/screenshots/dashboard.png)
 
@@ -152,7 +152,9 @@ dependencies {
 
 ## 反馈
 
-发现问题请提交 Issue，并附 IDE 版本、CodeBuddy 插件版本与复现步骤（请勿粘贴 token 等凭据内容）。
+源码仓库与版本更新：<https://github.com/qiXiaoFanTomato/codebuddy-account-manager>。
+
+发现问题或有功能建议，请统一到 [GitHub Issues](https://github.com/qiXiaoFanTomato/codebuddy-account-manager/issues) 反馈，并附 IDE 版本、CodeBuddy 插件版本与复现步骤（请勿粘贴 token 等凭据内容）。
 
 ## License
 

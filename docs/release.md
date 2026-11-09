@@ -7,7 +7,7 @@
 `build.gradle.kts`：
 
 ```kotlin
-version = "0.23.2"
+version = "0.24.1"
 ```
 
 版本号遵循 SemVer，Marketplace 的 `SemVer Only` 开关已开启，不合规的版本号会被拒。
