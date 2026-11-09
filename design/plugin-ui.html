@@ -1,0 +1,1041 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CodeBuddy Accounts — 插件界面复刻</title>
+<meta name="description" content="CodeBuddy Account Manager 插件界面的 Web 复刻：账号卡片、看板、额度明细与状态栏，沿用「档案柜」视觉语言。">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+/* ============================================================
+   TOKENS — 与 design/index.html 完全同一套「档案柜」
+   ============================================================ */
+:root{
+  --paper:#E8ECEF;
+  --card:#F7F9F9;
+  --drawer:#DDE4E8;
+  --ink:#1B2A3A;
+  --ink-soft:#5A6978;
+  --seal:#B23A2C;
+  --brass:#9B7826;
+  --brass-ink:#745617;
+  --rule:#C6D0D7;
+  --track:#D3DBE0;
+
+  --display:"IBM Plex Sans Condensed","PingFang SC","Microsoft YaHei","Noto Sans CJK SC",sans-serif;
+  --body:"IBM Plex Sans","PingFang SC","Microsoft YaHei","Noto Sans CJK SC",sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,"Cascadia Mono",Consolas,Menlo,monospace;
+
+  --shell:1240px;
+  --gutter:clamp(16px,3vw,34px);
+}
+*,*::before,*::after{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{
+  margin:0;background:var(--paper);color:var(--ink);
+  font-family:var(--body);font-size:14px;line-height:1.6;
+  -webkit-font-smoothing:antialiased;
+  padding:clamp(16px,4vw,48px) clamp(12px,3vw,40px) 64px;
+}
+button,input,select{font:inherit;cursor:pointer}
+input,select{color:var(--ink)}
+:focus-visible{outline:3px solid var(--brass);outline-offset:2px}
+::selection{background:var(--brass);color:#fff}
+[hidden]{display:none!important}
+
+/* ============================================================
+   WINDOW SHELL
+   ============================================================ */
+.shell{
+  max-width:var(--shell);margin-inline:auto;
+  display:grid;grid-template-columns:minmax(0,1fr) 44px;
+  background:var(--card);border:1px solid var(--rule);border-radius:4px;
+  box-shadow:0 1px 0 rgba(27,42,58,.08),0 14px 34px rgba(27,42,58,.07);
+  overflow:hidden;
+}
+.window{min-width:0;display:flex;flex-direction:column}
+
+/* 标题栏：与底部状态栏呼应的两条深墨带之一 */
+.titlebar{background:var(--ink);color:var(--card);display:flex;align-items:stretch;min-height:46px;gap:0}
+.titlebar-name{
+  display:flex;align-items:center;gap:9px;padding:0 20px;
+  font-family:var(--display);font-weight:700;font-size:15px;letter-spacing:-.01em;white-space:nowrap;
+  border-right:1px solid rgba(247,249,249,.16);
+}
+.brand-mark{width:16px;height:16px;border:2px solid var(--card);display:grid;place-items:center;flex:none}
+.brand-mark::after{content:"";width:6px;height:6px;background:var(--seal)}
+.tabs{display:flex;align-items:stretch;overflow-x:auto;scrollbar-width:none}
+.tabs::-webkit-scrollbar{display:none}
+.tab{
+  background:transparent;border:0;color:rgba(247,249,249,.6);
+  font-family:var(--display);font-size:14px;font-weight:600;
+  padding:0 20px;border-bottom:3px solid transparent;white-space:nowrap;
+  transition:color .15s ease,border-color .15s ease;
+}
+.tab:hover{color:var(--card)}
+.tab[aria-selected="true"]{color:var(--card);border-bottom-color:var(--seal)}
+.titlebar-tools{margin-left:auto;display:flex;align-items:center;gap:4px;padding:0 12px}
+.titlebar-tools button{
+  background:transparent;border:0;color:rgba(247,249,249,.65);
+  width:26px;height:26px;font-size:15px;line-height:1;border-radius:2px;
+}
+.titlebar-tools button:hover{background:rgba(247,249,249,.12);color:var(--card)}
+
+/* 工具栏 */
+.toolbar{background:var(--drawer);border-bottom:1px solid var(--rule);padding:10px var(--gutter)}
+.toolbar-row{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+.toolbar-row + .toolbar-row{margin-top:8px;padding-top:8px;border-top:1px dashed var(--rule)}
+.tw-btn{
+  font-family:var(--display);font-weight:600;font-size:13px;
+  background:var(--card);color:var(--ink);border:1px solid var(--rule);border-radius:2px;
+  padding:6px 12px;white-space:nowrap;transition:background .14s ease,border-color .14s ease;
+}
+.tw-btn:hover{background:#fff;border-color:var(--ink-soft)}
+.tw-btn--primary{background:var(--ink);border-color:var(--ink);color:var(--card)}
+.tw-btn--primary:hover{background:#2C4257;border-color:#2C4257}
+.tw-btn--danger:hover{color:var(--seal);border-color:var(--seal)}
+.tw-btn--icon{padding:6px 9px;font-family:var(--mono);font-size:12px}
+.tool-label{font-family:var(--mono);font-size:11px;color:var(--ink-soft);white-space:nowrap}
+.tw-input,.tw-select{
+  font-family:var(--mono);font-size:12px;background:var(--card);
+  border:1px solid var(--rule);border-radius:2px;padding:6px 9px;
+}
+.tw-input{width:clamp(130px,18vw,220px)}
+.tw-select{padding-right:20px}
+.toolbar-spacer{margin-left:auto}
+.hint{font-family:var(--mono);font-size:10.5px;color:var(--ink-soft);white-space:nowrap}
+
+/* 右侧工具窗口按钮栏 */
+.rail{
+  background:var(--drawer);border-left:1px solid var(--rule);
+  display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 0;
+}
+.rail button{
+  width:28px;height:28px;display:grid;place-items:center;
+  background:transparent;border:1px solid transparent;border-radius:3px;
+  color:var(--ink-soft);font-size:14px;line-height:1;
+}
+.rail button:hover{background:var(--card);border-color:var(--rule);color:var(--ink)}
+.rail button[aria-pressed="true"]{background:var(--ink);color:var(--card);border-color:var(--ink)}
+.rail-sep{width:18px;height:1px;background:var(--rule);margin:4px 0}
+
+/* 内容区 */
+.content{background:var(--paper);padding:22px var(--gutter) 30px;min-height:520px}
+.view-head{display:flex;align-items:baseline;gap:16px;flex-wrap:wrap;margin-bottom:18px}
+.view-title{font-family:var(--display);font-weight:700;font-size:22px;letter-spacing:-.025em;margin:0}
+.view-meta{font-family:var(--mono);font-size:11px;color:var(--ink-soft)}
+.empty{
+  padding:44px 20px;text-align:center;border:1px dashed var(--rule);border-radius:3px;
+  color:var(--ink-soft);font-size:14px;background:var(--card);
+}
+
+/* ============================================================
+   COMPONENTS — 账号档案卡
+   ============================================================ */
+.account-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:18px;align-items:start}
+.account-card{
+  position:relative;background:var(--card);border:1px solid var(--rule);border-radius:3px;
+  padding:26px 22px 0;margin-top:12px;box-shadow:0 1px 0 rgba(27,42,58,.06);
+  transition:border-color .16s ease,box-shadow .16s ease;
+}
+.account-card:hover{border-color:var(--ink-soft)}
+.account-card[data-selected="true"]{border-color:var(--seal);box-shadow:0 0 0 1px var(--seal)}
+.account-card[data-current="true"]{border-color:var(--ink);box-shadow:0 1px 0 rgba(27,42,58,.06),0 0 0 1px var(--ink)}
+.acct-tab{
+  position:absolute;top:-29px;left:18px;
+  background:var(--ink);color:var(--card);
+  font-family:var(--display);font-weight:600;font-size:12px;letter-spacing:.02em;
+  padding:5px 13px 7px;border-radius:3px 3px 0 0;
+}
+.acct-tab[hidden]{display:none}
+.acct-head{display:flex;align-items:flex-start;gap:13px;margin-bottom:18px}
+.avatar{
+  width:42px;height:42px;flex:none;border-radius:2px;display:grid;place-items:center;
+  font-family:var(--display);font-weight:700;font-size:19px;color:#fff;
+}
+.av-1{background:#0E7490}.av-2{background:#5B4BC4}.av-3{background:#1E7A5E}.av-4{background:#A85B3E}
+.acct-id{min-width:0;flex:1}
+.acct-name{font-family:var(--display);font-weight:700;font-size:19px;letter-spacing:-.02em;line-height:1.2;margin:0 0 5px}
+.acct-tags{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.tag{
+  font-family:var(--mono);font-size:9.5px;padding:2px 6px;border-radius:2px;
+  border:1px solid var(--rule);color:var(--ink-soft);background:var(--paper);white-space:nowrap;
+}
+.tag--personal{background:#E6F4F8;border-color:#BFDCE4;color:#0B6C82}
+.tag--enterprise{background:#FDF3E3;border-color:#E8CF9F;color:#96590B}
+.tag--ok{background:#E8F4EC;border-color:#BFDCC8;color:#15803D}
+.tag--warn{background:#FDECE9;border-color:#EFC4BC;color:var(--seal)}
+.seal{
+  flex:none;border:2px solid var(--seal);color:var(--seal);
+  font-family:var(--display);font-weight:700;font-size:13px;letter-spacing:.12em;
+  padding:4px 7px 5px;transform:rotate(-7deg);line-height:1;
+}
+.acct-meta{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;font-family:var(--mono);font-size:10.5px;color:var(--ink-soft);margin-bottom:18px}
+.acct-meta dt{white-space:nowrap}
+.acct-meta dd{margin:0;color:var(--ink);word-break:break-all}
+.reading{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin-bottom:4px}
+.reading-num{font-family:var(--mono);font-weight:600;font-size:29px;line-height:1;color:var(--brass);letter-spacing:-.045em;font-variant-numeric:tabular-nums}
+.reading-total{font-family:var(--mono);font-size:11px;color:var(--ink-soft)}
+.reading-label{font-size:12px;color:var(--ink-soft);margin:0 0 12px}
+.meter{height:8px;background:var(--track);position:relative;overflow:hidden}
+.meter-fill{height:100%;background:var(--brass);transition:width .5s cubic-bezier(.2,.7,.25,1)}
+.meter-fill.low{background:var(--seal)}
+.meter::after{
+  content:"";position:absolute;inset:0;pointer-events:none;
+  background:repeating-linear-gradient(to right,transparent 0 9px,rgba(27,42,58,.22) 9px 10px);
+}
+.acct-foot{
+  margin-top:20px;padding:10px 0 12px;border-top:1px dashed var(--rule);
+  display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;
+}
+.file-no{font-family:var(--mono);font-size:9.5px;color:var(--ink-soft)}
+.acct-actions{display:flex;gap:12px;align-items:center}
+.acct-actions button{
+  background:transparent;border:0;padding:2px 0;font-family:var(--display);font-weight:600;font-size:12.5px;
+  color:var(--ink-soft);text-decoration:underline;text-underline-offset:4px;text-decoration-thickness:1px;
+}
+.acct-actions button:hover{color:var(--seal)}
+.acct-actions button.primary{color:var(--ink);text-decoration:none;border-bottom:2px solid var(--ink)}
+.acct-actions button.primary:hover{color:var(--seal);border-color:var(--seal)}
+
+/* ============================================================
+   COMPONENTS — 看板卡片
+   ============================================================ */
+.dash-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px;align-items:stretch}
+.dash-card{
+  background:var(--card);border:1px solid var(--rule);border-radius:3px;
+  padding:0 20px 18px;display:flex;flex-direction:column;min-height:196px;
+}
+.dash-card--wide{grid-column:1 / -1}
+.dash-head{
+  display:flex;align-items:center;justify-content:space-between;gap:12px;
+  padding:13px 0 11px;border-bottom:1px solid var(--rule);margin-bottom:16px;
+}
+.dash-title{font-family:var(--display);font-weight:600;font-size:16px;letter-spacing:-.015em;margin:0}
+.dash-grip{font-family:var(--mono);font-size:11px;color:var(--ink-soft);letter-spacing:.1em;user-select:none}
+.dash-body{display:flex;flex-direction:column;gap:12px;flex:1}
+.dash-hero{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.dash-hero-num{font-family:var(--mono);font-weight:600;font-size:38px;line-height:1;color:var(--brass);letter-spacing:-.05em;font-variant-numeric:tabular-nums}
+.dash-hero-unit{font-family:var(--mono);font-size:11px;color:var(--ink-soft)}
+.dash-hero-side{margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--ink-soft)}
+.kpi-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+.kpi{border-left:2px solid var(--rule);padding-left:10px}
+.kpi-val{font-family:var(--mono);font-weight:600;font-size:21px;line-height:1.15;color:var(--ink);font-variant-numeric:tabular-nums}
+.kpi-val.warn{color:var(--seal)}
+.kpi-label{font-size:11px;color:var(--ink-soft);margin-top:3px}
+.dash-rows{display:grid;gap:0}
+.dash-row{
+  display:grid;grid-template-columns:1fr auto;gap:14px;align-items:center;
+  padding:7px 0;border-bottom:1px dashed var(--rule);font-size:12.5px;
+}
+.dash-row:last-child{border-bottom:0}
+.dash-row .r-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dash-row .r-val{font-family:var(--mono);font-size:11.5px;color:var(--ink-soft);white-space:nowrap;font-variant-numeric:tabular-nums}
+.dash-row .r-val.warn{color:var(--seal);font-weight:600}
+.dash-actions{margin-top:auto;padding-top:14px;display:flex;gap:16px;flex-wrap:wrap}
+.dash-actions button{
+  background:transparent;border:0;padding:0;font-family:var(--display);font-weight:600;font-size:12.5px;
+  color:var(--ink);text-decoration:underline;text-underline-offset:4px;text-decoration-thickness:1px;
+}
+.dash-actions button:hover{color:var(--seal)}
+.mini-meter{height:5px;background:var(--track);margin-top:5px}
+.mini-meter i{display:block;height:100%;background:var(--brass)}
+.mini-meter i.low{background:var(--seal)}
+
+/* ============================================================
+   COMPONENTS — 额度明细
+   ============================================================ */
+.quota-list{display:grid;gap:16px}
+.quota-card{background:var(--card);border:1px solid var(--rule);border-radius:3px;padding:18px 22px}
+.quota-head{display:flex;align-items:baseline;justify-content:space-between;gap:14px;flex-wrap:wrap;margin-bottom:14px}
+.quota-name{font-family:var(--display);font-weight:700;font-size:19px;letter-spacing:-.02em;margin:0}
+.quota-sum{font-family:var(--mono);font-size:11.5px;color:var(--ink-soft)}
+.quota-sum b{color:var(--brass-ink);font-weight:600}
+.quota-group{border-top:1px solid var(--rule)}
+.quota-group > summary{
+  list-style:none;cursor:pointer;padding:10px 0;display:flex;align-items:center;gap:10px;
+  font-family:var(--display);font-weight:600;font-size:14px;
+}
+.quota-group > summary::-webkit-details-marker{display:none}
+.quota-group > summary::before{content:"▸";font-family:var(--mono);font-size:11px;color:var(--ink-soft);transition:transform .15s ease}
+.quota-group[open] > summary::before{transform:rotate(90deg)}
+.quota-group .g-total{margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--ink-soft);font-weight:400}
+.quota-items{padding:0 0 10px 20px;display:grid;gap:7px}
+.quota-item{display:grid;grid-template-columns:1fr auto auto;gap:16px;align-items:center;font-size:12px}
+.quota-item .qi-name{color:var(--ink-soft)}
+.quota-item .qi-val{font-family:var(--mono);font-size:11px;font-variant-numeric:tabular-nums}
+.quota-item .qi-due{font-family:var(--mono);font-size:10.5px;color:var(--ink-soft);min-width:88px;text-align:right}
+.quota-item .qi-due.soon{color:var(--seal);font-weight:600}
+
+/* ============================================================
+   底部状态栏 + 维度菜单 + toast
+   ============================================================ */
+.statusbar{background:var(--ink);color:var(--card);position:relative}
+.statusbar-inner{
+  display:flex;align-items:center;gap:14px;min-height:38px;
+  padding:0 var(--gutter);font-family:var(--mono);font-size:12px;flex-wrap:wrap;
+}
+.status-readout{display:flex;align-items:center;gap:10px;font-variant-numeric:tabular-nums;background:transparent;border:0;color:var(--card);padding:4px 0}
+.status-readout:hover{color:#CFE3E8}
+.status-dot{width:7px;height:7px;background:var(--seal);flex:none}
+.status-caret{font-size:9px;color:rgba(247,249,249,.55)}
+.status-aside{margin-left:auto;color:rgba(247,249,249,.5);font-size:10px}
+.dim-menu{
+  position:absolute;bottom:calc(100% + 6px);left:var(--gutter);z-index:30;
+  background:var(--card);border:1px solid var(--rule);border-radius:3px;
+  box-shadow:0 8px 24px rgba(27,42,58,.18);padding:5px;min-width:210px;
+}
+.dim-menu p{margin:4px 9px 7px;font-family:var(--mono);font-size:10px;color:var(--ink-soft)}
+.dim-menu button{
+  display:block;width:100%;text-align:left;background:transparent;border:0;border-radius:2px;
+  padding:7px 9px;font-family:var(--body);font-size:12.5px;color:var(--ink);
+}
+.dim-menu button:hover{background:var(--drawer)}
+.dim-menu button[aria-checked="true"]{color:var(--seal);font-weight:600}
+.toast{
+  position:fixed;left:50%;bottom:28px;transform:translate(-50%,14px);
+  background:var(--ink);color:var(--card);border-left:3px solid var(--brass);
+  padding:11px 18px;border-radius:2px;box-shadow:0 10px 28px rgba(27,42,58,.22);
+  font-family:var(--mono);font-size:12px;z-index:60;
+  opacity:0;pointer-events:none;transition:opacity .2s ease,transform .2s ease;
+}
+.toast.show{opacity:1;transform:translate(-50%,0)}
+.toast.warn{border-left-color:var(--seal)}
+.log-bar{
+  border-top:1px dashed var(--rule);margin-top:14px;padding-top:10px;
+  font-family:var(--mono);font-size:10px;line-height:1.9;color:var(--ink-soft);
+}
+.log-bar p{margin:0}
+.log-bar .log-added{color:var(--ink)}
+.log-bar .log-added::before{content:"› ";color:var(--seal)}
+.log-bar .notice{color:var(--brass-ink);font-weight:600}
+.flash{animation:flash .85s ease-out}
+@keyframes flash{0%{color:var(--brass)}25%{color:var(--seal);text-shadow:0 0 12px rgba(178,58,44,.4)}100%{color:var(--brass);text-shadow:none}}
+
+.footnote{
+  max-width:var(--shell);margin:16px auto 0;display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;
+  font-family:var(--mono);font-size:10.5px;color:var(--ink-soft);
+}
+
+/* ============================================================
+   RESPONSIVE
+   ============================================================ */
+@media(max-width:920px){
+  .dash-grid{grid-template-columns:1fr}
+  .dash-card--wide{grid-column:auto}
+  .kpi-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+@media(max-width:720px){
+  .shell{grid-template-columns:1fr}
+  .rail{display:none}
+  .account-grid{grid-template-columns:1fr}
+  .toolbar-spacer{margin-left:0}
+  .hint{display:none}
+  .kpi-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .titlebar-name{padding:0 12px;font-size:13px}
+  .tab{padding:0 12px}
+  .status-aside{display:none}
+}
+@media(prefers-reduced-motion:reduce){
+  html{scroll-behavior:auto}
+  *,*::before,*::after{animation-duration:.01ms!important;transition-duration:.01ms!important}
+}
+</style>
+</head>
+<body>
+
+<div class="shell">
+  <div class="window">
+
+    <!-- 标题栏 -->
+    <header class="titlebar">
+      <div class="titlebar-name"><span class="brand-mark" aria-hidden="true"></span>CodeBuddy Accounts</div>
+      <div class="tabs" role="tablist" aria-label="视图">
+        <button class="tab" role="tab" aria-selected="true" aria-controls="view-accounts" data-view="accounts">账号</button>
+        <button class="tab" role="tab" aria-selected="false" aria-controls="view-dashboard" data-view="dashboard">看板</button>
+        <button class="tab" role="tab" aria-selected="false" aria-controls="view-quota" data-view="quota">额度明细</button>
+      </div>
+      <div class="titlebar-tools">
+        <a href="index.html" title="返回产品页" aria-label="返回产品页" style="color:rgba(247,249,249,.65);text-decoration:none;font-size:11px;padding:0 8px;white-space:nowrap">产品页</a>
+        <button type="button" title="更多" aria-label="更多">⋯</button>
+        <button type="button" title="最小化" aria-label="最小化">—</button>
+      </div>
+    </header>
+
+    <!-- 工具栏 -->
+    <div class="toolbar">
+      <div class="toolbar-row">
+        <button class="tw-btn tw-btn--primary" type="button" data-action="import">从 auth 目录导入</button>
+        <button class="tw-btn" type="button" data-action="history">历史对话</button>
+        <button class="tw-btn" type="button" data-action="switch">切换</button>
+        <button class="tw-btn" type="button" data-action="schedule">智能调度</button>
+        <button class="tw-btn" type="button" data-action="refresh">刷新额度</button>
+        <button class="tw-btn" type="button" data-action="quota">额度明细</button>
+        <button class="tw-btn" type="button" data-action="rename">重命名</button>
+        <button class="tw-btn tw-btn--danger" type="button" data-action="delete">删除</button>
+        <button class="tw-btn" type="button" data-action="rollback">回滚</button>
+      </div>
+      <div class="toolbar-row">
+        <label class="tool-label" for="filter-input">筛选:</label>
+        <input class="tw-input" id="filter-input" type="search" placeholder="名称 / UID / 域名 / 手机号" autocomplete="off">
+        <label class="tool-label" for="sort-select">排序:</label>
+        <select class="tw-select" id="sort-select">
+          <option value="default">默认</option>
+          <option value="domain">按域名分组</option>
+          <option value="expire">按过期时间</option>
+          <option value="remain">按剩余额度</option>
+          <option value="alias">按昵称</option>
+        </select>
+        <button class="tw-btn" type="button" data-action="export">导出</button>
+        <button class="tw-btn" type="button" data-action="importlib">导入库</button>
+        <button class="tw-btn" type="button" data-action="settings">设置</button>
+        <span class="toolbar-spacer"></span>
+        <span class="hint" id="selection-hint">已选中：夜航船</span>
+      </div>
+    </div>
+
+    <!-- 内容 -->
+    <main class="content">
+
+      <!-- 视图：账号卡片 -->
+      <section id="view-accounts" role="tabpanel" aria-label="账号卡片">
+        <div class="view-head">
+          <h1 class="view-title">账号库</h1>
+          <span class="view-meta" id="account-count">4 个账号 · 2 个认证域 · 数据已脱敏</span>
+        </div>
+        <div class="account-grid" id="account-grid">
+
+          <article class="account-card" data-id="a1" data-current="true" data-selected="true"
+                   data-alias="夜航船" data-domain="www.codebuddy.cn" data-remain="2262.05"
+                   data-remain-num="2262.05" data-expire="2026-11-30" data-phone="138****6621"
+                   data-uid="8f3c21a4@codebuddy.cn" data-pct="98" data-total="2300">
+            <span class="acct-tab">当前激活</span>
+            <div class="acct-head">
+              <div class="avatar av-1" aria-hidden="true">夜</div>
+              <div class="acct-id">
+                <h2 class="acct-name">夜航船</h2>
+                <div class="acct-tags">
+                  <span class="tag tag--personal">个人</span>
+                  <span class="tag">www.codebuddy.cn</span>
+                  <span class="tag tag--ok">Token 有效</span>
+                </div>
+              </div>
+              <span class="seal" aria-label="当前">当前</span>
+            </div>
+            <dl class="acct-meta">
+              <dt>UID</dt><dd>8f3c21a4@codebuddy.cn</dd>
+              <dt>手机号</dt><dd>138****6621</dd>
+              <dt>到期</dt><dd>2026-11-30</dd>
+            </dl>
+            <div class="reading">
+              <span class="reading-num">2262.05</span>
+              <span class="reading-total">/ 2300 credits</span>
+            </div>
+            <p class="reading-label">剩余额度 · 刷新于 17:24</p>
+            <div class="meter" role="img" aria-label="剩余 98%"><span class="meter-fill" style="width:98%"></span></div>
+            <div class="acct-foot">
+              <span class="file-no">snapshots/8f3c21a4@codebuddy.cn.info</span>
+              <div class="acct-actions">
+                <button type="button" class="primary" data-card-action="switch">切换</button>
+                <button type="button" data-card-action="detail">额度明细</button>
+              </div>
+            </div>
+          </article>
+
+          <article class="account-card" data-id="a2" data-current="false" data-selected="false"
+                   data-alias="沙丘" data-domain="www.workbuddy.ai" data-remain="3496.17"
+                   data-remain-num="3496.17" data-expire="2026-11-12" data-phone="139****4087"
+                   data-uid="b71d09ef@workbuddy.ai" data-pct="77" data-total="4519">
+            <span class="acct-tab" hidden>当前激活</span>
+            <div class="acct-head">
+              <div class="avatar av-2" aria-hidden="true">沙</div>
+              <div class="acct-id">
+                <h2 class="acct-name">沙丘</h2>
+                <div class="acct-tags">
+                  <span class="tag tag--enterprise">企业</span>
+                  <span class="tag">www.workbuddy.ai</span>
+                  <span class="tag tag--ok">Token 有效</span>
+                </div>
+              </div>
+            </div>
+            <dl class="acct-meta">
+              <dt>UID</dt><dd>b71d09ef@workbuddy.ai</dd>
+              <dt>手机号</dt><dd>139****4087</dd>
+              <dt>到期</dt><dd>2026-11-12 · 临期</dd>
+            </dl>
+            <div class="reading">
+              <span class="reading-num">3496.17</span>
+              <span class="reading-total">/ 4519 credits</span>
+            </div>
+            <p class="reading-label">剩余额度 · 刷新于 17:24</p>
+            <div class="meter" role="img" aria-label="剩余 77%"><span class="meter-fill" style="width:77%"></span></div>
+            <div class="acct-foot">
+              <span class="file-no">snapshots/b71d09ef@workbuddy.ai.info</span>
+              <div class="acct-actions">
+                <button type="button" class="primary" data-card-action="switch">切换</button>
+                <button type="button" data-card-action="detail">额度明细</button>
+              </div>
+            </div>
+          </article>
+
+          <article class="account-card" data-id="a3" data-current="false" data-selected="false"
+                   data-alias="北岸" data-domain="www.codebuddy.cn" data-remain="1531.60"
+                   data-remain-num="1531.60" data-expire="2026-12-28" data-phone="137****3150"
+                   data-uid="c02a77bd@codebuddy.cn" data-pct="34" data-total="4519">
+            <span class="acct-tab" hidden>当前激活</span>
+            <div class="acct-head">
+              <div class="avatar av-3" aria-hidden="true">北</div>
+              <div class="acct-id">
+                <h2 class="acct-name">北岸</h2>
+                <div class="acct-tags">
+                  <span class="tag tag--personal">个人</span>
+                  <span class="tag">www.codebuddy.cn</span>
+                  <span class="tag tag--ok">Token 有效</span>
+                </div>
+              </div>
+            </div>
+            <dl class="acct-meta">
+              <dt>UID</dt><dd>c02a77bd@codebuddy.cn</dd>
+              <dt>手机号</dt><dd>137****3150</dd>
+              <dt>到期</dt><dd>2026-12-28</dd>
+            </dl>
+            <div class="reading">
+              <span class="reading-num">1531.60</span>
+              <span class="reading-total">/ 4519 credits</span>
+            </div>
+            <p class="reading-label">剩余额度 · 刷新于 17:24</p>
+            <div class="meter" role="img" aria-label="剩余 34%"><span class="meter-fill" style="width:34%"></span></div>
+            <div class="acct-foot">
+              <span class="file-no">snapshots/c02a77bd@codebuddy.cn.info</span>
+              <div class="acct-actions">
+                <button type="button" class="primary" data-card-action="switch">切换</button>
+                <button type="button" data-card-action="detail">额度明细</button>
+              </div>
+            </div>
+          </article>
+
+          <article class="account-card" data-id="a4" data-current="false" data-selected="false"
+                   data-alias="松间" data-domain="www.codebuddy.cn" data-remain="0"
+                   data-remain-num="0" data-expire="2026-11-07" data-phone="136****9928"
+                   data-uid="d4e8106c@codebuddy.cn" data-pct="0" data-total="200">
+            <span class="acct-tab" hidden>当前激活</span>
+            <div class="acct-head">
+              <div class="avatar av-4" aria-hidden="true">松</div>
+              <div class="acct-id">
+                <h2 class="acct-name">松间</h2>
+                <div class="acct-tags">
+                  <span class="tag tag--personal">个人</span>
+                  <span class="tag">www.codebuddy.cn</span>
+                  <span class="tag tag--warn">额度耗尽</span>
+                </div>
+              </div>
+            </div>
+            <dl class="acct-meta">
+              <dt>UID</dt><dd>d4e8106c@codebuddy.cn</dd>
+              <dt>手机号</dt><dd>136****9928</dd>
+              <dt>到期</dt><dd>2026-11-07 · 临期</dd>
+            </dl>
+            <div class="reading">
+              <span class="reading-num">0</span>
+              <span class="reading-total">/ 200 credits</span>
+            </div>
+            <p class="reading-label">剩余额度 · 低于 20% 阈值，已提醒一次</p>
+            <div class="meter" role="img" aria-label="剩余 0%"><span class="meter-fill low" style="width:0%"></span></div>
+            <div class="acct-foot">
+              <span class="file-no">snapshots/d4e8106c@codebuddy.cn.info</span>
+              <div class="acct-actions">
+                <button type="button" class="primary" data-card-action="switch">切换</button>
+                <button type="button" data-card-action="detail">额度明细</button>
+              </div>
+            </div>
+          </article>
+
+        </div>
+        <p class="empty" id="filter-empty" hidden>没有匹配的账号。清空筛选框再试。</p>
+        <div class="log-bar" id="switch-log" aria-live="polite">
+          <p>写入前会生成 secret-storage.xml.bak-&lt;时间戳&gt;</p>
+        </div>
+      </section>
+
+      <!-- 视图：看板 -->
+      <section id="view-dashboard" role="tabpanel" aria-label="看板" hidden>
+        <div class="view-head">
+          <h2 class="view-title">看板</h2>
+          <span class="view-meta">卡片可拖拽排序 · 尺寸 2×2 · 今天 2026-11-04</span>
+        </div>
+        <div class="dash-grid">
+
+          <article class="dash-card dash-card--wide">
+            <div class="dash-head"><h3 class="dash-title">今日消耗积分</h3><span class="dash-grip">⠿</span></div>
+            <div class="dash-body">
+              <div class="dash-hero">
+                <span class="dash-hero-num" id="today-used">128.40</span>
+                <span class="dash-hero-unit">credits</span>
+                <span class="dash-hero-side">剩余积分 7289.82 · 更新于 17:24</span>
+              </div>
+              <div class="dash-rows">
+                <div class="dash-row"><span class="r-name">今日对话</span><span class="r-val">36 次</span></div>
+                <div class="dash-row"><span class="r-name">最近请求 · deepseek-v3.2</span><span class="r-val">17:22 · 4.82 credits</span></div>
+                <div class="dash-row"><span class="r-name">最近请求 · gpt-5</span><span class="r-val">17:18 · 12.06 credits</span></div>
+              </div>
+            </div>
+          </article>
+
+          <article class="dash-card">
+            <div class="dash-head"><h3 class="dash-title">关键指标</h3><span class="dash-grip">⠿</span></div>
+            <div class="dash-body">
+              <div class="kpi-grid">
+                <div class="kpi"><div class="kpi-val">4</div><div class="kpi-label">账号总数</div></div>
+                <div class="kpi"><div class="kpi-val">7289.82</div><div class="kpi-label">额度总剩余</div></div>
+                <div class="kpi"><div class="kpi-val warn">2</div><div class="kpi-label">7 天内到期</div></div>
+                <div class="kpi"><div class="kpi-val warn">1</div><div class="kpi-label">低额度账号</div></div>
+              </div>
+              <div class="dash-rows">
+                <div class="dash-row"><span class="r-name">数据状态</span><span class="r-val">全部已刷新 · 17:24</span></div>
+                <div class="dash-row"><span class="r-name">下次自动刷新</span><span class="r-val">17:39（15 min）</span></div>
+              </div>
+            </div>
+          </article>
+
+          <article class="dash-card">
+            <div class="dash-head"><h3 class="dash-title">今日签到</h3><span class="dash-grip">⠿</span></div>
+            <div class="dash-body">
+              <div class="dash-rows">
+                <div class="dash-row"><span class="r-name">夜航船</span><span class="r-val">已签到 +5</span></div>
+                <div class="dash-row"><span class="r-name">沙丘</span><span class="r-val">已签到 +5</span></div>
+                <div class="dash-row"><span class="r-name">北岸</span><span class="r-val">已签到 +5</span></div>
+                <div class="dash-row"><span class="r-name">松间</span><span class="r-val warn">未签到</span></div>
+              </div>
+              <div class="dash-actions"><button type="button" data-action="checkin">一键签到</button><button type="button" data-action="growth">一键完成成长任务</button></div>
+            </div>
+          </article>
+
+          <article class="dash-card">
+            <div class="dash-head"><h3 class="dash-title">模型限额</h3><span class="dash-grip">⠿</span></div>
+            <div class="dash-body">
+              <div class="dash-rows">
+                <div class="dash-row"><span class="r-name">deepseek · 已用 142.6 / 200</span><span class="r-val">剩余 57.4</span></div>
+                <div class="mini-meter"><i style="width:71%"></i></div>
+                <div class="dash-row"><span class="r-name">gpt-5 · 已用 96.2 / 100</span><span class="r-val warn">剩余 3.8</span></div>
+                <div class="mini-meter"><i class="low" style="width:96%"></i></div>
+              </div>
+              <div class="dash-actions"><button type="button" data-action="settings">编辑规则</button></div>
+            </div>
+          </article>
+
+          <article class="dash-card">
+            <div class="dash-head"><h3 class="dash-title">额度排行</h3><span class="dash-grip">⠿</span></div>
+            <div class="dash-body">
+              <div class="dash-rows">
+                <div class="dash-row"><span class="r-name">沙丘</span><span class="r-val">3496.17 credits</span></div>
+                <div class="dash-row"><span class="r-name">夜航船</span><span class="r-val">2262.05 credits</span></div>
+                <div class="dash-row"><span class="r-name">北岸</span><span class="r-val">1531.60 credits</span></div>
+                <div class="dash-row"><span class="r-name">松间</span><span class="r-val warn">0 credits</span></div>
+              </div>
+            </div>
+          </article>
+
+          <article class="dash-card">
+            <div class="dash-head"><h3 class="dash-title">30 天到期看板</h3><span class="dash-grip">⠿</span></div>
+            <div class="dash-body">
+              <div class="dash-rows">
+                <div class="dash-row"><span class="r-name">基础套餐 · 2 个账号 / 3 细项</span><span class="r-val">剩余 3793.65</span></div>
+                <div class="dash-row"><span class="r-name">加赠包 · 1 个账号 / 2 细项</span><span class="r-val warn">11-12 到期</span></div>
+                <div class="dash-row"><span class="r-name">试用包 · 1 个账号 / 1 细项</span><span class="r-val warn">11-07 到期</span></div>
+              </div>
+            </div>
+          </article>
+
+          <article class="dash-card">
+            <div class="dash-head"><h3 class="dash-title">智能调度</h3><span class="dash-grip">⠿</span></div>
+            <div class="dash-body">
+              <div class="dash-rows">
+                <div class="dash-row"><span class="r-name">自动调度</span><span class="r-val">关闭</span></div>
+                <div class="dash-row"><span class="r-name">触发阈值 / 冷却</span><span class="r-val">10% / 10 min</span></div>
+                <div class="dash-row"><span class="r-name">热切换（实验）</span><span class="r-val">不可用</span></div>
+                <div class="dash-row"><span class="r-name">上次调度</span><span class="r-val">—</span></div>
+              </div>
+              <div class="dash-actions"><button type="button" data-action="schedule">推荐并切换</button><button type="button" data-action="settings">打开设置</button></div>
+            </div>
+          </article>
+
+        </div>
+      </section>
+
+      <!-- 视图：额度明细 -->
+      <section id="view-quota" role="tabpanel" aria-label="额度明细" hidden>
+        <div class="view-head">
+          <h2 class="view-title">额度明细</h2>
+          <span class="view-meta">按套餐分组 · 点击分组名展开细项</span>
+        </div>
+        <div class="quota-list">
+
+          <article class="quota-card">
+            <div class="quota-head">
+              <h3 class="quota-name">夜航船</h3>
+              <span class="quota-sum">总剩余 <b>2262.05</b> / 2300 · 98%</span>
+            </div>
+            <details class="quota-group" open>
+              <summary>基础套餐 <span class="g-total">2262.05 / 2300</span></summary>
+              <div class="quota-items">
+                <div class="quota-item"><span class="qi-name">月度基础额度</span><span class="qi-val">2000 / 2000</span><span class="qi-due">2026-11-30</span></div>
+                <div class="quota-item"><span class="qi-name">活动加赠</span><span class="qi-val">262.05 / 300</span><span class="qi-due">2026-11-30</span></div>
+              </div>
+            </details>
+          </article>
+
+          <article class="quota-card">
+            <div class="quota-head">
+              <h3 class="quota-name">沙丘</h3>
+              <span class="quota-sum">总剩余 <b>3496.17</b> / 4519 · 77%</span>
+            </div>
+            <details class="quota-group" open>
+              <summary>企业基础包 <span class="g-total">2987.40 / 4000</span></summary>
+              <div class="quota-items">
+                <div class="quota-item"><span class="qi-name">企业月度额度</span><span class="qi-val">2987.40 / 4000</span><span class="qi-due">2026-12-28</span></div>
+              </div>
+            </details>
+            <details class="quota-group">
+              <summary>加赠包 <span class="g-total">508.77 / 519</span></summary>
+              <div class="quota-items">
+                <div class="quota-item"><span class="qi-name">临期加赠 A</span><span class="qi-val">10.23 / 300</span><span class="qi-due soon">2026-11-12</span></div>
+                <div class="quota-item"><span class="qi-name">临期加赠 B</span><span class="qi-val">498.54 / 219</span><span class="qi-due soon">2026-11-12</span></div>
+              </div>
+            </details>
+          </article>
+
+          <article class="quota-card">
+            <div class="quota-head">
+              <h3 class="quota-name">北岸</h3>
+              <span class="quota-sum">总剩余 <b>1531.60</b> / 4519 · 34%</span>
+            </div>
+            <details class="quota-group">
+              <summary>基础套餐 <span class="g-total">1531.60 / 4519</span></summary>
+              <div class="quota-items">
+                <div class="quota-item"><span class="qi-name">月度基础额度</span><span class="qi-val">1531.60 / 4519</span><span class="qi-due">2026-12-28</span></div>
+              </div>
+            </details>
+          </article>
+
+          <article class="quota-card">
+            <div class="quota-head">
+              <h3 class="quota-name">松间</h3>
+              <span class="quota-sum">总剩余 <b>0</b> / 200 · 0%</span>
+            </div>
+            <details class="quota-group">
+              <summary>试用包 <span class="g-total">0 / 200</span></summary>
+              <div class="quota-items">
+                <div class="quota-item"><span class="qi-name">新用户试用</span><span class="qi-val">200 / 200 已用尽</span><span class="qi-due soon">2026-11-07</span></div>
+              </div>
+            </details>
+          </article>
+
+        </div>
+      </section>
+
+    </main>
+
+    <!-- 底部状态栏 -->
+    <footer class="statusbar">
+      <div class="statusbar-inner">
+        <button class="status-readout" type="button" id="status-toggle" aria-expanded="false" aria-controls="dim-menu">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span id="status-text">CodeBuddy: 夜航船 · 2262.05 / 2300 credits</span>
+          <span class="status-caret" aria-hidden="true">▾</span>
+        </button>
+        <span class="status-aside">悬停看明细 · 点击打开面板</span>
+      </div>
+      <div class="dim-menu" id="dim-menu" role="radiogroup" aria-labelledby="dim-menu-label" hidden>
+        <p id="dim-menu-label">状态栏额度维度</p>
+        <button type="button" role="radio" data-dim="percent" aria-checked="false">总剩余百分比</button>
+        <button type="button" role="radio" data-dim="total" aria-checked="true">剩余 / 总量</button>
+        <button type="button" role="radio" data-dim="plans" aria-checked="false">各套餐摘要</button>
+        <button type="button" role="radio" data-dim="tightest" aria-checked="false">最紧张套餐</button>
+        <button type="button" role="radio" data-dim="named" aria-checked="false">指定套餐</button>
+      </div>
+    </footer>
+
+  </div>
+
+  <!-- 右侧工具窗口按钮栏 -->
+  <nav class="rail" aria-label="工具窗口">
+    <button type="button" title="项目" aria-label="项目">▤</button>
+    <button type="button" title="CodeBuddy Accounts" aria-label="CodeBuddy Accounts" aria-pressed="true">▦</button>
+    <div class="rail-sep" aria-hidden="true"></div>
+    <button type="button" title="历史对话" aria-label="历史对话">◷</button>
+    <button type="button" title="额度明细" aria-label="额度明细">◈</button>
+    <button type="button" title="设置" aria-label="设置">⚙</button>
+  </nav>
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<p class="footnote">
+  <span>CodeBuddy Account Manager · 界面 Web 复刻 · 视觉「档案柜」</span>
+  <span>数据为演示用脱敏样本 · 非官方组件</span>
+</p>
+
+<script>
+(function(){
+  "use strict";
+
+  var state = {
+    view:"accounts",
+    selected:"a1",
+    current:"a1",
+    previous:null,
+    dim:"percent",
+    filter:"",
+    sort:"default"
+  };
+
+  var grid = document.getElementById("account-grid");
+  var cards = Array.prototype.slice.call(grid.querySelectorAll(".account-card"));
+  var panels = {
+    accounts:document.getElementById("view-accounts"),
+    dashboard:document.getElementById("view-dashboard"),
+    quota:document.getElementById("view-quota")
+  };
+  var tabs = Array.prototype.slice.call(document.querySelectorAll(".tab"));
+  var hint = document.getElementById("selection-hint");
+  var countEl = document.getElementById("account-count");
+  var statusText = document.getElementById("status-text");
+  var statusToggle = document.getElementById("status-toggle");
+  var dimMenu = document.getElementById("dim-menu");
+  var log = document.getElementById("switch-log");
+  var toast = document.getElementById("toast");
+  var emptyEl = document.getElementById("filter-empty");
+  var toastTimer = null;
+
+  function cardById(id){ return cards.filter(function(c){ return c.dataset.id === id; })[0]; }
+
+  function stamp(){
+    var d = new Date(), p = function(n){ return String(n).padStart(2,"0"); };
+    return d.getFullYear() + p(d.getMonth()+1) + p(d.getDate()) + "-" + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds());
+  }
+
+  function showToast(msg, warn){
+    toast.textContent = msg;
+    toast.classList.toggle("warn", !!warn);
+    toast.classList.add("show");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function(){ toast.classList.remove("show"); }, 3200);
+  }
+
+  function addLog(lines){
+    var frag = document.createDocumentFragment();
+    lines.forEach(function(text, i){
+      var p = document.createElement("p");
+      p.className = i === lines.length - 1 ? "notice" : "log-added";
+      p.textContent = text;
+      frag.appendChild(p);
+    });
+    log.appendChild(frag);
+  }
+
+  /* ---------- 状态栏读数 ---------- */
+  function statusFor(card, dim){
+    var d = card.dataset;
+    switch(dim){
+      case "total":   return "CodeBuddy: " + d.alias + " · " + d.remain + " / " + d.total + " credits";
+      case "plans":   return "CodeBuddy: " + d.alias + " · 基础 " + d.remain + " · 加赠 " + d.pct + "%";
+      case "tightest":return "CodeBuddy: " + d.alias + " · 最紧张 " + d.pct + "% (" + d.expire + ")";
+      case "named":   return "CodeBuddy: " + d.alias + " · 基础套餐 " + d.remain + " credits";
+      case "percent":
+      default:        return "CodeBuddy: " + d.alias + " · " + d.pct + "% 剩余";
+    }
+  }
+
+  function renderStatus(){
+    var card = cardById(state.current);
+    if(!card) return;
+    statusText.textContent = statusFor(card, state.dim);
+    statusText.classList.remove("flash");
+    void statusText.offsetWidth;
+    statusText.classList.add("flash");
+  }
+
+  /* ---------- 视图 ---------- */
+  function setView(view){
+    if(!panels[view]) return;
+    state.view = view;
+    Object.keys(panels).forEach(function(k){ panels[k].hidden = (k !== view); });
+    tabs.forEach(function(t){ t.setAttribute("aria-selected", String(t.dataset.view === view)); });
+  }
+
+  /* ---------- 选中 / 激活 ---------- */
+  function select(id){
+    state.selected = id;
+    cards.forEach(function(c){ c.dataset.selected = String(c.dataset.id === id); });
+    var c = cardById(id);
+    hint.textContent = "已选中：" + (c ? c.dataset.alias : "—");
+  }
+
+  function setCurrent(id, quiet){
+    var target = cardById(id);
+    if(!target) return;
+    if(id === state.current){
+      if(!quiet) showToast(target.dataset.alias + " 已是当前激活账号。", true);
+      return;
+    }
+    state.previous = state.current;
+    state.current = id;
+    cards.forEach(function(c){
+      var on = c.dataset.id === id;
+      c.dataset.current = String(on);
+      c.querySelector(".acct-tab").hidden = !on;
+      var oldSeal = c.querySelector(".seal");
+      if(on && !oldSeal){
+        var seal = document.createElement("span");
+        seal.className = "seal";
+        seal.setAttribute("aria-label", "当前");
+        seal.textContent = "当前";
+        c.querySelector(".acct-head").appendChild(seal);
+      } else if(!on && oldSeal){
+        oldSeal.remove();
+      }
+    });
+    select(id);
+    renderStatus();
+    if(!quiet){
+      addLog([
+        "已写入 secret-storage.xml",
+        "已备份 secret-storage.xml.bak-" + stamp(),
+        "已切换。重启 IDE 后生效。"
+      ]);
+      showToast("已切换到 " + target.dataset.alias + "。重启 IDE 后生效。");
+    }
+  }
+
+  function rollback(){
+    if(!state.previous){
+      showToast("没有可回滚的切换。", true);
+      return;
+    }
+    var back = state.previous;
+    setCurrent(back, true);
+    state.previous = null;
+    addLog([
+      "已恢复上一次切换前的凭据",
+      "已回滚。重启 IDE 后生效。"
+    ]);
+    showToast("已回滚到 " + cardById(back).dataset.alias + "。重启 IDE 后生效。");
+  }
+
+  /* ---------- 筛选 / 排序 ---------- */
+  function applyFilterSort(){
+    var q = state.filter.trim().toLowerCase();
+    var visible = cards.filter(function(c){
+      var d = c.dataset;
+      var haystack = [d.alias, d.domain, d.uid, d.phone].join(" ").toLowerCase();
+      return !q || haystack.indexOf(q) !== -1;
+    });
+
+    var sorted = visible.slice();
+    if(state.sort === "domain"){
+      sorted.sort(function(a,b){ return a.dataset.domain.localeCompare(b.dataset.domain) || a.dataset.alias.localeCompare(b.dataset.alias,"zh"); });
+    } else if(state.sort === "expire"){
+      sorted.sort(function(a,b){ return a.dataset.expire.localeCompare(b.dataset.expire); });
+    } else if(state.sort === "remain"){
+      sorted.sort(function(a,b){ return Number(b.dataset.remainNum) - Number(a.dataset.remainNum); });
+    } else if(state.sort === "alias"){
+      sorted.sort(function(a,b){ return a.dataset.alias.localeCompare(b.dataset.alias,"zh"); });
+    }
+    sorted.forEach(function(c){ grid.appendChild(c); });
+
+    cards.forEach(function(c){ c.hidden = visible.indexOf(c) === -1; });
+    emptyEl.hidden = visible.length !== 0;
+    var domains = {};
+    visible.forEach(function(c){ domains[c.dataset.domain] = 1; });
+    countEl.textContent = visible.length + " 个账号 · " + Object.keys(domains).length + " 个认证域 · 数据已脱敏";
+  }
+
+  /* ---------- 工具栏动作 ---------- */
+  var actions = {
+    "import":     function(){ showToast("已从 auth 目录导入 4 个账号。"); },
+    "history":    function(){ showToast("已打开历史对话窗口。"); },
+    "switch":     function(){ setCurrent(state.selected); },
+    "schedule":   function(){ select("a2"); showToast("智能调度推荐：沙丘（临期额度优先）。点「切换」执行。"); },
+    "refresh":    function(){ showToast("已刷新 4 个账号的额度。"); },
+    "quota":      function(){ setView("quota"); },
+    "rename":     function(){ showToast("重命名：请在插件面板中编辑别名。", true); },
+    "delete":     function(){ showToast("当前激活账号不可删除。", true); },
+    "rollback":   rollback,
+    "export":     function(){ showToast("已导出账号库 JSON 备份（含完整凭据，请妥善保管）。"); },
+    "importlib":  function(){ showToast("已打开导入库对话框。"); },
+    "settings":   function(){ showToast("已打开 Settings | Tools | CodeBuddy 账号管理器。"); },
+    "checkin":    function(){ showToast("已为 4 个账号执行签到：3 成功，1 未签到。"); },
+    "growth":     function(){ showToast("已接取 6 项任务、上报行为事件并领取 2 项奖励。"); }
+  };
+
+  document.addEventListener("click", function(e){
+    var actionBtn = e.target.closest("[data-action]");
+    if(actionBtn && actions[actionBtn.dataset.action]){ actions[actionBtn.dataset.action](); return; }
+
+    var tab = e.target.closest(".tab");
+    if(tab){ setView(tab.dataset.view); return; }
+
+    var cardBtn = e.target.closest("[data-card-action]");
+    if(cardBtn){
+      var c = cardBtn.closest(".account-card");
+      if(cardBtn.dataset.cardAction === "switch") setCurrent(c.dataset.id);
+      else setView("quota");
+      return;
+    }
+
+    var card = e.target.closest(".account-card");
+    if(card){ select(card.dataset.id); return; }
+
+    var dimBtn = e.target.closest("[data-dim]");
+    if(dimBtn){
+      state.dim = dimBtn.dataset.dim;
+      dimMenu.querySelectorAll("button").forEach(function(b){
+        b.setAttribute("aria-checked", String(b === dimBtn));
+      });
+      renderStatus();
+      dimMenu.hidden = true;
+      statusToggle.setAttribute("aria-expanded", "false");
+      showToast("状态栏维度：" + dimBtn.textContent);
+      return;
+    }
+
+    if(!e.target.closest("#dim-menu") && !e.target.closest("#status-toggle")){
+      dimMenu.hidden = true;
+      statusToggle.setAttribute("aria-expanded", "false");
+    }
+  });
+
+  statusToggle.addEventListener("click", function(){
+    dimMenu.hidden = !dimMenu.hidden;
+    statusToggle.setAttribute("aria-expanded", String(!dimMenu.hidden));
+  });
+
+  document.getElementById("filter-input").addEventListener("input", function(e){
+    state.filter = e.target.value;
+    applyFilterSort();
+  });
+  document.getElementById("sort-select").addEventListener("change", function(e){
+    state.sort = e.target.value;
+    applyFilterSort();
+  });
+
+  document.addEventListener("keydown", function(e){
+    if(e.key === "Escape"){
+      dimMenu.hidden = true;
+      statusToggle.setAttribute("aria-expanded", "false");
+    }
+  });
+
+  /* 初始：默认维度用「剩余/总量」更贴近真实状态栏，这里保留与产品主页一致的读数 */
+  state.dim = "total";
+  dimMenu.querySelectorAll("button").forEach(function(b){
+    b.setAttribute("aria-checked", String(b.dataset.dim === "total"));
+  });
+  statusText.textContent = "CodeBuddy: 夜航船 · 2262.05 / 2300 credits";
+  applyFilterSort();
+})();
+</script>
+</body>
+</html>

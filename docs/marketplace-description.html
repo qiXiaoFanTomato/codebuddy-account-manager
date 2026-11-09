@@ -2,7 +2,8 @@ CodeBuddy Account Manager is a JetBrains IDE plugin for managing multiple CodeBu
 <p>在 JetBrains IDE 中统一管理多个 <b>CodeBuddy（coding-copilot-jetbrains）</b> 账号：批量导入凭据、一键切号与回滚、额度监控与明细、跨账号历史对话浏览与合并，并把当前账号与剩余额度常驻在状态栏。</p>
 <p>插件直接读写本机已有的 CodeBuddy 凭据文件与历史目录，不把任何账号数据上传到第三方服务器。</p>
 
-<p><img src="https://raw.githubusercontent.com/qiXiaoFanTomato/codebuddy-account-manager/main/docs/screenshots/account-panel.png" alt="账号管理面板" width="900"></p>
+<p><img src="https://raw.githubusercontent.com/qiXiaoFanTomato/codebuddy-account-manager/main/docs/screenshots/dashboard.png" alt="首页看板" width="900"></p>
+<p><img src="https://raw.githubusercontent.com/qiXiaoFanTomato/codebuddy-account-manager/main/docs/screenshots/accounts.png" alt="账号库" width="900"></p>
 
 <h3>核心功能</h3>
 <ul>
@@ -11,11 +12,11 @@ CodeBuddy Account Manager is a JetBrains IDE plugin for managing multiple CodeBu
   <li><b>筛选与排序</b>：按名称 / UID / 域名 / 手机号筛选；支持默认、按域名分组、按过期时间、按剩余额度、按昵称排序。</li>
   <li><b>一键切号</b>：写入前自动备份 secret-storage.xml；支持回滚上一次切换、强制登出当前账号。</li>
   <li><b>待生效补偿</b>：IDE 退出时若用旧凭据覆盖，下次启动自动补写并提示重启。</li>
-  <li><b>额度监控</b>：可配置自动刷新间隔、低额度提醒阈值，低额度时弹窗提醒且每账号每周期只提醒一次。</li>
+  <li><b>额度监控</b>：可配置自动刷新间隔区间（最小 ~ 最大分钟，后台每轮随机取值）、低额度提醒阈值，低额度时弹窗提醒且每账号每周期只提醒一次。</li>
   <li><b>额度明细</b>：总剩余 / 总量与百分比、套餐分组折叠展开、细项已用量与到期时间、多账号汇总视图。</li>
   <li><b>智能调度</b>：优先消耗即将过期的额度，其次选择剩余最多的账号；可设置低额度阈值自动切换。</li>
   <li><b>状态栏组件</b>：显示当前账号与额度，支持总剩余百分比、剩余总量、各套餐摘要、最紧张套餐、指定套餐五种维度；悬停看明细，点击打开面板。</li>
-  <li><b>历史对话浏览</b>：跨账号扫描、关键字搜索、账号过滤、时间分组，支持复制、导出 Markdown、打开会话目录。</li>
+  <li><b>历史对话浏览</b>：跨账号扫描、关键字搜索、账号过滤、时间分组，支持复制、导出 Markdown、打开会话目录；目录扫描（含子目录、可停止、跳过与错误明细）整合在同一窗口。</li>
   <li><b>历史共享</b>：把全部账号的会话索引合并到当前账号并复制缺失的消息目录，也可批量同步全部账号。</li>
   <li><b>账号库备份</b>：导出为 JSON 并可重新导入。</li>
   <li><b>首页看板</b>：今日消耗积分大号数字、关键指标、智能调度、账号额度排行、30 天到期看板与数据状态；卡片可点击跳转对应功能页。</li>
@@ -27,7 +28,8 @@ CodeBuddy Account Manager is a JetBrains IDE plugin for managing multiple CodeBu
 </ul>
 
 <h3>界面预览</h3>
-<p>截图中的账号昵称、手机号、UID 与头像已做脱敏处理。该截图拍摄于较早版本；当前版本（0.22.3）的工具窗口已改为「档案柜」浅色界面——冷蓝灰档案纸、墨蓝标题与状态栏、朱印标记、黄铜等宽读数。</p>
+<p>以上两张截图来自 0.23.2 的首页看板与账号库：账号昵称、手机号、UID、本地凭据路径与状态栏账号信息均已做脱敏处理。工具窗口采用「档案柜」浅色界面——冷蓝灰档案纸、墨蓝标题与状态栏、朱印标记、黄铜等宽读数。</p>
+<p>另有静态界面预览：<a href="https://qixiaofantomato.github.io/codebuddy-account-manager/">产品落地页</a> 与 <a href="https://qixiaofantomato.github.io/codebuddy-account-manager/plugin-ui.html">插件界面复刻页</a>（演示数据，不含真实账号信息）。</p>
 
 <h3>使用方式</h3>
 <ol>
