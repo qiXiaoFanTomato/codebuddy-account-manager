@@ -90,6 +90,31 @@ class DirectoryScannerTest {
     }
 
     @Test
+    fun skipDirectoryNamesPrunesSubtree() {
+        Files.writeString(tempDir.resolve("index.json"), "{}")
+        val messages = tempDir.resolve("conv").resolve("messages")
+        Files.createDirectories(messages)
+        Files.writeString(messages.resolve("m.json"), "{}")
+
+        val entries = mutableListOf<ScanEntry>()
+        DirectoryScanner.scan(
+            tempDir,
+            ScanOptions(
+                nameFilters = setOf(".json"),
+                skipDirectoryNames = setOf("messages"),
+            ),
+            object : ScanListener {
+                override fun onEntry(entry: ScanEntry) {
+                    entries += entry
+                }
+            },
+        )
+
+        assertEquals(1, entries.size)
+        assertEquals("index.json", entries.first().name)
+    }
+
+    @Test
     fun cancelFlagStopsScan() {
         repeat(20) { Files.writeString(tempDir.resolve("f$it.txt"), "x") }
         val cancel = AtomicBoolean(false)

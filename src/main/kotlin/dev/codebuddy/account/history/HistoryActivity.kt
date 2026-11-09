@@ -63,7 +63,7 @@ object HistoryActivity {
                 error = "未找到 CodeBuddyExtension/Data 目录"
             } else {
                 try {
-                    list = HistoryReader.listAllConversations(dataRoot)
+                    list = HistoryReader.listAllConversations(dataRoot).conversations
                 } catch (t: Throwable) {
                     log.warn("扫描历史会话失败", t)
                     error = t.message ?: t.javaClass.simpleName

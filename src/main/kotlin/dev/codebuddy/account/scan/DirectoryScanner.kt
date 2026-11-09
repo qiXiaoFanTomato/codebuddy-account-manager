@@ -21,6 +21,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * @param includeDirectories  是否把目录本身也作为条目回调
  * @param nameFilters         文件名过滤（小写；`.json` 视为扩展名，其余按子串匹配），为空表示不过滤
  * @param maxFiles            文件数上限，达到后停止并标记 truncated
+ * @param skipDirectoryNames  需要整棵跳过的目录名（大小写不敏感），用于剪掉消息目录等无关子树
  */
 data class ScanOptions(
     val recursive: Boolean = true,
@@ -29,6 +30,7 @@ data class ScanOptions(
     val includeDirectories: Boolean = false,
     val nameFilters: Set<String> = emptySet(),
     val maxFiles: Int = 200_000,
+    val skipDirectoryNames: Set<String> = emptySet(),
 )
 
 /** 扫描到的一个条目 */
@@ -183,6 +185,10 @@ object DirectoryScanner {
 
             override fun preVisitDirectory(dir: Path, attrs: BasicFileAttributes): FileVisitResult {
                 if (cancel.get()) return FileVisitResult.TERMINATE
+                val dirName = dir.fileName?.toString()
+                if (dirName != null && options.skipDirectoryNames.any { it.equals(dirName, ignoreCase = true) }) {
+                    return FileVisitResult.SKIP_SUBTREE
+                }
                 directories++
                 if (options.includeDirectories && dir != root) {
                     emit(dir, attrs, true)

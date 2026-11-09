@@ -4,11 +4,18 @@ import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.intellij.openapi.diagnostic.logger
-import dev.codebuddy.account.credential.CredentialPaths
+import dev.codebuddy.account.scan.DirectoryScanner
+import dev.codebuddy.account.scan.ScanEntry
+import dev.codebuddy.account.scan.ScanError
+import dev.codebuddy.account.scan.ScanListener
+import dev.codebuddy.account.scan.ScanOptions
+import dev.codebuddy.account.scan.ScanProgress
+import dev.codebuddy.account.scan.ScanSummary
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * 读取 CodeBuddy 本地历史对话。
@@ -28,12 +35,16 @@ import java.util.concurrent.ConcurrentHashMap
  * 性能说明：单个账号可达 34K+ 消息文件，扫描阶段不再逐个会话统计消息条数
  * （messageCount = -1 表示未统计），选中会话时按需统计，避免 UI 长时间「加载中」。
  *
+ * 目录遍历统一交给 [DirectoryScanner]：扫描所选目录树中的 index.json，
+ * 以及按需扫描会话的 messages 目录，共用取消、跳过明细与扫描汇总能力。
+ *
  * 安全约束（防止 OOM / UI 卡死）：
  *  - 扫描结果按 index.json 的 mtime 缓存
+ *  - 扫描阶段剪掉 messages 子树，不触碰数万个消息文件
  *  - 单条消息文件超过 MAX_MESSAGE_BYTES 跳过
  *  - 单会话最多读取 MAX_MESSAGES_PER_CONV 条
  *  - 单条消息内容最多 MAX_CONTENT_CHARS 字符
- *  - 工作区目录扫描上限 MAX_WORKSPACES
+ *  - 扫描的 index.json 数量上限 MAX_INDEX_FILES
  */
 object HistoryReader {
 
@@ -42,8 +53,26 @@ object HistoryReader {
     private const val MAX_MESSAGE_BYTES = 2L * 1024 * 1024   // 2MB
     private const val MAX_MESSAGES_PER_CONV = 500
     private const val MAX_CONTENT_CHARS = 200_000
-    private const val MAX_WORKSPACES = 200
+    /** 全局 index.json 数量上限（防御性保护，覆盖多账号 × 多工作区场景） */
+    private const val MAX_INDEX_FILES = 10_000
     private const val MAX_TOOL_ARGS_CHARS = 160
+
+    /** 一次历史对话扫描的结果：会话列表 + 目录扫描汇总 */
+    data class HistoryScanResult(
+        val conversations: List<Conversation>,
+        val summary: ScanSummary,
+    )
+
+    /**
+     * 历史对话扫描选项：只收 index.json，并剪掉 messages 子树。
+     * 目录扫描功能通过同一套 [ScanOptions] 参与历史对话扫描。
+     */
+    fun scanOptions(recursive: Boolean = true): ScanOptions = ScanOptions(
+        recursive = recursive,
+        nameFilters = setOf("index.json"),
+        skipDirectoryNames = setOf("messages"),
+        maxFiles = MAX_INDEX_FILES,
+    )
 
     data class Conversation(
         val id: String,
@@ -85,70 +114,103 @@ object HistoryReader {
     fun clearCache() = cache.clear()
 
     /**
-     * 扫描所有账号的历史会话（去重，按最后消息时间倒序）。
+     * 调用目录扫描功能扫描 [root] 下的历史会话（去重，按最后消息时间倒序）。
      * 该方法可能耗时，调用方应在后台线程执行。
+     *
+     * @param root     扫描根目录（默认 Data 目录，也可指定任意目录）
+     * @param options  目录扫描选项，见 [scanOptions]
+     * @param progress 目录扫描进度（后台线程回调）
+     * @param cancel   取消标志，置为 true 后扫描尽快中止
      */
     fun listAllConversations(
-        dataRoot: Path,
-        /** 进度回调：已扫描账号数 / 总账号数 / 当前账号标签（在后台线程调用） */
-        progress: ((scanned: Int, total: Int, label: String) -> Unit)? = null,
-    ): List<Conversation> {
+        root: Path,
+        options: ScanOptions = scanOptions(),
+        progress: ((ScanProgress) -> Unit)? = null,
+        cancel: AtomicBoolean = AtomicBoolean(false),
+    ): HistoryScanResult {
+        val started = System.nanoTime()
+        val indexes = mutableListOf<ScanEntry>()
+        var scanned: ScanSummary? = null
+        val notifyProgress = progress
+
+        DirectoryScanner.scan(root, options, object : ScanListener {
+            override fun onEntry(entry: ScanEntry) {
+                if (!entry.isDirectory && entry.name.equals("index.json", ignoreCase = true)) {
+                    indexes.add(entry)
+                }
+            }
+
+            override fun onProgress(progress: ScanProgress) {
+                notifyProgress?.invoke(progress)
+            }
+
+            override fun onFinished(summary: ScanSummary) {
+                scanned = summary
+            }
+        }, cancel)
+
         val result = mutableListOf<Conversation>()
+        for (entry in indexes) {
+            if (cancel.get()) break
+            val idx = entry.path
+            val wsDir = idx.parent ?: continue
+            val ws = wsDir.fileName?.toString() ?: continue
+            val uid = uidOf(root, idx)
 
-        val uids = try {
-            Files.list(dataRoot).use { s ->
-                s.filter { Files.isDirectory(it) }
-                    .map { it.fileName.toString() }
-                    .toList()
+            val mtime = try { Files.getLastModifiedTime(idx).toMillis() } catch (_: Exception) { 0L }
+            val key = idx.toString()
+            val cached = cache[key]
+            if (cached != null && cached.first == mtime) {
+                result.addAll(cached.second)
+                continue
             }
-        } catch (e: Exception) {
-            log.warn("列出 Data 目录失败", e)
-            return emptyList()
+
+            val parsed = parseIndex(idx, wsDir, ws, uid) ?: continue
+            cache[key] = mtime to parsed
+            result.addAll(parsed)
         }
 
-        var scannedAccounts = 0
-        for (uid in uids) {
-            scannedAccounts++
-            progress?.invoke(scannedAccounts, uids.size, uid.take(8))
-            for (historyRoot in CredentialPaths.historyRoots(dataRoot, uid)) {
-                result.addAll(scanWorkspaceRoot(historyRoot, uid))
-            }
-        }
-
-        return result
+        val conversations = result
             .groupBy { it.id }
             .mapNotNull { (_, list) -> list.maxByOrNull { it.lastMessageAt } }
             .sortedByDescending { it.lastMessageAt }
+
+        val summary = scanned ?: ScanSummary(
+            root = root,
+            files = indexes.size,
+            directories = 0,
+            totalBytes = 0L,
+            skipped = 1,
+            elapsedMs = (System.nanoTime() - started) / 1_000_000,
+            cancelled = cancel.get(),
+            truncated = false,
+            errors = listOf(ScanError(root.toString(), "目录扫描未完成")),
+        )
+        return HistoryScanResult(conversations, summary)
     }
 
-    /** 扫描一个账号的 history 根目录 */
-    private fun scanWorkspaceRoot(historyRoot: Path, uid: String): List<Conversation> {
-        val out = mutableListOf<Conversation>()
-        try {
-            val wsDirs = Files.list(historyRoot).use { s ->
-                s.filter { Files.isDirectory(it) }.limit(MAX_WORKSPACES.toLong()).toList()
-            }
-            for (wsDir in wsDirs) {
-                val ws = wsDir.fileName.toString()
-                val idx = wsDir.resolve("index.json")
-                if (!Files.isRegularFile(idx)) continue
-
-                val mtime = try { Files.getLastModifiedTime(idx).toMillis() } catch (_: Exception) { 0L }
-                val key = idx.toString()
-                val cached = cache[key]
-                if (cached != null && cached.first == mtime) {
-                    out.addAll(cached.second)
-                    continue
-                }
-
-                val parsed = parseIndex(idx, wsDir, ws, uid) ?: continue
-                cache[key] = mtime to parsed
-                out.addAll(parsed)
-            }
-        } catch (e: Exception) {
-            log.warn("扫描历史失败: $historyRoot", e)
+    /**
+     * 从 index.json 的路径推断来源账号：Data 根目录下取第一段 uid；
+     * 若扫描根本身落在某个账号目录内，则取 history 上一段 uid。
+     */
+    private fun uidOf(root: Path, idx: Path): String {
+        val rel = try {
+            root.relativize(idx)
+        } catch (_: IllegalArgumentException) {
+            return root.fileName?.toString() ?: "unknown"
         }
-        return out
+        if (rel.nameCount < 2) return root.fileName?.toString() ?: "unknown"
+        val first = rel.getName(0).toString()
+        val isLayoutDir = first.equals("JetBrains", ignoreCase = true) ||
+            first.equals("CodeBuddyIDE", ignoreCase = true) ||
+            first.equals("history", ignoreCase = true)
+        if (!isLayoutDir) return first
+        for (i in 1 until rel.nameCount - 1) {
+            if (rel.getName(i).toString().equals("history", ignoreCase = true)) {
+                return rel.getName(i - 1).toString()
+            }
+        }
+        return first
     }
 
     /** 解析单个工作区的 index.json；损坏时返回 null（保留旧缓存） */
@@ -188,16 +250,18 @@ object HistoryReader {
         return out
     }
 
+    /** 会话消息目录的扫描选项：只扫当前目录的 .json 文件 */
+    private fun messageScanOptions(): ScanOptions = ScanOptions(
+        recursive = false,
+        nameFilters = setOf(".json"),
+        maxFiles = MAX_MESSAGES_PER_CONV,
+    )
+
     /** 按需统计消息条数（列表展示用，选中时调用） */
     fun countMessages(conv: Conversation): Int {
         val dir = conv.messageDir ?: return 0
         return try {
-            Files.list(dir).use { s ->
-                s.filter { Files.isRegularFile(it) && it.fileName.toString().endsWith(".json") }
-                    .limit(MAX_MESSAGES_PER_CONV.toLong())
-                    .count()
-                    .toInt()
-            }
+            DirectoryScanner.scan(dir, messageScanOptions()).files
         } catch (_: Exception) {
             0
         }
@@ -206,20 +270,22 @@ object HistoryReader {
     /** 读取一个会话的所有消息（按 createdAt 排序，有上限保护） */
     fun readMessages(conv: Conversation): List<Message> {
         val dir = conv.messageDir ?: return emptyList()
-        val files = try {
-            Files.list(dir).use { s ->
-                s.filter { Files.isRegularFile(it) && it.fileName.toString().endsWith(".json") }
-                    .sorted()
-                    .limit(MAX_MESSAGES_PER_CONV.toLong())
-                    .toList()
-            }
+        val entries = mutableListOf<ScanEntry>()
+        try {
+            DirectoryScanner.scan(dir, messageScanOptions(), object : ScanListener {
+                override fun onEntry(entry: ScanEntry) {
+                    entries.add(entry)
+                }
+            })
         } catch (_: Exception) { return emptyList() }
+        val files = entries.sortedBy { it.path.toString() }
 
         // 文件名是随机 id，顺序与时间无关：先解包，再按 createdAt 排序
         val collected = mutableListOf<Pair<String, Message>>()
-        for (f in files) {
+        for (entry in files) {
+            val f = entry.path
             try {
-                if (Files.size(f) > MAX_MESSAGE_BYTES) continue
+                if (entry.size > MAX_MESSAGE_BYTES) continue
                 val root = JsonParser.parseString(Files.readString(f, StandardCharsets.UTF_8))
                 val fileTime = if (root.isJsonObject) root.asJsonObject.str("createdAt") ?: "" else ""
                 for (m in parseFile(root)) {

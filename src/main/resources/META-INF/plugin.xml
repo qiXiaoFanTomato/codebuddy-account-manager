@@ -132,11 +132,5 @@
                 description="Open CodeBuddy account manager panel">
             <add-to-group group-id="ToolsMenu" anchor="last"/>
         </action>
-        <action id="CodeBuddyAccountManager.ScanDirectory"
-                class="dev.codebuddy.account.ui.ScanDirectoryAction"
-                text="Scan Directory (CodeBuddy)"
-                description="Scan a directory and list files in real time">
-            <add-to-group group-id="ToolsMenu" anchor="last"/>
-        </action>
     </actions>
 </idea-plugin>
