@@ -14,6 +14,7 @@ import dev.codebuddy.account.usage.ModelQuotaPeriod
 import java.awt.BorderLayout
 import java.awt.Component
 import java.awt.Dimension
+import java.awt.FlowLayout
 import javax.swing.DefaultListCellRenderer
 import javax.swing.JCheckBox
 import javax.swing.JComboBox
@@ -31,7 +32,14 @@ class AccountSettingsConfigurable : Configurable {
 
     private var mainPanel: JPanel? = null
 
-    private val intervalSpinner = JSpinner(SpinnerNumberModel(15, 0, 240, 1))
+    private val intervalMinSpinner = JSpinner(SpinnerNumberModel(15, 0, 240, 1))
+    private val intervalMaxSpinner = JSpinner(SpinnerNumberModel(15, 0, 240, 1))
+    /** 刷新间隔区间：最小值 ~ 最大值（分钟） */
+    private val intervalPanel = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(6), 0)).apply {
+        add(intervalMinSpinner)
+        add(JBLabel("~"))
+        add(intervalMaxSpinner)
+    }
     private val alertCheck = JCheckBox("剩余额度低于阈值时提醒")
     private val thresholdSpinner = JSpinner(SpinnerNumberModel(20, 1, 100, 1))
     private val autoSyncCheck = JCheckBox("切换账号时默认同步历史会话索引")
@@ -104,13 +112,13 @@ class AccountSettingsConfigurable : Configurable {
 
     override fun getDisplayName(): String = "CodeBuddy 账号管理器"
 
-    override fun getPreferredFocusedComponent(): JComponent = intervalSpinner
+    override fun getPreferredFocusedComponent(): JComponent = intervalMinSpinner
 
     override fun createComponent(): JComponent {
         val panel = FormBuilder.createFormBuilder()
             .addLabeledComponent("界面色调（立即生效）：", themeCombo)
             .addVerticalGap(JBUI.scale(6))
-            .addLabeledComponent("配额自动刷新间隔（分钟，0 表示关闭）：", intervalSpinner)
+            .addLabeledComponent("配额自动刷新间隔（分钟，最小 ~ 最大，0 表示关闭）：", intervalPanel)
             .addVerticalGap(JBUI.scale(6))
             .addComponent(alertCheck)
             .addLabeledComponent("低额度提醒阈值（%）：", thresholdSpinner)
@@ -162,7 +170,8 @@ class AccountSettingsConfigurable : Configurable {
     override fun isModified(): Boolean {
         val s = AccountSettings.getInstance()
         val alert = QuotaAlertSettings.getInstance()
-        return intValue(intervalSpinner) != s.autoRefreshMinutes ||
+        return intValue(intervalMinSpinner) != s.autoRefreshMinutes ||
+            intValue(intervalMaxSpinner) != s.autoRefreshMinutesMax ||
             alertCheck.isSelected != alert.state.enabled ||
             intValue(thresholdSpinner) != alert.state.thresholdPercent ||
             autoSyncCheck.isSelected != s.autoSyncHistoryOnSwitch ||
@@ -197,8 +206,10 @@ class AccountSettingsConfigurable : Configurable {
         val checkinChanged = s.checkinEnabled != checkinCheck.isSelected ||
             s.checkinSubmitPath != checkinSubmitField.text.trim()
 
-        val interval = intValue(intervalSpinner)
-        s.state.autoRefreshMinutes = interval
+        val intervalMin = intValue(intervalMinSpinner).coerceIn(0, 240)
+        val intervalMax = intValue(intervalMaxSpinner).coerceIn(intervalMin, 240)
+        s.state.autoRefreshMinutes = intervalMin
+        s.state.autoRefreshMinutesMax = intervalMax
         s.state.autoSyncHistoryOnSwitch = autoSyncCheck.isSelected
         s.state.copyMessagesOnSync = copyMessageCheck.isSelected
         s.state.refreshAllWhenNoSelection = refreshAllCheck.isSelected
@@ -226,8 +237,9 @@ class AccountSettingsConfigurable : Configurable {
         alert.setEnabled(alertCheck.isSelected)
         alert.setThreshold(intValue(thresholdSpinner))
 
-        // 间隔变化后立即按新值重排任务
-        dev.codebuddy.account.service.AutoRefreshService.getInstance().reschedule(interval.toLong())
+        // 区间变化后立即按新值重排任务
+        dev.codebuddy.account.service.AutoRefreshService.getInstance()
+            .reschedule(intervalMin.toLong(), intervalMax.toLong())
 
         // 状态栏显隐 / 展示维度立即生效（重新评估 factory.isAvailable 并重建 widget）
         CodeBuddyStatusBarWidget.invalidateCache()
@@ -245,7 +257,8 @@ class AccountSettingsConfigurable : Configurable {
     override fun reset() {
         val s = AccountSettings.getInstance()
         val alert = QuotaAlertSettings.getInstance()
-        intervalSpinner.value = s.autoRefreshMinutes
+        intervalMinSpinner.value = s.autoRefreshMinutes
+        intervalMaxSpinner.value = s.autoRefreshMinutesMax
         alertCheck.isSelected = alert.state.enabled
         thresholdSpinner.value = alert.state.thresholdPercent.coerceIn(1, 100)
         autoSyncCheck.isSelected = s.autoSyncHistoryOnSwitch

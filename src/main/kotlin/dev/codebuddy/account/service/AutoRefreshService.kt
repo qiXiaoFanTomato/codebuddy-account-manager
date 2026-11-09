@@ -11,14 +11,16 @@ import dev.codebuddy.account.hotswap.CodeBuddyBridge
 import dev.codebuddy.account.model.CredentialSnapshot
 import java.nio.file.*
 import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.ScheduledFuture
+import java.util.concurrent.ThreadLocalRandom
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * 后台服务：
- *  1. 按设置间隔刷新所有账号的配额（默认 15 分钟，0 表示关闭）
+ *  1. 按设置区间的随机间隔刷新所有账号的配额（默认 15 分钟，0 表示关闭）
  *  2. 监听 IDEA 版 CodeBuddy 的凭据文件 secret-storage.xml，
  *     用户通过官方入口登录/切换后自动归档到账号库
  *  3. 启动时检查 token 过期并提醒
@@ -37,6 +39,8 @@ class AutoRefreshService : Disposable {
     /** 上次自动调度时间，避免短时间内反复切号 */
     private val lastAutoSwitchAt = java.util.concurrent.atomic.AtomicLong(0L)
     @Volatile private var quotaTask: ScheduledFuture<*>? = null
+    /** 排程代号：重排时自增，防止已取消的旧任务继续排下一轮 */
+    @Volatile private var quotaGeneration = 0L
     @Volatile private var watchService: WatchService? = null
     @Volatile private var watchThread: Thread? = null
 
@@ -46,47 +50,84 @@ class AutoRefreshService : Disposable {
     /** 启动：按设置排程配额刷新 + 检查 token + 监听凭据文件 */
     fun startFromSettings() {
         val settings = AccountSettings.getInstance()
-        reschedule(settings.autoRefreshMinutes.toLong())
+        reschedule(settings.autoRefreshMinutes.toLong(), settings.autoRefreshMinutesMax.toLong())
         if (settings.checkTokenOnStartup) checkTokensAsync()
         startWatching()
     }
 
-    /** 按新间隔重排配额刷新任务；[intervalMinutes] <= 0 表示关闭 */
-    fun reschedule(intervalMinutes: Long) {
-        quotaTask?.cancel(false)
-        quotaTask = null
-        if (intervalMinutes <= 0) {
-            log.info("配额自动刷新已关闭")
+    /**
+     * 按新区间重排配额刷新任务；[minMinutes] <= 0 表示关闭。
+     * 每次执行完成后在 [minMinutes], [maxMinutes] 闭区间内随机取下一次间隔（分钟）。
+     */
+    fun reschedule(minMinutes: Long, maxMinutes: Long) {
+        synchronized(this) {
+            quotaGeneration++
+            quotaTask?.cancel(false)
+            quotaTask = null
+            val min = minMinutes.coerceIn(0, MAX_INTERVAL_MINUTES)
+            val max = maxMinutes.coerceIn(min, MAX_INTERVAL_MINUTES)
+            if (min <= 0) {
+                log.info("配额自动刷新已关闭")
+            } else {
+                scheduleNext(min, max, quotaGeneration)
+            }
+        }
+    }
+
+    /** 随机取本次延迟；刷新结束后继续排下一轮，排程代号不匹配时停止 */
+    private fun scheduleNext(minMinutes: Long, maxMinutes: Long, generation: Long) {
+        if (executor.isShutdown) return
+        val delay = if (maxMinutes > minMinutes) {
+            ThreadLocalRandom.current().nextLong(minMinutes, maxMinutes + 1)
+        } else {
+            minMinutes
+        }
+        val task = try {
+            executor.schedule({
+                try {
+                    if (generation == quotaGeneration) refreshAllQuotas()
+                } finally {
+                    synchronized(this) {
+                        if (generation == quotaGeneration) scheduleNext(minMinutes, maxMinutes, generation)
+                    }
+                }
+            }, delay, TimeUnit.MINUTES)
+        } catch (_: RejectedExecutionException) {
             return
         }
 
-        quotaTask = executor.scheduleWithFixedDelay({
-            try {
-                if (!refreshing.compareAndSet(false, true)) return@scheduleWithFixedDelay
-                val library = AccountLibrary.getInstance()
-                val saved = library.listSaved()
-                if (saved.isEmpty()) return@scheduleWithFixedDelay
-                var ok = 0
-                var fail = 0
-                // 注意：刷新缓存以 accountKey 为 key，不能传裸 uid
-                for (s in saved) {
-                    val summary = library.refreshQuota(s.accountKey)
-                    if (summary == null || summary.error != null) fail++ else ok++
-                }
-                log.info("自动刷新配额完成：成功 $ok 个，失败 $fail 个")
-                AccountEvents.fireQuotaChanged()
-                autoSwitchIfNeeded()
-                // 模型积分限额统计（如 DeepSeek 200 积分限制），用于达标提醒
-                if (AccountSettings.getInstance().modelQuotaEnabled) {
-                    dev.codebuddy.account.usage.ModelQuotaTracker.refreshAsync()
-                }
-            } catch (e: Exception) {
-                log.warn("自动刷新配额失败", e)
-            } finally {
-                refreshing.set(false)
+        synchronized(this) {
+            if (generation == quotaGeneration) quotaTask = task else task.cancel(false)
+        }
+        log.info("配额自动刷新已排程：$delay 分钟后执行（区间 $minMinutes~$maxMinutes 分钟）")
+    }
+
+    /** 一次配额刷新：遍历账号库刷新数据，并触发告警、自动调度与模型限额统计 */
+    private fun refreshAllQuotas() {
+        if (!refreshing.compareAndSet(false, true)) return
+        try {
+            val library = AccountLibrary.getInstance()
+            val saved = library.listSaved()
+            if (saved.isEmpty()) return
+            var ok = 0
+            var fail = 0
+            // 注意：刷新缓存以 accountKey 为 key，不能传裸 uid
+            for (s in saved) {
+                val summary = library.refreshQuota(s.accountKey)
+                if (summary == null || summary.error != null) fail++ else ok++
             }
-        }, intervalMinutes, intervalMinutes, TimeUnit.MINUTES)
-        log.info("配额自动刷新已排程：每 $intervalMinutes 分钟")
+            log.info("自动刷新配额完成：成功 $ok 个，失败 $fail 个")
+            AccountEvents.fireQuotaChanged()
+            autoSwitchIfNeeded()
+            // 模型积分限额统计（如 DeepSeek 200 积分限制），用于达标提醒
+            if (AccountSettings.getInstance().modelQuotaEnabled) {
+                dev.codebuddy.account.usage.ModelQuotaTracker.refreshAsync()
+            }
+        } catch (e: Exception) {
+            log.warn("自动刷新配额失败", e)
+        } finally {
+            refreshing.set(false)
+        }
     }
 
     /** 启动时检查 token 过期情况（后台线程，汇总成一条通知） */
@@ -241,6 +282,7 @@ class AutoRefreshService : Disposable {
     }
 
     override fun dispose() {
+        quotaGeneration++
         try { quotaTask?.cancel(true) } catch (_: Exception) { }
         try { watchService?.close() } catch (_: Exception) { }
         watchThread?.interrupt()
@@ -278,6 +320,7 @@ class AutoRefreshService : Disposable {
 
     companion object {
         private const val AUTO_SWITCH_COOLDOWN_MS = 10 * 60 * 1000L
+        private const val MAX_INTERVAL_MINUTES = 240L
 
         fun getInstance(): AutoRefreshService =
             ApplicationManager.getApplication().getService(AutoRefreshService::class.java)

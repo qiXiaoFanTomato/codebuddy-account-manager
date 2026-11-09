@@ -16,8 +16,10 @@ import com.intellij.openapi.components.Storage
 class AccountSettings : PersistentStateComponent<AccountSettings.State> {
 
     data class State(
-        /** 配额自动刷新间隔（分钟），0 表示关闭 */
+        /** 配额自动刷新间隔下限（分钟），0 表示关闭 */
         var autoRefreshMinutes: Int = 15,
+        /** 配额自动刷新间隔上限（分钟），与下限相等时为固定间隔 */
+        var autoRefreshMinutesMax: Int = 15,
         /** 切换账号时默认勾选「同步历史」 */
         var autoSyncHistoryOnSwitch: Boolean = true,
         /** 同步历史时一并复制缺失的消息目录 */
@@ -88,6 +90,7 @@ class AccountSettings : PersistentStateComponent<AccountSettings.State> {
         myState = state
         // 兼容旧版本缺字段：取值收敛到合法范围
         myState.autoRefreshMinutes = myState.autoRefreshMinutes.coerceIn(0, 240)
+        myState.autoRefreshMinutesMax = myState.autoRefreshMinutesMax.coerceIn(myState.autoRefreshMinutes, 240)
         myState.modelQuotaLimit = myState.modelQuotaLimit.coerceIn(0.0, 1_000_000.0)
         myState.modelQuotaWarnPercent = myState.modelQuotaWarnPercent.coerceIn(0, 100)
 
@@ -126,6 +129,7 @@ class AccountSettings : PersistentStateComponent<AccountSettings.State> {
     }
 
     val autoRefreshMinutes: Int get() = myState.autoRefreshMinutes
+    val autoRefreshMinutesMax: Int get() = myState.autoRefreshMinutesMax
     val autoSyncHistoryOnSwitch: Boolean get() = myState.autoSyncHistoryOnSwitch
     val copyMessagesOnSync: Boolean get() = myState.copyMessagesOnSync
     val showStatusBarWidget: Boolean get() = myState.showStatusBarWidget
