@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>档案柜 · Swing 落地预览 — CodeBuddy Account Manager</title>
+<style>
+:root{
+  --paper:#E8ECEF; --card:#F7F9F9; --drawer:#DDE4E8;
+  --ink:#1B2A3A; --ink-soft:#5A6978;
+  --seal:#B23A2C; --brass:#9B7826; --brass-ink:#745617;
+  --rule:#C6D0D7; --track:#D3DBE0;
+  --display:"IBM Plex Sans Condensed","PingFang SC","Microsoft YaHei","Noto Sans CJK SC",sans-serif;
+  --body:"IBM Plex Sans","PingFang SC","Microsoft YaHei","Noto Sans CJK SC",sans-serif;
+  --mono:"IBM Plex Mono",Consolas,"Cascadia Mono",Menlo,monospace;
+}
+*,*::before,*::after{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);font:14px/1.6 var(--body);-webkit-font-smoothing:antialiased;padding:32px 20px 64px}
+a{color:inherit}
+.wrap{max-width:1240px;margin-inline:auto}
+.page-head{display:flex;align-items:baseline;gap:20px;flex-wrap:wrap;margin:0 0 8px}
+.page-head h1{font:700 clamp(26px,3.4vw,38px)/1.1 var(--display);letter-spacing:-.03em;margin:0}
+.page-head p{color:var(--ink-soft);margin:0;font-size:14px}
+.page-note{font:11px/1.8 var(--mono);color:var(--ink-soft);margin:0 0 26px;max-width:90ch}
+
+/* ---------- 窗口 ---------- */
+.shell{border:1px solid var(--rule);border-radius:3px;background:var(--card);box-shadow:0 14px 34px rgba(27,42,58,.09);overflow:hidden}
+.titlebar{background:var(--ink);color:var(--card);display:flex;align-items:stretch;min-height:46px;padding:0 18px;gap:24px}
+.brand{display:flex;align-items:center;gap:9px;font:700 15px var(--display);white-space:nowrap}
+.brand-mark{width:18px;height:18px;border:2px solid var(--card);display:grid;place-items:center;flex:none}
+.brand-mark::after{content:"";width:6px;height:6px;background:var(--seal)}
+.tabs{display:flex;align-items:stretch}
+.tab{display:flex;align-items:center;padding:0 20px;font:600 14px var(--display);color:rgba(247,249,249,.6);border-bottom:3px solid transparent}
+.tab[aria-current="page"]{color:var(--card);border-bottom-color:var(--seal)}
+.ver{margin-left:auto;align-self:center;font:11px var(--mono);color:rgba(247,249,249,.55)}
+
+.toolbar{background:var(--drawer);border-bottom:1px solid var(--rule);padding:10px 18px}
+.toolbar-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.toolbar-row + .toolbar-row{margin-top:8px;padding-top:8px;border-top:1px dashed var(--rule)}
+.tw-btn{font:600 13px var(--display);background:var(--card);border:1px solid var(--rule);border-radius:2px;padding:6px 12px;white-space:nowrap}
+.tw-btn--primary{background:var(--ink);border-color:var(--ink);color:var(--card)}
+.tool-label,.hint{font:11px var(--mono);color:var(--ink-soft)}
+.tw-input,.tw-select{font:12px var(--mono);background:var(--card);border:1px solid var(--rule);border-radius:2px;padding:6px 9px}
+.tw-input{width:220px}
+.spacer{margin-left:auto}
+.dock{display:flex;align-items:center;gap:4px;background:var(--card);border:1px solid var(--rule);border-radius:2px;padding:2px 4px}
+.dock span{width:22px;height:22px;display:grid;place-items:center;font:12px var(--mono);color:var(--ink-soft)}
+.chip{font:9.5px var(--mono);border:1px solid var(--rule);border-radius:2px;padding:2px 6px;background:var(--paper);color:var(--ink-soft)}
+.chip--seal{background:#F8EAE7;border-color:#EFC4BC;color:var(--seal)}
+
+.content{background:var(--paper);padding:22px 18px 30px}
+.view-head{display:flex;align-items:baseline;gap:16px;margin-bottom:18px}
+.view-head h2{font:700 22px var(--display);letter-spacing:-.025em;margin:0}
+.view-head span{font:11px var(--mono);color:var(--ink-soft)}
+
+/* ---------- 账号档案卡 ---------- */
+.account-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}
+.account-card{position:relative;background:var(--card);border:1px solid var(--rule);border-radius:3px;padding:43px 18px 16px;box-shadow:0 1px 0 rgba(27,42,58,.06)}
+.account-card[data-current="true"]{border-color:var(--ink);box-shadow:0 0 0 1px var(--ink)}
+.account-card[data-selected="true"]{border-color:var(--seal);box-shadow:0 0 0 1px var(--seal)}
+.acct-tab{position:absolute;top:0;left:18px;background:var(--ink);color:var(--card);font:600 11px var(--display);padding:4px 13px 5px;border-radius:0 0 3px 3px}
+.acct-head{display:flex;align-items:flex-start;gap:12px;margin-bottom:16px}
+.avatar{width:42px;height:42px;flex:none;border-radius:2px;display:grid;place-items:center;color:#fff;font:700 19px var(--display)}
+.av-1{background:#0E7490}.av-2{background:#5B4BC4}
+.acct-id{min-width:0;flex:1}
+.acct-name{font:700 19px/1.2 var(--display);letter-spacing:-.02em;margin:0 0 5px}
+.acct-tags{display:flex;gap:6px;flex-wrap:wrap}
+.tag{font:9.5px var(--mono);padding:2px 6px;border-radius:2px;border:1px solid var(--rule);color:var(--ink-soft);background:var(--paper)}
+.tag--personal{background:#E6F4F8;border-color:#BFDCE4;color:#0B6C82}
+.tag--enterprise{background:#FDF3E3;border-color:#E8CF9F;color:#96590B}
+.tag--ok{background:#E8F4EC;border-color:#BFDCC8;color:#15803D}
+.seal{flex:none;border:2px solid var(--seal);color:var(--seal);font:700 13px var(--display);letter-spacing:.12em;padding:4px 7px 5px;transform:rotate(-7deg);line-height:1}
+.acct-meta{font:10.5px/1.9 var(--mono);color:var(--ink-soft);margin-bottom:16px;word-break:break-all}
+.acct-meta b{color:var(--ink);font-weight:500}
+.reading{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+.reading-num{font:600 29px/1 var(--mono);color:var(--brass);letter-spacing:-.045em;font-variant-numeric:tabular-nums}
+.reading-total{font:11px var(--mono);color:var(--ink-soft)}
+.reading-label{font:12px var(--mono);color:var(--ink-soft);margin:4px 0 12px}
+.meter{height:9px;background:var(--track);position:relative;overflow:hidden}
+.meter-fill{height:100%;background:var(--brass)}
+.meter::after{content:"";position:absolute;inset:0;background:repeating-linear-gradient(to right,transparent 0 9px,rgba(27,42,58,.22) 9px 10px)}
+.acct-foot{margin-top:20px;border-top:1px dashed var(--rule);padding-top:10px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.file-no{font:9.5px var(--mono);color:var(--ink-soft)}
+.acct-actions{display:flex;gap:12px;align-items:center}
+.acct-actions button{background:transparent;border:0;padding:0;font:600 12.5px var(--display);color:var(--ink-soft);text-decoration:underline;text-underline-offset:4px;text-decoration-thickness:1px}
+.acct-actions button.primary{color:var(--ink);border-bottom:2px solid var(--ink);text-decoration:none}
+.acct-actions .glyph{font:12px var(--mono);text-decoration:none;border:1px solid var(--rule);border-radius:2px;padding:2px 5px;color:var(--ink-soft)}
+
+/* ---------- 看板 ---------- */
+.dash-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px;margin-top:22px}
+.dash-card{background:var(--card);border:1px solid var(--rule);border-radius:3px;padding:0 20px 18px;min-height:190px;display:flex;flex-direction:column}
+.dash-card--wide{grid-column:1 / -1;min-height:0}
+.dash-head{display:flex;align-items:center;justify-content:space-between;padding:13px 0 11px;border-bottom:1px solid var(--rule);margin-bottom:16px}
+.dash-title{font:600 16px var(--display);margin:0}
+.dash-grip{font:11px var(--mono);color:var(--ink-soft)}
+.dash-hero{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:12px}
+.dash-hero-num{font:600 38px/1 var(--mono);color:var(--brass);letter-spacing:-.05em}
+.dash-hero-unit,.dash-hero-side{font:11px var(--mono);color:var(--ink-soft)}
+.dash-hero-side{margin-left:auto}
+.kpi-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-bottom:12px}
+.kpi{border-left:2px solid var(--rule);padding-left:10px}
+.kpi-val{font:600 21px/1.15 var(--mono);color:var(--ink)}
+.kpi-val.warn{color:var(--seal)}
+.kpi-label{font-size:11px;color:var(--ink-soft);margin-top:3px}
+.dash-row{display:grid;grid-template-columns:1fr auto;gap:14px;align-items:center;padding:7px 0;border-bottom:1px dashed var(--rule);font-size:12.5px}
+.dash-row:last-child{border-bottom:0}
+.r-val{font:11.5px var(--mono);color:var(--ink-soft);white-space:nowrap}
+.r-val.warn{color:var(--seal);font-weight:600}
+.mini-meter{height:5px;background:var(--track);margin:5px 0}
+.mini-meter i{display:block;height:100%;background:var(--brass)}
+.mini-meter i.low{background:var(--seal)}
+
+/* ---------- 状态栏 ---------- */
+.statusbar{background:var(--ink);color:var(--card)}
+.statusbar-inner{display:flex;align-items:center;gap:10px;min-height:38px;padding:0 18px;font:12px var(--mono);flex-wrap:wrap}
+.status-dot{width:7px;height:7px;background:var(--seal);flex:none}
+.status-aside{margin-left:auto;color:rgba(247,249,249,.5);font-size:10px}
+.pager{display:flex;gap:8px;align-items:center}
+.pager span{border:1px solid rgba(247,249,249,.25);border-radius:2px;padding:3px 8px;font:11px var(--mono);color:rgba(247,249,249,.8)}
+
+/* ---------- 对照表 ---------- */
+.section-title{font:700 24px var(--display);letter-spacing:-.025em;margin:44px 0 16px}
+.map{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--rule);font-size:13px}
+.map caption{text-align:left;font:11px var(--mono);color:var(--ink-soft);padding:0 0 10px}
+.map th{font:500 11px var(--mono);color:var(--ink-soft);text-align:left;padding:0 14px 10px 0;border-bottom:1.5px solid var(--ink)}
+.map td{padding:10px 14px 10px 0;border-bottom:1px solid var(--rule);vertical-align:top}
+.map code{font:12px var(--mono);background:rgba(27,42,58,.06);padding:1px 5px;border-radius:2px}
+.map .swatch{display:inline-block;width:12px;height:12px;border:1px solid rgba(0,0,0,.15);vertical-align:-2px;margin-right:6px}
+.footnote{font:10.5px var(--mono);color:var(--ink-soft);margin-top:22px;display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
+@media(max-width:900px){.account-grid,.dash-grid{grid-template-columns:1fr}.dash-card--wide{grid-column:auto}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="page-head">
+    <h1>档案柜 · Swing 落地预览</h1>
+    <p>design/index.html 与 design/plugin-ui.html 的视觉体系，已迁移到插件的 Kotlin / Swing 界面。</p>
+  </div>
+  <p class="page-note">下面是改造后工具窗口的静态示意（数据为脱敏样例）。真实实现位于 src/main/kotlin/dev/codebuddy/account/ui/，配色集中在 AccountUiColors.kt，组件绘制在 QuotaCards.kt / AccountUiKit.kt / AccountGridCard.kt。</p>
+
+  <div class="shell">
+
+    <header class="titlebar">
+      <div class="brand"><span class="brand-mark" aria-hidden="true"></span>CodeBuddy Accounts</div>
+      <div class="tabs" aria-label="窗口标签">
+        <span class="tab" aria-current="page">首页看板</span>
+        <span class="tab">账号卡片</span>
+      </div>
+      <span class="ver">0.22.3</span>
+    </header>
+
+    <div class="toolbar">
+      <div class="toolbar-row">
+        <button class="tw-btn tw-btn--primary">从 auth 目录导入</button>
+        <button class="tw-btn">历史对话</button>
+        <button class="tw-btn">切换</button>
+        <button class="tw-btn">智能调度</button>
+        <button class="tw-btn">刷新额度</button>
+        <span class="spacer"></span>
+        <div class="dock" aria-label="工具槽">
+          <span>＋</span><span>⇄</span><span>↻</span><span>⇧</span><span>⇩</span><span>◈</span><span>⚙</span><span>⋯</span>
+        </div>
+      </div>
+      <div class="toolbar-row">
+        <label class="tool-label" for="f">筛选:</label>
+        <input class="tw-input" id="f" placeholder="名称 / UID / 域名 / 手机号">
+        <label class="tool-label" for="s">排序:</label>
+        <select class="tw-select" id="s"><option>默认</option><option>按域名分组</option><option>按过期时间</option><option>按剩余额度</option><option>按昵称</option></select>
+        <button class="tw-btn">导出</button>
+        <button class="tw-btn">导入库</button>
+        <button class="tw-btn">设置</button>
+        <span class="spacer"></span>
+        <span class="hint">已选中：夜航船</span>
+      </div>
+      <div class="toolbar-row" style="border-top-style:dashed">
+        <span class="chip chip--seal">全部 4</span>
+        <span class="tool-label">勾选账号后可批量操作</span>
+      </div>
+    </div>
+
+    <main class="content">
+      <div class="view-head"><h2>账号库</h2><span>4 个账号 · 2 个认证域 · 数据已脱敏</span></div>
+
+      <div class="account-grid">
+        <article class="account-card" data-current="true" data-selected="true">
+          <span class="acct-tab">当前激活</span>
+          <div class="acct-head">
+            <div class="avatar av-1">夜</div>
+            <div class="acct-id">
+              <h3 class="acct-name">夜航船</h3>
+              <div class="acct-tags"><span class="tag tag--personal">个人</span><span class="tag">www.codebuddy.cn</span><span class="tag tag--ok">Token 有效</span></div>
+            </div>
+            <span class="seal">当前</span>
+          </div>
+          <div class="acct-meta">UID&nbsp; <b>8f3c21a4@codebuddy.cn</b>&nbsp;&nbsp;&nbsp; 手机号&nbsp; <b>138****6621</b>&nbsp;&nbsp;&nbsp; 认证域&nbsp; <b>www.codebuddy.cn</b></div>
+          <div class="reading"><span class="reading-num">2262.05</span><span class="reading-total">/ 2300 credits</span></div>
+          <p class="reading-label">剩余额度 98% · 刷新于 17:24</p>
+          <div class="meter" role="img" aria-label="剩余 98%"><span class="meter-fill" style="width:98%"></span></div>
+          <div class="acct-foot">
+            <span class="file-no">snapshots/8f3c21a4@codebuddy.cn.info</span>
+            <div class="acct-actions"><button class="primary">切换</button><button>额度明细</button><span class="glyph">✎</span><span class="glyph">↻</span><span class="glyph">⋯</span></div>
+          </div>
+        </article>
+
+        <article class="account-card" data-current="false" data-selected="false">
+          <div class="acct-head">
+            <div class="avatar av-2">沙</div>
+            <div class="acct-id">
+              <h3 class="acct-name">沙丘</h3>
+              <div class="acct-tags"><span class="tag tag--enterprise">企业</span><span class="tag">www.workbuddy.ai</span><span class="tag tag--ok">Token 有效</span></div>
+            </div>
+          </div>
+          <div class="acct-meta">UID&nbsp; <b>b71d09ef@workbuddy.ai</b>&nbsp;&nbsp;&nbsp; 手机号&nbsp; <b>139****4087</b>&nbsp;&nbsp;&nbsp; 认证域&nbsp; <b>www.workbuddy.ai</b></div>
+          <div class="reading"><span class="reading-num">3496.17</span><span class="reading-total">/ 4519 credits</span></div>
+          <p class="reading-label">剩余额度 77% · 刷新于 17:24</p>
+          <div class="meter" role="img" aria-label="剩余 77%"><span class="meter-fill" style="width:77%"></span></div>
+          <div class="acct-foot">
+            <span class="file-no">snapshots/b71d09ef@workbuddy.ai.info</span>
+            <div class="acct-actions"><button class="primary">切换</button><button>额度明细</button><span class="glyph">✎</span><span class="glyph">↻</span><span class="glyph">⋯</span></div>
+          </div>
+        </article>
+      </div>
+
+      <div class="dash-grid">
+        <article class="dash-card dash-card--wide">
+          <div class="dash-head"><h3 class="dash-title">今日消耗积分</h3><span class="dash-grip">⠿</span></div>
+          <div class="dash-hero"><span class="dash-hero-num">128.40</span><span class="dash-hero-unit">credits</span><span class="dash-hero-side">剩余积分 7289.82 · 更新于 17:24</span></div>
+          <div class="dash-row"><span>今日对话</span><span class="r-val">36 次</span></div>
+          <div class="dash-row"><span>最近请求 · deepseek-v3.2</span><span class="r-val">17:22 · 4.82 credits</span></div>
+        </article>
+
+        <article class="dash-card">
+          <div class="dash-head"><h3 class="dash-title">关键指标</h3><span class="dash-grip">⠿</span></div>
+          <div class="kpi-grid">
+            <div class="kpi"><div class="kpi-val">4</div><div class="kpi-label">账号总数</div></div>
+            <div class="kpi"><div class="kpi-val">7289.82</div><div class="kpi-label">额度总剩余</div></div>
+            <div class="kpi"><div class="kpi-val warn">2</div><div class="kpi-label">7 天内到期</div></div>
+            <div class="kpi"><div class="kpi-val warn">1</div><div class="kpi-label">低额度账号</div></div>
+          </div>
+          <div class="dash-row"><span>数据状态</span><span class="r-val">全部已刷新 · 17:24</span></div>
+        </article>
+
+        <article class="dash-card">
+          <div class="dash-head"><h3 class="dash-title">模型限额</h3><span class="dash-grip">⠿</span></div>
+          <div class="dash-row"><span>deepseek · 已用 142.6 / 200</span><span class="r-val">剩余 57.4</span></div>
+          <div class="mini-meter"><i style="width:71%"></i></div>
+          <div class="dash-row"><span>gpt-5 · 已用 96.2 / 100</span><span class="r-val warn">剩余 3.8</span></div>
+          <div class="mini-meter"><i class="low" style="width:96%"></i></div>
+        </article>
+      </div>
+    </main>
+
+    <footer class="statusbar">
+      <div class="statusbar-inner">
+        <span class="status-dot" aria-hidden="true"></span>
+        <span>显示 1 - 4 条，共 4 条　|　共 4 个账号　|　当前：夜航船　|　额度最高：沙丘 77%</span>
+        <span class="status-aside">悬停看明细 · 点击打开面板</span>
+        <span class="pager"><span>上一页</span><span>第 1 / 1 页</span><span>下一页</span></span>
+      </div>
+    </footer>
+  </div>
+
+  <h2 class="section-title">设计 token → Kotlin 字段</h2>
+  <table class="map">
+    <caption>同一个色值在 HTML 设计稿与 Swing 实现里的对应关系</caption>
+    <thead><tr><th>HTML 变量</th><th>色值</th><th>Kotlin 字段</th><th>用途</th></tr></thead>
+    <tbody>
+      <tr><td><code>--paper</code></td><td><span class="swatch" style="background:#E8ECEF"></span>#E8ECEF</td><td><code>panelBg</code></td><td>内容区画布</td></tr>
+      <tr><td><code>--card</code></td><td><span class="swatch" style="background:#F7F9F9"></span>#F7F9F9</td><td><code>cardBg</code> / <code>onInk</code></td><td>档案卡纸面 / 深墨带文字</td></tr>
+      <tr><td><code>--drawer</code></td><td><span class="swatch" style="background:#DDE4E8"></span>#DDE4E8</td><td><code>surfaceBg</code> / <code>surfaceHi</code></td><td>抽屉工具栏、表头</td></tr>
+      <tr><td><code>--ink</code></td><td><span class="swatch" style="background:#1B2A3A"></span>#1B2A3A</td><td><code>ink</code> / <code>textPrimary</code></td><td>标题栏、状态栏、主按钮、正文</td></tr>
+      <tr><td><code>--ink-soft</code></td><td><span class="swatch" style="background:#5A6978"></span>#5A6978</td><td><code>textSecondary</code></td><td>次级文本、档案号</td></tr>
+      <tr><td><code>--seal</code></td><td><span class="swatch" style="background:#B23A2C"></span>#B23A2C</td><td><code>seal</code> / <code>accent</code> / <code>danger</code></td><td>朱印、选中下划线、异常</td></tr>
+      <tr><td><code>--brass</code></td><td><span class="swatch" style="background:#9B7826"></span>#9B7826</td><td><code>brass</code> / <code>barFill</code> / <code>focusRing</code></td><td>读数数字、进度条充盈、焦点环</td></tr>
+      <tr><td><code>--brass-ink</code></td><td><span class="swatch" style="background:#745617"></span>#745617</td><td><code>brassInk</code> / <code>warning</code></td><td>强调文字、临期预警</td></tr>
+      <tr><td><code>--rule</code></td><td><span class="swatch" style="background:#C6D0D7"></span>#C6D0D7</td><td><code>rule</code> / <code>border</code> / <code>tableGrid</code></td><td>1px 铅线、卡片描边</td></tr>
+      <tr><td><code>--track</code></td><td><span class="swatch" style="background:#D3DBE0"></span>#D3DBE0</td><td><code>track</code> / <code>barTrack</code></td><td>进度条轨道</td></tr>
+    </tbody>
+  </table>
+
+  <h2 class="section-title">组件 → Swing 实现</h2>
+  <table class="map">
+    <caption>设计稿里的关键组件落在哪些 Kotlin 类上</caption>
+    <thead><tr><th>HTML</th><th>Kotlin</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td><code>.titlebar</code> / <code>.statusbar</code></td><td><code>AccountPanel.buildTitleBar / buildFooterBar</code></td><td>深墨带 + 品牌 mark + 朱红圆点 + 等宽读数</td></tr>
+      <tr><td><code>.tab[aria-selected]</code></td><td><code>SegmentedTabs(onDark = true)</code></td><td>3px 直角朱印下划线，浅色文字</td></tr>
+      <tr><td><code>.toolbar</code></td><td><code>AccountPanel.buildToolDrawer</code></td><td>抽屉面 + 虚线分组 + 工具槽</td></tr>
+      <tr><td><code>.acct-tab</code></td><td><code>RoundedCard.tabText / paintTab</code></td><td>档案卡左上角墨蓝索引标签</td></tr>
+      <tr><td><code>.avatar</code> / <code>.seal</code></td><td><code>AvatarBadge / SealStamp</code></td><td>42px 直角头像、旋转 -7° 朱印</td></tr>
+      <tr><td><code>.reading-num</code> / <code>.meter</code></td><td><code>AccountGridCard.buildQuotaBlock / QuotaBar</code></td><td>黄铜等宽读数 + 9px 刻度条</td></tr>
+      <tr><td><code>.card-foot</code> dashed</td><td><code>DashedRule / Jelly.paintDashedLine</code></td><td>卡片底部与账本行的虚线分隔</td></tr>
+      <tr><td><code>.btn</code> / <code>.btn--quiet</code></td><td><code>JellyButton(PRIMARY / GHOST)</code></td><td>墨蓝实心主按钮、下划线文字动作</td></tr>
+      <tr><td><code>.ledger thead</code></td><td><code>AccountTableStyle</code></td><td>等宽表头 + 2px 墨蓝底线</td></tr>
+      <tr><td><code>.dash-card</code></td><td><code>DashboardCard / CardRow</code></td><td>2 列卡片、标题下铅线、行虚线</td></tr>
+    </tbody>
+  </table>
+
+  <p class="footnote"><span>CodeBuddy Account Manager · 档案柜 / The Cabinet · 界面静态预览</span><span>界面固定为浅色档案纸，不随 IDE 深色主题变暗</span></p>
+</div>
+</body>
+</html>

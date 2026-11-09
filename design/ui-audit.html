@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>UI 体检与优化清单 — CodeBuddy Account Manager 0.22.3</title>
+<meta name="description" content="JetBrains 插件 CodeBuddy Account Manager 的 UI 体检报告：版本与发布物料一致性修复、WCAG 对比度校验，以及插件界面与网页的分层优化清单。">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#E8ECEF; --card:#F7F9F9; --drawer:#DDE4E8;
+  --ink:#1B2A3A; --ink-soft:#5A6978;
+  --seal:#B23A2C; --brass:#9B7826; --brass-ink:#745617;
+  --rule:#C6D0D7; --track:#D3DBE0;
+  --display:"IBM Plex Sans Condensed","PingFang SC","Microsoft YaHei","Noto Sans CJK SC",sans-serif;
+  --body:"IBM Plex Sans","PingFang SC","Microsoft YaHei","Noto Sans CJK SC",sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,"Cascadia Mono",Consolas,Menlo,monospace;
+  --wrap:1120px; --gutter:clamp(20px,5vw,60px); --band-y:70px;
+}
+*,*::before,*::after{box-sizing:border-box}
+html{scroll-behavior:smooth;scroll-padding-top:72px}
+body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.75 var(--body);-webkit-font-smoothing:antialiased}
+a{color:inherit}
+:focus-visible{outline:3px solid var(--brass);outline-offset:3px}
+::selection{background:var(--brass);color:#fff}
+.wrap{max-width:var(--wrap);margin-inline:auto;padding-inline:var(--gutter)}
+.band{padding-block:var(--band-y)}
+.band--tint{background:var(--drawer);border-block:1px solid var(--rule)}
+.band--rule{border-top:1px solid var(--rule)}
+.band--tight{--band-y:44px}
+
+/* 顶栏 */
+.topbar{position:sticky;top:0;z-index:20;background:var(--paper);border-bottom:1px solid var(--rule)}
+.topbar-inner{max-width:var(--wrap);margin-inline:auto;padding-inline:var(--gutter);min-height:56px;display:flex;align-items:center;gap:clamp(18px,3vw,36px)}
+.brand{display:flex;align-items:center;gap:10px;font:700 16px var(--display);text-decoration:none;white-space:nowrap}
+.brand-mark{width:17px;height:17px;flex:none;border:2px solid var(--ink);display:grid;place-items:center}
+.brand-mark::after{content:"";width:6px;height:6px;background:var(--seal)}
+.nav{display:flex;gap:clamp(12px,2vw,22px);overflow-x:auto;scrollbar-width:none;white-space:nowrap}
+.nav::-webkit-scrollbar{display:none}
+.nav a{font:500 13.5px var(--display);color:var(--ink-soft);text-decoration:none;padding:4px 0;border-bottom:2px solid transparent}
+.nav a:hover{color:var(--ink);border-bottom-color:var(--seal)}
+.topbar-ver{margin-left:auto;font:11px var(--mono);color:var(--ink-soft);white-space:nowrap}
+
+/* 标题与读数 */
+.hero-title{font:700 clamp(32px,5.2vw,60px)/1.08 var(--display);letter-spacing:-.04em;margin:0 0 20px;max-width:16ch;text-wrap:balance}
+.lede{max-width:58ch;color:var(--ink-soft);font-size:16px;margin:0 0 38px}
+.readings{display:flex;flex-wrap:wrap;gap:clamp(28px,6vw,72px);border-top:1.5px solid var(--ink);padding-top:22px}
+.reading{min-width:150px}
+.reading-num{display:block;font:600 clamp(34px,4.6vw,52px)/1 var(--mono);color:var(--brass);letter-spacing:-.05em;font-variant-numeric:tabular-nums}
+.reading-label{display:block;font-size:13px;color:var(--ink-soft);margin-top:9px}
+.reading-note{font:11px var(--mono);color:var(--ink-soft);margin:18px 0 0}
+
+/* 状态带 */
+.statusbar{background:var(--ink);color:var(--card)}
+.statusbar-inner{max-width:var(--wrap);margin-inline:auto;padding-inline:var(--gutter);min-height:50px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;font:12.5px var(--mono)}
+.status-dot{width:7px;height:7px;background:var(--seal);flex:none}
+.status-aside{margin-left:auto;color:rgba(247,249,249,.55);font-size:11px}
+
+/* 区块 */
+.sec-head{display:flex;align-items:baseline;gap:20px;flex-wrap:wrap;margin:0 0 30px}
+.sec-title{font:700 clamp(25px,3.2vw,36px)/1.15 var(--display);letter-spacing:-.03em;margin:0}
+.sec-note{font-size:13.5px;color:var(--ink-soft);max-width:52ch;margin:0}
+.sub-title{font:600 19px var(--display);letter-spacing:-.02em;margin:38px 0 16px}
+
+/* 账本式表格 */
+.table-scroll{overflow-x:auto;background:var(--card);border:1px solid var(--rule);border-radius:3px}
+.ledger{width:100%;border-collapse:collapse;min-width:760px;font-size:13.5px}
+.ledger caption{text-align:left;font:11px var(--mono);color:var(--ink-soft);padding:14px 18px;caption-side:top}
+.ledger thead th{font:500 11px var(--mono);color:var(--ink-soft);text-align:left;padding:0 16px 11px;border-bottom:1.5px solid var(--ink);white-space:nowrap}
+.ledger tbody td{padding:14px 16px;border-bottom:1px solid var(--rule);vertical-align:top;line-height:1.65}
+.ledger tbody tr:last-child td{border-bottom:0}
+.ledger tbody tr:hover{background:rgba(255,255,255,.55)}
+.ledger .col-k{font:600 15px/1.4 var(--display);min-width:170px}
+.ledger .col-file{font:11px/1.7 var(--mono);color:var(--ink-soft);word-break:break-word;min-width:200px}
+.ledger .num{font-family:var(--mono);font-variant-numeric:tabular-nums;white-space:nowrap;text-align:right}
+.ledger code{font:11.5px var(--mono);background:rgba(27,42,58,.06);padding:1px 5px;border-radius:2px;word-break:break-word}
+.chip{display:inline-block;font:10.5px var(--mono);border:1px solid var(--rule);border-radius:2px;padding:2px 7px;background:var(--paper);color:var(--ink-soft);white-space:nowrap}
+.chip--high{background:#F8EAE7;border-color:#EFC4BC;color:var(--seal)}
+.chip--ok{background:#E8F4EC;border-color:#BFDCC8;color:#15803D}
+.chip--brass{background:#F3EBD6;border-color:#E8CF9F;color:var(--brass-ink)}
+.val-ok{color:var(--brass-ink);font-weight:600}
+.val-bad{color:var(--seal);font-weight:600}
+
+/* 说明清单 */
+.notes{margin:0;border-top:1.5px solid var(--ink)}
+.notes > div{display:grid;grid-template-columns:minmax(150px,.8fr) minmax(0,2fr);gap:22px;padding:14px 0;border-bottom:1px solid var(--rule)}
+.notes .k{font:600 15px/1.5 var(--display)}
+.notes .v{font-size:13.5px;color:var(--ink-soft);line-height:1.7}
+.notes .v strong{color:var(--ink);font-weight:600}
+.foot-note{font:11.5px/1.9 var(--mono);color:var(--ink-soft);margin:20px 0 0;max-width:86ch}
+
+.footer{border-top:1px solid var(--rule);padding-block:26px 40px}
+.footer-inner{display:flex;justify-content:space-between;gap:24px;flex-wrap:wrap;font:11.5px var(--mono);color:var(--ink-soft)}
+.footer a{text-decoration:underline;text-underline-offset:4px}
+
+@keyframes settle{from{opacity:0;transform:translateY(9px)}to{opacity:1;transform:none}}
+.enter{animation:settle .55s cubic-bezier(.2,.7,.25,1) both}
+.d2{animation-delay:.08s}.d3{animation-delay:.16s}
+@media(max-width:900px){
+  .band{--band-y:52px}
+  .notes > div{grid-template-columns:1fr;gap:5px}
+  .topbar-ver{display:none}
+}
+@media(max-width:600px){
+  .readings{gap:24px}
+  .reading{min-width:120px}
+  .status-aside{margin-left:0}
+}
+@media(prefers-reduced-motion:reduce){
+  html{scroll-behavior:auto}
+  *,*::before,*::after{animation-duration:.01ms!important;transition-duration:.01ms!important}
+}
+</style>
+</head>
+<body>
+
+<header class="topbar enter">
+  <div class="topbar-inner">
+    <a class="brand" href="#top"><span class="brand-mark" aria-hidden="true"></span>UI 体检档案</a>
+    <nav class="nav" aria-label="报告导航">
+      <a href="#fixed">已修复</a>
+      <a href="#data">体检数据</a>
+      <a href="#swing">插件界面</a>
+      <a href="#web">网页与发布</a>
+      <a href="#kept">刻意未动</a>
+    </nav>
+    <span class="topbar-ver">0.22.3 / 2026-11-05</span>
+  </div>
+</header>
+
+<main id="top">
+
+  <section class="band" aria-labelledby="page-title">
+    <div class="wrap">
+      <h1 class="hero-title enter d2" id="page-title">把散掉的版本、清单和对比度重新对齐。</h1>
+      <p class="lede enter d2">这次检查覆盖了产品落地页、插件界面复刻、Swing 落地预览、两份 Marketplace 发布片段，以及插件真正的配色实现。修掉的是客观不一致与可访问性缺口；视觉方向本身沿用已经确定的「档案柜」，没有换皮。</p>
+      <div class="readings enter d3">
+        <div class="reading"><span class="reading-num">12</span><span class="reading-label">项已修复</span></div>
+        <div class="reading"><span class="reading-num">8</span><span class="reading-label">项按优先级待办</span></div>
+        <div class="reading"><span class="reading-num">14</span><span class="reading-label">组配色对比度校验</span></div>
+      </div>
+      <p class="reading-note enter d3">校验口径：HTML 结构 / ID 与 ARIA 引用 / CSS 变量 / JS 语法 / 版本号 / 发布链路 / WCAG 2.1 对比度 / Kotlin 色值。</p>
+    </div>
+  </section>
+
+  <div class="statusbar" role="status">
+    <div class="statusbar-inner">
+      <span class="status-dot" aria-hidden="true"></span>
+      <span>构建版本 0.22.3 · 发布描述与变更说明已补齐 · 最弱文本已达 WCAG AA</span>
+      <span class="status-aside">Kotlin 仅改一个颜色常量，业务逻辑未动</span>
+    </div>
+  </div>
+
+  <section class="band band--tint" id="fixed" aria-labelledby="fixed-title">
+    <div class="wrap">
+      <div class="sec-head">
+        <h2 class="sec-title" id="fixed-title">已修复</h2>
+        <p class="sec-note">版本号与功能清单的断档是最容易被用户看见的落差；可访问性问题则是这次量化检查才暴露出来的。</p>
+      </div>
+      <div class="table-scroll">
+        <table class="ledger">
+          <caption>逐项记录：问题 / 所在文件 / 处理方式</caption>
+          <thead>
+            <tr><th scope="col">问题</th><th scope="col">位置</th><th scope="col">处理</th></tr>
+          </thead>
+          <tbody>
+            <tr><td class="col-k">落地页版本号滞后</td><td class="col-file">design/index.html</td><td>顶栏与页脚 <code>0.21.2 → 0.22.3</code>，与 <code>build.gradle.kts</code> 对齐。</td></tr>
+            <tr><td class="col-k">Swing 预览版本号滞后</td><td class="col-file">design/cabinet-swing-preview.html</td><td>标题栏 <code>0.21.2 → 0.22.3</code>。</td></tr>
+            <tr><td class="col-k">变更说明停在首个公开版</td><td class="col-file">docs/change-notes.html</td><td>重写为 <code>0.22.3 / 0.11.3 / 0.11.2 / 0.10.3</code> 四节，内容取自 CHANGELOG 既有事实。</td></tr>
+            <tr><td class="col-k">市场变更说明停在 0.11.3</td><td class="col-file">plugin.xml &lt;change-notes&gt;</td><td>补 <code>0.22.3</code> 小节（界面改版、成长中心、模型限额、消耗明细、动效），与 docs 片段版本列表一致。</td></tr>
+            <tr><td class="col-k">描述页缺 6 类功能</td><td class="col-file">docs/marketplace-description.html</td><td>补首页看板、消耗明细、日报周报、今日签到、成长中心、模型限额；同步补隐私与限制说明。</td></tr>
+            <tr><td class="col-k">市场描述同样缺项</td><td class="col-file">plugin.xml &lt;description&gt;</td><td>功能标题集合与 docs 片段逐条对齐，两处不再漂移。</td></tr>
+            <tr><td class="col-k">截图是旧版深色界面</td><td class="col-file">两份描述页</td><td>如实标注截图拍摄于较早版本，并写明 0.22.3 的「档案柜」浅色视觉；替换截图列入待办。</td></tr>
+            <tr><td class="col-k">预览页脚与实现矛盾</td><td class="col-file">design/cabinet-swing-preview.html</td><td>「浅色 / 深色双主题由 JBColor 自动跟随 IDE」→「界面固定为浅色档案纸，不随 IDE 深色主题变暗」，与 <code>AccountUiColors.fixed()</code> 一致。</td></tr>
+            <tr><td class="col-k">最弱文本对比度不达标</td><td class="col-file">AccountUiColors.kt · textFaint</td><td><code>#6E7C8A → #666F7D</code>，在档案卡上从 <span class="val-bad">4.04:1</span> 提升到 <span class="val-ok">4.81:1</span>，满足 AA 正文 4.5:1。仅改色值常量。</td></tr>
+            <tr><td class="col-k">标签与菜单缺少 ARIA 关联</td><td class="col-file">design/plugin-ui.html</td><td>三个 tab 补 <code>aria-controls</code> 指向对应 tabpanel；额度维度菜单改为 <code>radiogroup + radio</code>，让 <code>aria-checked</code> 有合法角色。</td></tr>
+            <tr><td class="col-k">筛选后认证域数写死</td><td class="col-file">design/plugin-ui.html</td><td>「2 个认证域」改为按可见卡片的 <code>data-domain</code> 动态去重，筛选结果不再说谎。</td></tr>
+            <tr><td class="col-k">静态预览里的假按钮</td><td class="col-file">design/cabinet-swing-preview.html</td><td>窗口标签由 <code>role="tab"</code> 的 button 改为不可交互的 span + <code>aria-current</code>，不再出现「看着能点、点了没反应」。</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="foot-note">另在 CHANGELOG.md 的「未发布」下补记界面改版与本次修复；Marketplace 描述首句仍保持英文开头，避免触发发布校验规则。</p>
+    </div>
+  </section>
+
+  <section class="band" id="data" aria-labelledby="data-title">
+    <div class="wrap">
+      <div class="sec-head">
+        <h2 class="sec-title" id="data-title">体检数据</h2>
+        <p class="sec-note">按 WCAG 2.1 相对亮度公式计算。正文门槛 4.5:1，≥24px 或 ≥18.66px 粗体的大字门槛 3:1。</p>
+      </div>
+      <div class="table-scroll">
+        <table class="ledger">
+          <caption>「档案柜」配色的 14 组关键组合，均为浅色档案纸或档案卡底</caption>
+          <thead>
+            <tr><th scope="col">组合</th><th scope="col">用途</th><th scope="col" style="text-align:right">对比度</th><th scope="col" style="text-align:right">结论</th></tr>
+          </thead>
+          <tbody>
+            <tr><td class="col-file">#1B2A3A / #E8ECEF</td><td>正文 / 档案纸</td><td class="num">12.28:1</td><td class="num"><span class="chip chip--ok">达标</span></td></tr>
+            <tr><td class="col-file">#1B2A3A / #F7F9F9</td><td>正文 / 档案卡</td><td class="num">13.81:1</td><td class="num"><span class="chip chip--ok">达标</span></td></tr>
+            <tr><td class="col-file">#5A6978 / #E8ECEF</td><td>次级说明</td><td class="num">4.74:1</td><td class="num"><span class="chip chip--ok">达标</span></td></tr>
+            <tr><td class="col-file">#5A6978 / #F7F9F9</td><td>卡片内次级说明 / 档案号</td><td class="num">5.33:1</td><td class="num"><span class="chip chip--ok">达标</span></td></tr>
+            <tr><td class="col-file">#4F5E6D / #F7F9F9</td><td>Swing 次级文本</td><td class="num">6.30:1</td><td class="num"><span class="chip chip--ok">达标</span></td></tr>
+            <tr><td class="col-file">#666F7D / #F7F9F9</td><td>Swing 最弱文本（本次修正）</td><td class="num">4.81:1</td><td class="num"><span class="chip chip--brass">已修</span></td></tr>
+            <tr><td class="col-file">#B23A2C / #F7F9F9</td><td>朱印 / 临期警示</td><td class="num">5.62:1</td><td class="num"><span class="chip chip--ok">达标</span></td></tr>
+            <tr><td class="col-file">#9B7826 / #F7F9F9</td><td>黄铜读数（仅 ≥29px 大字）</td><td class="num">3.89:1</td><td class="num"><span class="chip chip--brass">大字达标</span></td></tr>
+            <tr><td class="col-file">#745617 / #F7F9F9</td><td>黄铜压深 / 临期</td><td class="num">6.44:1</td><td class="num"><span class="chip chip--ok">达标</span></td></tr>
+            <tr><td class="col-file">#F7F9F9 / #1B2A3A</td><td>深墨带文字</td><td class="num">13.81:1</td><td class="num"><span class="chip chip--ok">达标</span></td></tr>
+            <tr><td class="col-file">#A9BAC6 / #1B2A3A</td><td>深墨带次级文字</td><td class="num">7.32:1</td><td class="num"><span class="chip chip--ok">达标</span></td></tr>
+            <tr><td class="col-file">#0B6C82 / #F7F9F9</td><td>个人标签</td><td class="num">5.71:1</td><td class="num"><span class="chip chip--ok">达标</span></td></tr>
+            <tr><td class="col-file">#96590B / #F7F9F9</td><td>企业标签</td><td class="num">5.33:1</td><td class="num"><span class="chip chip--ok">达标</span></td></tr>
+            <tr><td class="col-file">#15803D / #F7F9F9</td><td>Token 有效标签</td><td class="num">4.75:1</td><td class="num"><span class="chip chip--ok">达标</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="foot-note">黄铜 #9B7826 的 3.89:1 若用于小字会低于 4.5:1；目前只出现在 29–42px 的等宽读数上，按大字口径合规，因此没有改动这个视觉 token。将来若要把黄铜用在 11–14px 文本，需换成 #8E6E22（4.51:1）或更深的 #856618（5.08:1）。</p>
+    </div>
+  </section>
+
+  <section class="band band--tint" id="swing" aria-labelledby="swing-title">
+    <div class="wrap">
+      <div class="sec-head">
+        <h2 class="sec-title" id="swing-title">待办 · 插件界面</h2>
+        <p class="sec-note">这些需要改 Kotlin 并重新编译验证，超出本次「不碰功能逻辑」的范围，按优先级列出供你决定。</p>
+      </div>
+      <div class="table-scroll">
+        <table class="ledger">
+          <caption>Swing 侧优化清单，优先级从高到低</caption>
+          <thead>
+            <tr><th scope="col">优先级</th><th scope="col">问题</th><th scope="col">位置与建议</th><th scope="col">验证方式</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><span class="chip chip--high">高</span></td>
+              <td class="col-k">深色 IDE 主题下的高反差亮面板</td>
+              <td><span class="col-file">AccountUiColors.fixed()</span><br>所有 token 固定为浅色档案纸，Darcula 下工具窗口会嵌一块刺眼亮面。建议保留纸面但给窗口外沿加一层贴近 IDE 主题的留白 / 描边；或提供「跟随 IDE 主题」开关并配一套深色纸面 token。</td>
+              <td>Light 与 Darcula 各截一张整窗对比，看边缘与相邻工具窗口的过渡</td>
+            </tr>
+            <tr>
+              <td><span class="chip">中</span></td>
+              <td class="col-k">字号与设计稿漂移</td>
+              <td><span class="col-file">AccountUiType.heroNum = 40 / tab = 12；HTML 稿为 38 / 11</span><br>统一到稿值，或反向更新设计稿与 cabinet-swing-preview.html 的映射表，别让两边长期各说各话。</td>
+              <td>compileKotlin 后与预览页并排对照</td>
+            </tr>
+            <tr>
+              <td><span class="chip">中</span></td>
+              <td class="col-k">旧 6 套色调与固定浅纸面混用</td>
+              <td><span class="col-file">AccountUiColors.applyTheme()</span><br>切到墨青 / 薄荷 / 珊瑚时纸面仍是冷蓝灰，主色与底不协调。建议非 CABINET 方案恢复原主题跟随，或直接下线旧方案。</td>
+              <td>逐套切换截图，检查主按钮、tab 下划线与纸面关系</td>
+            </tr>
+            <tr>
+              <td><span class="chip">中</span></td>
+              <td class="col-k">分段标签的键盘导航</td>
+              <td><span class="col-file">AccountUiKit.SegmentedTabs</span><br>已有 tab 语义与视觉态，但缺方向键切换与 tabindex 0 / -1 轮换。键盘用户目前只能靠 Tab 逐个走。</td>
+              <td>纯键盘走查：方向键切换、焦点环可见、选中态同步</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section class="band" id="web" aria-labelledby="web-title">
+    <div class="wrap">
+      <div class="sec-head">
+        <h2 class="sec-title" id="web-title">待办 · 网页与发布物料</h2>
+        <p class="sec-note">其中替换截图会影响 Marketplace 第一印象，建议下次发版前一并做掉。</p>
+      </div>
+      <div class="table-scroll">
+        <table class="ledger">
+          <caption>网页与发布链路优化清单</caption>
+          <thead>
+            <tr><th scope="col">优先级</th><th scope="col">问题</th><th scope="col">位置与建议</th><th scope="col">验证方式</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><span class="chip chip--high">高</span></td>
+              <td class="col-k">发布前替换界面截图</td>
+              <td><span class="col-file">docs/screenshots/account-panel.png</span><br>现图是 0.10.x 的深色界面，与 0.22.3 视觉不符。按 release.md 建议截整个 IDE 窗口、分辨率 ≥1200×760，并在 Marketplace 的 Media → Plugin Screenshots 直接上传（外链常被拦）。</td>
+              <td>上传后在插件详情页确认图片显示与清晰度</td>
+            </tr>
+            <tr>
+              <td><span class="chip">中</span></td>
+              <td class="col-k">tab 键盘导航仍缺一半</td>
+              <td><span class="col-file">design/plugin-ui.html</span><br>本次补了 <code>aria-controls</code>，但 <code>role="tab"</code> 仍需方向键切换与 tabindex 轮换；否则语义完整而操作不完整。</td>
+              <td>纯键盘走查三个视图切换</td>
+            </tr>
+            <tr>
+              <td><span class="chip">中</span></td>
+              <td class="col-k">字体依赖 Google Fonts</td>
+              <td><span class="col-file">design/ 三份 HTML</span><br>离线打开时 IBM Plex 回退系统字体，字阶与字宽会漂。建议内置 woff2，或明确接受回退并把回退字阶锁死。</td>
+              <td>断网预览三份页面，对比标题与等宽数字</td>
+            </tr>
+            <tr>
+              <td><span class="chip">低</span></td>
+              <td class="col-k">版本号散落 6 处</td>
+              <td><span class="col-file">build.gradle.kts / design ×2 / docs ×2 / plugin.xml</span><br>本次已同步，下次发版仍可能漏。建议把 <code>tmp/ui-audit.py</code> 移到 <code>scripts/</code> 并写进 release.md 的构建前自查清单。</td>
+              <td>发版前跑一次校验脚本，退出码应为 0</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section class="band band--rule band--tight" id="kept" aria-labelledby="kept-title">
+    <div class="wrap">
+      <div class="sec-head">
+        <h2 class="sec-title" id="kept-title">刻意没动的地方</h2>
+        <p class="sec-note">克制也是交付的一部分。以下几处看着像可优化，实际动了会付出更大代价。</p>
+      </div>
+      <div class="notes">
+        <div><span class="k">发布片段不加站点样式</span><span class="v">docs/ 两份 HTML 与 plugin.xml 的 <code>&lt;description&gt;</code> / <code>&lt;change-notes&gt;</code> 仍是纯 HTML 片段。套完整站点样式会破坏发布链路，只补了内容。</span></div>
+        <div><span class="k">描述首句保持英文</span><span class="v"><code>release.md</code> 记过一次 400 错误：<code>description must start with Latin characters</code>。中文开头会被 Marketplace 拒，不能为了统一排版改掉。</span></div>
+        <div><span class="k">黄铜读数不改色</span><span class="v"><code>#9B7826</code> 的 3.89:1 对大字合规；改它会同时破坏三份 HTML 与 <code>cabinet-swing-preview.html</code> 里 HTML 变量 → Kotlin 字段的一一对应。</span></div>
+        <div><span class="k">不动组件结构与业务逻辑</span><span class="v">Swing 侧只改了一个颜色常量，其余全部进清单。改结构需要重新编译并做实机走查，属于另一个工作量级。</span></div>
+        <div><span class="k">不拿设计预览冒充截图</span><span class="v">本机无法截取 IDE 实机画面，所以没有替换真实截图，只在描述页如实标注版本差异。CHANGELOG 缺 0.12–0.21 的记录，本次也只归并既有事实，没有虚构中间版本。</span></div>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="footer">
+  <div class="wrap footer-inner">
+    <span>CodeBuddy Account Manager · 档案柜 / The Cabinet · UI 体检档案</span>
+    <span>版本 0.22.3 · 2026-11-05</span>
+    <span>校验脚本 <code>tmp/ui-audit.py</code></span>
+  </div>
+</footer>
+
+</body>
+</html>
