@@ -91,10 +91,11 @@ class GrowthCenterDialog(private val project: Project?) : DialogWrapper(project,
 
     override fun createCenterPanel(): JComponent {
         val root = JPanel(BorderLayout())
+        root.background = AccountUiColors.panelBg
 
         val toolbar = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(6), JBUI.scale(4))).apply { isOpaque = false }
-        toolbar.add(JLabel("账号："))
-        toolbar.add(accountSelector)
+        toolbar.add(JLabel("账号：").apply { foreground = AccountUiColors.textSecondary })
+        toolbar.add(AccountUiKit.styleCombo(accountSelector) { it?.toString().orEmpty() })
         toolbar.add(actionButton("一键完成") { runAction { cb -> GrowthTracker.completeAll(selectedKeys(), cb) } })
         toolbar.add(actionButton("旅行巡检") { runAction { cb -> GrowthTracker.travelAll(selectedKeys(), cb) } })
         toolbar.add(actionButton("活跃上报") { runAction { cb -> GrowthTracker.activityAll(selectedKeys(), cb) } })
@@ -105,7 +106,7 @@ class GrowthCenterDialog(private val project: Project?) : DialogWrapper(project,
         toolbar.add(actionButton("刷新") { reload() })
 
         root.add(toolbar, BorderLayout.NORTH)
-        root.add(JBScrollPane(table), BorderLayout.CENTER)
+        root.add(AccountUiKit.styleScroll(JBScrollPane(table), AccountUiColors.cardBg), BorderLayout.CENTER)
         root.add(statusLabel, BorderLayout.SOUTH)
         root.border = JBUI.Borders.empty(8)
         return root

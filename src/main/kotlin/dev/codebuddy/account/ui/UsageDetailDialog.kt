@@ -80,10 +80,15 @@ class UsageDetailDialog(private val project: Project) : DialogWrapper(project) {
         setSize(1060, 720)
 
         summaryTitle.font = summaryTitle.font.deriveFont(Font.BOLD, AccountUiType.title)
+        // JBLabel 默认取 LAF 前景（深色主题是浅白），纸面上会变成白底白字，必须显式着色
+        summaryTitle.foreground = AccountUiColors.textPrimary
         summaryModels.foreground = AccountUiColors.textMuted
         modelQuotaPanel.foreground = AccountUiColors.textMuted
         statusLabel.foreground = AccountUiColors.textMuted
         pageLabel.foreground = AccountUiColors.textMuted
+        AccountUiKit.styleCombo(accountCombo) { (it as? AccountChoice)?.label ?: "" }
+        AccountUiKit.styleCombo(rangeCombo) { it?.toString().orEmpty() }
+        AccountUiKit.styleCombo(pageSizeCombo) { it?.toString().orEmpty() }
 
         suppressCombo = true
         accountCombo.addActionListener {
@@ -117,10 +122,10 @@ class UsageDetailDialog(private val project: Project) : DialogWrapper(project) {
         // ---------- 顶部：筛选 + 汇总 ----------
         val filterRow = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(6), 0))
         filterRow.isOpaque = false
-        filterRow.add(JBLabel("账号"))
+        filterRow.add(JBLabel("账号").apply { foreground = AccountUiColors.textSecondary })
         accountCombo.preferredSize = Dimension(JBUI.scale(260), accountCombo.preferredSize.height)
         filterRow.add(accountCombo)
-        filterRow.add(JBLabel("时间"))
+        filterRow.add(JBLabel("时间").apply { foreground = AccountUiColors.textSecondary })
         filterRow.add(rangeCombo)
         filterRow.add(refreshBtn)
 
@@ -172,8 +177,7 @@ class UsageDetailDialog(private val project: Project) : DialogWrapper(project) {
             }
         }
 
-        val scroll = JBScrollPane(table).apply {
-            border = JBUI.Borders.empty()
+        val scroll = AccountUiKit.styleScroll(JBScrollPane(table), AccountUiColors.cardBg).apply {
             verticalScrollBar.unitIncrement = 16
         }
 
@@ -191,10 +195,10 @@ class UsageDetailDialog(private val project: Project) : DialogWrapper(project) {
         pagerLeft.add(pageLabel)
         val pagerRight = JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(6), 0))
         pagerRight.isOpaque = false
-        pagerRight.add(JBLabel("每页"))
+        pagerRight.add(JBLabel("每页").apply { foreground = AccountUiColors.textSecondary })
         pageSizeCombo.selectedItem = pageSize
         pagerRight.add(pageSizeCombo)
-        pagerRight.add(JBLabel("条"))
+        pagerRight.add(JBLabel("条").apply { foreground = AccountUiColors.textSecondary })
         pager.add(pagerLeft, BorderLayout.WEST)
         pager.add(pagerRight, BorderLayout.EAST)
 

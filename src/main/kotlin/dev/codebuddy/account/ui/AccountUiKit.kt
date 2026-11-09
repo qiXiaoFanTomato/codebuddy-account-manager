@@ -1,5 +1,6 @@
 package dev.codebuddy.account.ui
 
+import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.table.JBTable
 import com.intellij.util.ui.JBUI
 import dev.codebuddy.account.model.CredentialSnapshot
@@ -42,6 +43,7 @@ import javax.swing.JTable
 import javax.swing.KeyStroke
 import javax.swing.SwingConstants
 import javax.swing.Timer
+import javax.swing.table.DefaultTableCellRenderer
 import javax.swing.table.TableCellRenderer
 
 /**
@@ -159,6 +161,20 @@ object AccountUiKit {
                 return this
             }
         }
+    }
+
+    /**
+     * 滚动区浅色化。
+     *
+     * IDE 深色主题下 viewport 默认铺深灰，界面又固定用浅色档案纸，
+     * 不显式改回来的话滚动区会变成「深底 + 深字」，内容整块读不出来。
+     */
+    fun styleScroll(scroll: JBScrollPane, bg: Color = AccountUiColors.panelBg): JBScrollPane = scroll.apply {
+        border = JBUI.Borders.empty()
+        background = bg
+        isOpaque = true
+        viewport.background = bg
+        viewport.isOpaque = true
     }
 
     /** 主导航分段控件 */
@@ -1488,6 +1504,9 @@ object AccountTableStyle {
         header.font = AccountUiType.ui(AccountUiType.caption)
         header.border = JBUI.Borders.customLine(AccountUiColors.ink, 0, 0, 2, 0)
         header.reorderingAllowed = false
+        // JBTableHeader 的默认渲染器按 LAF 取色：深色主题下表头会变成深底浅字，
+        // 与固定浅色的纸面冲突。这里换成显式着色的渲染器，保证任何主题下表头都是抽屉面。
+        header.defaultRenderer = accountHeaderRenderer()
 
         widths.forEachIndexed { index, width ->
             if (index < table.columnModel.columnCount) {
@@ -1498,6 +1517,28 @@ object AccountTableStyle {
         installRowHover(table)
         installRowRenderer(table)
     }
+
+    /** 表头渲染器：抽屉面底 + 次级文字，不跟随 IDE 深浅主题 */
+    private fun accountHeaderRenderer(): TableCellRenderer = object : DefaultTableCellRenderer() {
+        override fun getTableCellRendererComponent(
+            tbl: JTable?,
+            value: Any?,
+            isSelected: Boolean,
+            hasFocus: Boolean,
+            row: Int,
+            column: Int,
+        ): Component = super.getTableCellRendererComponent(tbl, value, isSelected, hasFocus, row, column).also {
+            isOpaque = true
+            background = AccountUiColors.tableHeaderBg
+            foreground = AccountUiColors.textSecondary
+            font = AccountUiType.ui(AccountUiType.caption)
+            horizontalAlignment = SwingConstants.LEFT
+            border = headerCellBorder
+        }
+    }
+
+    /** 表头单元格内边距 */
+    private val headerCellBorder = JBUI.Borders.empty(0, 8)
 
     /** 鼠标所在行高亮：行号记在客户端属性里，由渲染器读取 */
     private fun installRowHover(table: JTable) {
