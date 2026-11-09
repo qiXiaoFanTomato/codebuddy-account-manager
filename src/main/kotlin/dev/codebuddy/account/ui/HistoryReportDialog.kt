@@ -12,6 +12,7 @@ import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.table.JBTable
 import com.intellij.util.ui.JBUI
+import dev.codebuddy.account.git.GitReportPrompt
 import dev.codebuddy.account.history.HistoryActivity
 import dev.codebuddy.account.history.HistoryReport
 import dev.codebuddy.account.history.HistoryReportBuilder
@@ -40,8 +41,9 @@ import javax.swing.table.AbstractTableModel
  *  - 本周周报：本周一 ~ 今天
  *
  * 维度可切换（项目 / 账号 / 日期 / 时段 / 会话类型）；
- * 「用 CodeBuddy 生成」会把统计事实拼成提示词复制到剪贴板并打开 CodeBuddy 对话窗口，
- * 由模型生成日报 / 周报正文。
+ * 「用 CodeBuddy 生成」只把区间与 git 命令写成短提示词复制到剪贴板并打开对话窗口，
+ * 提交记录与本人身份都由 CodeBuddy 从 git log 输出自行判定，无需填写身份或路径，
+ * 不搬运提交数据，避免大量变更文件把粘贴内容撑到截断。
  */
 class HistoryReportDialog(
     private val project: Project,
@@ -54,7 +56,7 @@ class HistoryReportDialog(
         JellyButton("重新统计", JellyButtonVariant.SECONDARY, null, "重新扫描本机历史会话") { reload(forceScan = true) }
     private val genBtn: JComponent = JellyButton(
         "用 CodeBuddy 生成", JellyButtonVariant.PRIMARY, null,
-        "把统计事实写成提示词复制到剪贴板，并打开 CodeBuddy 对话窗口",
+        "复制短指令到剪贴板，由 CodeBuddy 自行读取 git 提交记录并区分本人 / 他人提交",
     ) { generateInCodeBuddy() }
     private val copyBtn: JComponent =
         JellyButton("复制 Markdown", JellyButtonVariant.SECONDARY, null, "复制当前报告") { copyMarkdown() }
@@ -64,7 +66,9 @@ class HistoryReportDialog(
     private val kpiPanel = JPanel(GridLayout(1, 5, JBUI.scale(6), 0)).apply { isOpaque = false }
     private val bucketPanel = JPanel().apply {
         layout = BoxLayout(this, BoxLayout.Y_AXIS)
-        isOpaque = false
+        // 左侧维度分布是纸面卡片，必须自己铺底：透明会透出深色主题的 viewport
+        isOpaque = true
+        background = AccountUiColors.cardBg
         border = JBUI.Borders.empty(8, 10)
     }
     private val tableModel = DetailTableModel()
@@ -95,13 +99,8 @@ class HistoryReportDialog(
         statusLabel.foreground = AccountUiColors.textMuted
         statusLabel.font = statusLabel.font.deriveFont(Font.PLAIN, AccountUiType.label)
 
-        dimCombo.renderer = object : DefaultListCellRenderer() {
-            override fun getListCellRendererComponent(
-                list: JList<*>?, value: Any?, index: Int, isSelected: Boolean, cellHasFocus: Boolean,
-            ): Component = super.getListCellRendererComponent(
-                list, (value as? ReportDimension)?.label ?: "", index, isSelected, cellHasFocus
-            )
-        }
+        // 维度下拉：标签走 ReportDimension.label，配色统一浅色纸面
+        AccountUiKit.styleCombo(dimCombo) { (it as? ReportDimension)?.label ?: "" }
         dimCombo.addActionListener {
             // 换维度后旧的分组键失效，清掉筛选
             selectedBucket = null
@@ -142,7 +141,7 @@ class HistoryReportDialog(
         val left = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(6), 0)).apply { isOpaque = false }
         left.add(rangeTabs)
         left.add(Box.createHorizontalStrut(JBUI.scale(6)))
-        left.add(JBLabel("维度"))
+        left.add(JBLabel("维度").apply { foreground = AccountUiColors.textSecondary })
         left.add(dimCombo)
         left.add(refreshBtn)
         controlRow.add(left, BorderLayout.WEST)
@@ -184,8 +183,7 @@ class HistoryReportDialog(
             }
         })
 
-        val bucketScroll = JBScrollPane(bucketPanel).apply {
-            border = JBUI.Borders.empty()
+        val bucketScroll = AccountUiKit.styleScroll(JBScrollPane(bucketPanel), AccountUiColors.cardBg).apply {
             horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER
             preferredSize = Dimension(JBUI.scale(360), 0)
         }
@@ -217,7 +215,10 @@ class HistoryReportDialog(
         }
         val rightPane = JPanel(BorderLayout()).apply { isOpaque = false }
         rightPane.add(searchRow, BorderLayout.NORTH)
-        rightPane.add(JBScrollPane(table).apply { border = JBUI.Borders.empty() }, BorderLayout.CENTER)
+        rightPane.add(
+            AccountUiKit.styleScroll(JBScrollPane(table), AccountUiColors.cardBg),
+            BorderLayout.CENTER,
+        )
         body.add(rightPane, BorderLayout.CENTER)
 
         root.add(topBox, BorderLayout.NORTH)
@@ -465,7 +466,7 @@ class HistoryReportDialog(
         head.add(nameLabel, BorderLayout.WEST)
         head.add(JLabel(b.detail()).apply {
             font = font.deriveFont(Font.PLAIN, AccountUiType.caption)
-            foreground = AccountUiColors.textFaint
+            foreground = AccountUiColors.textMuted
             horizontalAlignment = SwingConstants.RIGHT
         }, BorderLayout.EAST)
 
@@ -514,10 +515,12 @@ class HistoryReportDialog(
     }
 
     /**
-     * 把统计事实写成提示词，复制到剪贴板并打开 CodeBuddy 对话窗口。
+     * 把「让 CodeBuddy 自行读取 git 提交记录」的指令复制到剪贴板并打开对话窗口。
      *
+     * 提示词只含区间与 git 命令，提交数据与本人身份都由 CodeBuddy 执行 git log 后自行判定，
+     * 避免大量变更文件撑爆剪贴板内容。
      * CodeBuddy 未对外提供「携带提示词发起会话」的 action，也没有可注入输入框的接口，
-     * 因此只能把用户带到对话窗口由用户粘贴发送（同时避免把本地统计数据上传给第三方）。
+     * 因此只能把用户带到对话窗口由用户粘贴发送。
      * 本窗口是模态的，会挡住 IDE 操作，所以先关窗再开窗。
      */
     private fun generateInCodeBuddy() {
@@ -525,7 +528,11 @@ class HistoryReportDialog(
             statusLabel.text = "还没有可生成的报告"
             return
         }
-        val prompt = r.toPrompt(if (isDaily()) "今日工作日报" else "本周工作周报")
+        val (start, end) = range()
+        val kind = if (isDaily()) "今日工作日报" else "本周工作周报"
+        // 当前项目交给 CodeBuddy 会话的工作目录，只有报告里的其它项目目录才写进提示词
+        val dirs = r.projectGroups.mapNotNull { it.path }
+        val prompt = GitReportPrompt.build(kind, start, end, project.basePath, dirs)
         Toolkit.getDefaultToolkit().systemClipboard.setContents(StringSelection(prompt), null)
 
         close(CANCEL_EXIT_CODE)
@@ -533,9 +540,9 @@ class HistoryReportDialog(
             if (project.isDisposed) return@invokeLater
             val opened = CodeBuddyBridge.openChatWindow(project)
             val message = if (opened) {
-                "已复制生成提示词并打开 CodeBuddy 对话窗口，在输入框粘贴（Ctrl+V）后发送即可生成${r.title}"
+                "已复制生成指令并打开 CodeBuddy 对话窗口，粘贴（Ctrl+V）发送后由 CodeBuddy 自行读取 git 提交记录生成${r.title}"
             } else {
-                "已复制生成提示词，请打开 CodeBuddy 对话窗口粘贴发送（未找到 CodeBuddy 侧边栏）"
+                "已复制生成指令，请打开 CodeBuddy 对话窗口粘贴发送（未找到 CodeBuddy 侧边栏）"
             }
             NotificationGroupManager.getInstance()
                 .getNotificationGroup(NOTIFICATION_GROUP)

@@ -135,25 +135,6 @@ data class HistoryReport(
         }
     }
 
-    /**
-     * 交给 CodeBuddy 生成日报 / 周报的提示词。
-     *
-     * 只给统计事实，写作要求交给模型，避免把结论写死在本地。
-     */
-    fun toPrompt(kind: String): String = buildString {
-        append("请基于下面的 CodeBuddy 会话统计，生成一份$kind。\n\n")
-        append("要求：\n")
-        append("1. 按项目分组，每个项目写 2-4 条要点，说明做了什么、产出物、遗留风险；\n")
-        append("2. 只写结论，不要罗列原始数据表；\n")
-        append("3. 结尾给出一段「下一步计划」；\n")
-        append("4. 直接输出 Markdown 正文，不要解释你的思考过程。\n\n")
-        append("## 统计区间\n\n")
-        append("- 报告：$title（$rangeLabel）\n")
-        append("- 会话 $conversationCount 个，消息 $totalMessages 条\n")
-        append("- 活跃项目 $projectCount 个，活跃账号 $accountCount 个，活跃天数 $activeDays 天\n")
-        appendProjectSections(this@HistoryReport)
-    }
-
     private fun StringBuilder.appendProjectSections(r: HistoryReport) {
         val groups = r.projectGroups
         if (groups.isEmpty()) return
