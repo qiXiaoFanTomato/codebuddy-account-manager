@@ -432,7 +432,7 @@ class KpiTile(
         add(
             JLabel(label).apply {
                 alignmentX = Component.LEFT_ALIGNMENT
-                font = font.deriveFont(Font.PLAIN, AccountUiType.label)
+                font = AccountUiType.ui(AccountUiType.label)
                 foreground = AccountUiColors.textMuted
             }
         )
@@ -451,13 +451,103 @@ class KpiTile(
 
         if (!hint.isNullOrBlank()) {
             add(Box.createVerticalStrut(JBUI.scale(AccountUiSpacing.xxs)))
-            add(
-                JLabel(hint).apply {
-                    alignmentX = Component.LEFT_ALIGNMENT
-                    font = font.deriveFont(Font.PLAIN, AccountUiType.caption)
-                    foreground = AccountUiColors.textFaint
+            // 说明文字按可用宽度折行：固定单行 JLabel 在窄卡片里会被直接裁掉
+            add(KpiHint(hint))
+        }
+    }
+}
+
+/**
+ * KPI 说明文字：按可用宽度折行并自绘，长文案不会被卡片裁掉。
+ *
+ * 中文按字、英文按词设断点，超长单词再按字符拆开；高度只取实际行数，
+ * 不在卡片里预留空白行，同行对齐交给网格布局处理。
+ */
+private class KpiHint(private val raw: String) : JComponent() {
+
+    init {
+        isOpaque = false
+        alignmentX = Component.LEFT_ALIGNMENT
+        font = AccountUiType.ui(AccountUiType.caption)
+        foreground = AccountUiColors.textFaint
+        toolTipText = raw
+    }
+
+    /** 可用宽度：优先取已布局宽度，首次布局时退回父容器的内容宽度 */
+    private fun lineWidth(): Int {
+        if (width > 0) return width
+        val host = parent ?: return 0
+        return (host.width - host.insets.left - host.insets.right).coerceAtLeast(0)
+    }
+
+    /** 按空格与中文字符切分后逐段折行 */
+    private fun lines(maxWidth: Int): List<String> {
+        if (maxWidth <= 0) return listOf(raw)
+        val fm = getFontMetrics(font)
+        val result = mutableListOf<String>()
+        val current = StringBuilder()
+        val word = StringBuilder()
+
+        fun appendPart(part: String) {
+            if (part.isEmpty()) return
+            val partWidth = fm.stringWidth(part)
+            if (current.isNotEmpty() && fm.stringWidth(current.toString()) + partWidth > maxWidth) {
+                result += current.toString()
+                current.setLength(0)
+            }
+            if (partWidth <= maxWidth) {
+                current.append(part)
+                return
+            }
+            for (ch in part) {
+                if (current.isNotEmpty() && fm.stringWidth(current.toString()) + fm.charWidth(ch) > maxWidth) {
+                    result += current.toString()
+                    current.setLength(0)
                 }
-            )
+                current.append(ch)
+            }
+        }
+
+        for (ch in raw) {
+            when {
+                ch == ' ' -> {
+                    word.append(ch)
+                    appendPart(word.toString())
+                    word.setLength(0)
+                }
+                ch.code >= 0x2E80 -> {
+                    appendPart(word.toString())
+                    word.setLength(0)
+                    appendPart(ch.toString())
+                }
+                else -> word.append(ch)
+            }
+        }
+        appendPart(word.toString())
+        if (current.isNotEmpty()) result += current.toString()
+        return result.ifEmpty { listOf("") }
+    }
+
+    override fun getPreferredSize(): Dimension {
+        val fm = getFontMetrics(font)
+        val available = lineWidth()
+        val lineCount = lines(available).size
+        return Dimension(
+            if (available > 0) available else fm.stringWidth(raw),
+            lineCount * fm.height,
+        )
+    }
+
+    override fun getMinimumSize(): Dimension = preferredSize
+
+    override fun getMaximumSize(): Dimension = Dimension(Int.MAX_VALUE, preferredSize.height)
+
+    override fun paintComponent(g: Graphics) {
+        val fm = getFontMetrics(font)
+        g.color = foreground
+        // 折行宽度与首选高度计算保持一致，避免绘制行数与组件高度不对齐
+        lines(lineWidth()).forEachIndexed { index, line ->
+            g.drawString(line, 0, fm.ascent + index * fm.height)
         }
     }
 }
@@ -524,6 +614,9 @@ open class HeroCard(
  * 自己绘制而不是用 JLabel 的原因：
  * - 补间过程中要逐帧改文本，JLabel 每次 setText 都会引起布局抖动；
  * - 变化时的高亮与轻微放大放在 paint 层，不会挤到相邻元素。
+ *
+ * 数值变动只登记待播过渡，等组件进入滚动视口才播放；
+ * 一次过渡只播放一次，滚出视口不复位也不重播。
  */
 class AnimatedCreditValue : JComponent() {
 
@@ -536,11 +629,29 @@ class AnimatedCreditValue : JComponent() {
     /** 目标值 */
     private var target: Double = 0.0
 
-    /** 目标值的小数位数：整数 0 位，有小数 2 位（滚动过程与静止后保持一致） */
+    /** 当前显示值的小数位数：待播期间保持消耗前的格式，播放后切到目标格式 */
     private var decimals: Int = 0
 
-    /** 已展示过的数值：null 表示还没展示过数值（首次加载不显示增量徽标） */
+    /** 目标值的小数位数：整数 0 位，有小数 2 位 */
+    private var targetDecimals: Int = 0
+
+    /** 滚动起点的原样文本：位数变化时预留宽度 */
+    private var fromText: String? = null
+
+    /** 已登记的目标值：null 表示还没展示过数值（首次加载不播动画） */
     private var shown: Double? = null
+
+    /** 待播放的滚动目标：进入视口时消费 */
+    private var pending: Double? = null
+
+    /** 当前是否处在滚动视口内 */
+    private var inViewport = false
+
+    /** 视口可见性：进入时播放待播过渡，离开时只更新标记 */
+    private val viewportTrigger = ViewportTrigger(this) { visible ->
+        inViewport = visible
+        if (visible) playPending()
+    }
 
     /** 静态文本模式（"—" / "…" 这类非数值） */
     private var staticText: String? = null
@@ -574,6 +685,8 @@ class AnimatedCreditValue : JComponent() {
         if (number == null) {
             staticText = text
             shown = null
+            pending = null
+            fromText = null
             target = 0.0
             anim.jumpTo(0.0)
             revalidate()
@@ -584,26 +697,49 @@ class AnimatedCreditValue : JComponent() {
         setNumber(number, animate)
     }
 
-    /** 设置数值 */
+    /** 设置数值：变化只登记过渡，播放时机交给 [viewportTrigger] */
     private fun setNumber(value: Double, animate: Boolean) {
         if (!value.isFinite()) return
         val prev = shown
         val changed = prev == null || Math.abs(prev - value) > 1e-6
         shown = value
         target = value
-        decimals = if (value == value.toLong().toDouble()) 0 else 2
+        targetDecimals = if (value == value.toLong().toDouble()) 0 else 2
         if (!changed) return
-        if (!animate) {
-            // 已有数据的首次落位：不播动画，直接就位
+        if (!animate || prev == null) {
+            // 首次加载 / 明确不动画：直接就位，不登记过渡
+            pending = null
+            fromText = null
+            decimals = targetDecimals
             anim.jumpTo(value)
             revalidate()
             repaint()
             return
         }
-        anim.animateTo(value, 720, { t -> Easing.outCubic(t) })
-        playPulse()
-        if (prev != null) onDelta?.invoke(value - prev)
+        // 待播期间仍显示消耗前数值，格式也保持原样
+        fromText = format(anim.value)
+        pending = value
+        viewportTrigger.check()
+        // 已在视口内：立即播放本次过渡（每次变化只播一次）
+        if (inViewport) playPending()
         revalidate()
+        repaint()
+    }
+
+    /** 消费待播过渡；播放后即使再次进入视口也不会重播 */
+    private fun playPending() {
+        val next = pending ?: return
+        pending = null
+        val from = anim.value
+        decimals = targetDecimals
+        if (Math.abs(from - next) < 1e-6) {
+            anim.jumpTo(next)
+            repaint()
+            return
+        }
+        anim.animateTo(next, 720, { t -> Easing.outCubic(t) })
+        playPulse()
+        onDelta?.invoke(next - from)
         repaint()
     }
 
@@ -615,10 +751,16 @@ class AnimatedCreditValue : JComponent() {
         pulseTimer = JellyClock.delay(180) { pulse.animateTo(0.0, 760) }
     }
 
+    override fun addNotify() {
+        super.addNotify()
+        viewportTrigger.check()
+    }
+
     override fun removeNotify() {
         pulseTimer?.stop()
-        anim.stop()
         pulse.stop()
+        // 不停止 anim：滚动中途被摘下时继续补到终值，重新挂上不重置、不重播
+        viewportTrigger.unbind()
         super.removeNotify()
     }
 
@@ -638,8 +780,8 @@ class AnimatedCreditValue : JComponent() {
     private fun widestText(): String {
         val candidates = buildList {
             add(format(target))
-            shown?.let { add(format(it)) }
-            if (decimals > 0) add(String.format(Locale.ROOT, "%.2f", target))
+            fromText?.let { add(it) }
+            if (targetDecimals > 0) add(String.format(Locale.ROOT, "%.2f", target))
         }
         // 等宽字体下字符数即宽度
         return candidates.maxByOrNull { it.length } ?: "0"

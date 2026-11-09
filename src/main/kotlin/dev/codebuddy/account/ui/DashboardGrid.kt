@@ -39,9 +39,9 @@ const val DASHBOARD_CARD_ACTION_KEY: String = "codebuddy.dashboardCardAction"
 /**
  * 看板卡片标识：决定标题文案与「管理卡片」菜单里的名字。
  *
- * 声明顺序即看板的默认排列顺序，前七张与 design/plugin-ui.html 的
- * `.dash-grid` 一一对应（今日消耗积分整宽 + 六张半宽），其余是插件自有卡片，
- * 排在后面，可通过「管理卡片」隐藏。
+ * 声明顺序即看板的默认排列顺序：今日消耗积分与关键指标左右并排占满首行
+ * （设计稿里今日消耗积分整宽，看板布局要求改为与关键指标并排），
+ * 其余半宽卡片顺次换行；插件自有卡片排在后面，可通过「管理卡片」隐藏。
  */
 enum class DashboardCardId(val title: String) {
     HERO("今日消耗积分"),

@@ -1,7 +1,6 @@
 package dev.codebuddy.account.ui
 
 import com.intellij.icons.AllIcons
-import com.intellij.ui.JBColor
 import com.intellij.util.ui.JBUI
 import dev.codebuddy.account.model.CredentialSnapshot
 import dev.codebuddy.account.quota.QuotaGroup
@@ -41,9 +40,7 @@ class AccountGridCard(
     elevated = true,
 ) {
 
-    private val check = JCheckBox().apply {
-        isOpaque = false
-        isFocusPainted = false
+    private val check = CardCheckBox().apply {
         alignmentY = CENTER_ALIGNMENT
         toolTipText = "选择该账号"
         addActionListener { onCheckedChanged(this@AccountGridCard, isSelected) }
@@ -97,25 +94,29 @@ class AccountGridCard(
     private fun buildTitle(): JComponent {
         val row = FullWidthRow(BorderLayout(JBUI.scale(10), 0))
 
-        val left = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(9), 0)).apply { isOpaque = false }
-        left.add(check)
-        left.add(AvatarBadge(titleText()))
-
-        // 名称在上、标签在下：与 HTML 的 .acct-id 一致
-        val textCol = JPanel().apply {
+        // 头像区固定宽度：横向 BoxLayout 不换行，勾选框与 42px 头像始终同一行
+        val head = JPanel().apply {
             isOpaque = false
-            layout = BoxLayout(this, BoxLayout.Y_AXIS)
-            alignmentY = CENTER_ALIGNMENT
+            layout = BoxLayout(this, BoxLayout.X_AXIS)
+            alignmentY = Component.CENTER_ALIGNMENT
         }
-        textCol.add(JLabel(ellipsize(titleText(), 16)).apply {
-            alignmentX = Component.LEFT_ALIGNMENT
-            font = baseLabelFont().deriveFont(Font.BOLD, AccountUiType.number)
+        head.add(check)
+        head.add(Box.createHorizontalStrut(JBUI.scale(9)))
+        head.add(AvatarBadge(titleText()))
+
+        // 名称在上、标签在下（对应 HTML 的 .acct-id）。
+        // 名称列放 CENTER 吃剩余宽度：名字按宽度省略、标签按宽度换行，
+        // 不会像 FlowLayout 那样把整列折到头像下一行。
+        val textCol = FullWidthColumn()
+        textCol.add(AccountNameLabel(titleText()).apply {
             foreground = AccountUiColors.textPrimary
-            toolTipText = snapshot.displayName
         })
         textCol.add(Box.createVerticalStrut(JBUI.scale(4)))
 
-        val tags = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(6), 0)).apply { isOpaque = false }
+        val tags = JPanel(FlowWrapLayout(JBUI.scale(6), JBUI.scale(4))).apply {
+            isOpaque = false
+            alignmentX = Component.LEFT_ALIGNMENT
+        }
         tags.add(tierChip())
         tags.add(
             Chip(
@@ -128,17 +129,17 @@ class AccountGridCard(
         tags.add(
             Chip(
                 if (tokenOk) "Token 有效" else "Token 过期",
-                if (tokenOk) JBColor(Color(0xE8F4EC), Color(0x123322)) else AccountUiColors.sealSoft,
+                if (tokenOk) AccountUiColors.tagSuccessBg else AccountUiColors.sealSoft,
                 if (tokenOk) AccountUiColors.success else AccountUiColors.seal,
             )
         )
         textCol.add(tags)
-        left.add(textCol)
 
         val right = JPanel(FlowLayout(FlowLayout.RIGHT, 0, 0)).apply { isOpaque = false }
         if (isActive) right.add(SealStamp())
 
-        row.add(left, BorderLayout.CENTER)
+        row.add(head, BorderLayout.WEST)
+        row.add(textCol, BorderLayout.CENTER)
         row.add(right, BorderLayout.EAST)
         return row
     }
@@ -151,19 +152,22 @@ class AccountGridCard(
      */
     private fun buildMeta(): JComponent {
         val column = FullWidthColumn()
+        val uid = snapshot.uid.ifBlank { "—" }
         column.add(
             AccountUiKit.fieldLine(
                 "UID",
-                AccountUiKit.valueText(ellipsize(snapshot.uid.ifBlank { "—" }, 26), AccountUiColors.textPrimary),
+                AccountUiKit.valueText(uid, AccountUiColors.textPrimary).apply {
+                    // 完整 UID 用一级小字，保证不截断且不与左侧标签相撞
+                    font = AccountUiType.forText(uid, AccountUiType.micro, Font.PLAIN)
+                    toolTipText = uid
+                },
             )
         )
+        val phone = snapshot.phoneNumber.ifBlank { "—" }
         column.add(
             AccountUiKit.fieldLine(
                 "手机号",
-                AccountUiKit.valueText(
-                    maskPhone(snapshot.phoneNumber.ifBlank { "—" }),
-                    AccountUiColors.textPrimary,
-                ),
+                AccountUiKit.valueText(phone, AccountUiColors.textPrimary).apply { toolTipText = phone },
             )
         )
         column.add(AccountUiKit.fieldLine("到期", expiryText()))
@@ -330,13 +334,12 @@ class AccountGridCard(
         column.add(DashedRule())
         column.add(Box.createVerticalStrut(JBUI.scale(AccountUiSpacing.sm)))
 
-        val row = FullWidthRow(BorderLayout(JBUI.scale(8), 0))
         val file = "snapshots/${snapshot.uid.take(8)}@${snapshot.domainHost.ifBlank { "codebuddy.cn" }}.info"
         val fileNo = JLabel(file).apply {
             font = AccountUiType.mono(AccountUiType.micro, Font.PLAIN)
             foreground = AccountUiColors.textMuted
             toolTipText = file
-            alignmentY = CENTER_ALIGNMENT
+            alignmentX = Component.LEFT_ALIGNMENT
         }
 
         val actions = JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(4), 0)).apply {
@@ -360,9 +363,12 @@ class AccountGridCard(
         actions.add(IconTile(AllIcons.ToolbarDecorator.Export, "导出该账号凭据") { onAction(this, GridCardAction.EXPORT) })
         actions.add(IconTile(AllIcons.Actions.GC, "从账号库删除") { onAction(this, GridCardAction.DELETE) })
 
-        row.add(fileNo, BorderLayout.WEST)
-        row.add(actions, BorderLayout.EAST)
-        column.add(row)
+        // 档案号与动作分两行，卡片窄时不会互相挤压
+        val actionRow = FullWidthRow(BorderLayout(0, 0))
+        actionRow.add(actions, BorderLayout.EAST)
+        column.add(fileNo)
+        column.add(Box.createVerticalStrut(JBUI.scale(AccountUiSpacing.xs)))
+        column.add(actionRow)
         return column
     }
 
@@ -370,19 +376,8 @@ class AccountGridCard(
     // 展示文本
     // ---------------------------------------------------------------
 
-    /** 标题优先昵称/别名；纯数字时按手机号脱敏展示 */
-    private fun titleText(): String {
-        val name = snapshot.displayName
-        if (name.isNotBlank() && name.any { !it.isDigit() }) return name
-        val phone = snapshot.phoneNumber.ifBlank { name }
-        return maskPhone(phone)
-    }
-
-    private fun maskPhone(value: String): String {
-        val digits = value.filter { it.isDigit() }
-        if (digits.length != 11) return value
-        return digits.substring(0, 3) + "****" + digits.substring(7)
-    }
+    /** 标题展示账号名原文，不再做脱敏 */
+    private fun titleText(): String = snapshot.displayName
 
     private companion object {
         /** 卡片内最多展示的套餐分组数，超出折叠为提示文本 */
@@ -461,15 +456,15 @@ class QuotaGroupStrip(private val group: QuotaGroup) :
         val name = group.name
         val (glyph, bg, fg) = when {
             name.contains("赠") || name.contains("活动") || name.contains("礼") ->
-                Triple("赠", JBColor(Color(0xFFF3E2), Color(0x453A1B)), JBColor(Color(0xD97706), Color(0xFBBF24)))
+                Triple("赠", AccountUiColors.glyphGiftBg, AccountUiColors.glyphGiftFg)
 
             name.contains("体验") || name.contains("基础") || name.contains("试用") ->
-                Triple("基", JBColor(Color(0xE8F1FF), Color(0x1D2E45)), JBColor(Color(0x3B82F6), Color(0x7AB0FF)))
+                Triple("基", AccountUiColors.glyphBaseBg, AccountUiColors.glyphBaseFg)
 
             else -> Triple(
                 name.take(1).ifBlank { "包" },
-                JBColor(Color(0xF1F3F5), Color(0x35383D)),
-                AccountUiColors.textMuted,
+                AccountUiColors.glyphPlainBg,
+                AccountUiColors.glyphPlainFg,
             )
         }
         return GlyphBadge(glyph, bg, fg)
@@ -738,9 +733,13 @@ private class SealStamp : JComponent() {
             g2.translate(width / 2.0, height / 2.0)
             g2.rotate(Math.toRadians(-7.0))
             g2.translate(-width / 2.0, -height / 2.0)
+            val stamp = java.awt.geom.Rectangle2D.Float(2f, 2f, (width - 4).toFloat(), (height - 4).toFloat())
+            // 淡朱底衬，保证朱印文字在档案纸面上始终清晰
+            g2.color = AccountUiColors.sealSoft
+            g2.fill(stamp)
             g2.color = AccountUiColors.seal
             g2.stroke = BasicStroke(2f)
-            g2.draw(java.awt.geom.Rectangle2D.Float(2f, 2f, (width - 4).toFloat(), (height - 4).toFloat()))
+            g2.draw(stamp)
             g2.font = font
             val fm = g2.fontMetrics
             g2.drawString(
@@ -748,6 +747,100 @@ private class SealStamp : JComponent() {
                 Jelly.textX(width, fm.stringWidth("当前")),
                 Jelly.textBaseline(height, fm),
             )
+        } finally {
+            g2.dispose()
+        }
+    }
+}
+
+/**
+ * 卡片勾选框：固定浅色自绘。
+ *
+ * 原生 JCheckBox 在 IDE 深色主题下使用深底图标，与固定浅色的档案纸卡片冲突，
+ * 因此这里只画未选中描边与选中勾选，保留 JCheckBox 的键盘与选择语义。
+ */
+private class CardCheckBox : JCheckBox() {
+
+    private val side = JBUI.scale(16)
+
+    init {
+        isOpaque = false
+        isFocusPainted = false
+        border = null
+        preferredSize = Dimension(side, side)
+        minimumSize = preferredSize
+        maximumSize = preferredSize
+    }
+
+    override fun paintComponent(g: Graphics) {
+        val g2 = g.create() as Graphics2D
+        try {
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+            val shape = Jelly.round(
+                0.5f, 0.5f, (side - 1).toFloat(), (side - 1).toFloat(),
+                JBUI.scale(4).toFloat(),
+            )
+            if (isSelected) {
+                g2.color = AccountUiColors.accent
+                g2.fill(shape)
+                g2.color = AccountUiColors.onInk
+                g2.stroke = BasicStroke(2f)
+                g2.drawPolyline(
+                    intArrayOf(JBUI.scale(4), JBUI.scale(7), JBUI.scale(12)),
+                    intArrayOf(JBUI.scale(8), JBUI.scale(11), JBUI.scale(5)),
+                    3,
+                )
+            } else {
+                g2.color = AccountUiColors.textMuted
+                g2.stroke = BasicStroke(1.2f)
+                g2.draw(shape)
+            }
+            Jelly.paintFocusRing(g2, shape, isFocusOwner)
+        } finally {
+            g2.dispose()
+        }
+    }
+}
+
+/**
+ * 卡片标题里的账号名：按父容器给定宽度做尾部省略，完整内容走 tooltip。
+ *
+ * 名字是 22px 粗体，长手机号会把整列撑出标题行；这里不参与宽度争抢，
+ * 最小宽度取 0，由 BorderLayout.CENTER 决定实际宽度后自绘。
+ */
+private class AccountNameLabel(private val raw: String) : JComponent() {
+
+    init {
+        isOpaque = false
+        font = baseLabelFont().deriveFont(Font.BOLD, AccountUiType.number)
+        alignmentX = Component.LEFT_ALIGNMENT
+        toolTipText = raw
+    }
+
+    private fun visibleText(available: Int): String {
+        val fm = getFontMetrics(font)
+        if (available <= 0 || fm.stringWidth(raw) <= available) return raw
+        var end = raw.length
+        while (end > 0 && fm.stringWidth(raw.take(end) + "…") > available) end--
+        return if (end > 0) raw.take(end) + "…" else ""
+    }
+
+    override fun getPreferredSize(): Dimension {
+        val fm = getFontMetrics(font)
+        return Dimension(fm.stringWidth(raw), fm.height)
+    }
+
+    override fun getMinimumSize(): Dimension = Dimension(0, preferredSize.height)
+    override fun getMaximumSize(): Dimension = Dimension(Int.MAX_VALUE, preferredSize.height)
+
+    override fun paintComponent(g: Graphics) {
+        val g2 = g.create() as Graphics2D
+        try {
+            Jelly.textHints(g2)
+            g2.font = font
+            g2.color = foreground
+            val fm = g2.fontMetrics
+            g2.drawString(visibleText(width), 0, fm.ascent)
         } finally {
             g2.dispose()
         }

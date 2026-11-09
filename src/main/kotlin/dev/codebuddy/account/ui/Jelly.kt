@@ -4,13 +4,23 @@ import java.awt.BasicStroke
 import java.awt.Color
 import java.awt.FontMetrics
 import java.awt.Graphics2D
+import java.awt.Rectangle
 import java.awt.RenderingHints
 import java.awt.Shape
 import java.awt.Toolkit
+import java.awt.event.ComponentEvent
+import java.awt.event.ComponentListener
+import java.awt.event.HierarchyEvent
+import java.awt.event.HierarchyListener
 import java.awt.geom.AffineTransform
 import java.awt.geom.RoundRectangle2D
+import java.util.Locale
 import javax.swing.JComponent
+import javax.swing.JViewport
+import javax.swing.SwingUtilities
 import javax.swing.Timer
+import javax.swing.event.ChangeEvent
+import javax.swing.event.ChangeListener
 
 /**
  * 表面绘制与动画基础设施。
@@ -435,6 +445,284 @@ class JellyValue(
     fun stop() {
         tween?.stop()
         tween = null
+    }
+}
+
+/**
+ * 组件在滚动视口中的可见性监听。
+ *
+ * 只在可见性变化时回调，重复滚入不会重复回调；滚出只回调 false，
+ * 由调用方自行保留动画状态，不重置、不复位已展示的数值。
+ */
+internal class ViewportTrigger(
+    private val host: JComponent,
+    private val onVisibilityChanged: (Boolean) -> Unit,
+) : HierarchyListener, ChangeListener, ComponentListener {
+
+    private var viewport: JViewport? = null
+    private var lastVisible: Boolean? = null
+
+    init {
+        host.addHierarchyListener(this)
+        host.addComponentListener(this)
+    }
+
+    /** 重新评估可见性；只有状态变化才回调 */
+    fun check() {
+        bindViewport()
+        val visible = isInViewport()
+        if (visible != lastVisible) {
+            lastVisible = visible
+            onVisibilityChanged(visible)
+        }
+    }
+
+    /** 组件从容器摘下时解绑视口监听，重新挂上后由 [check] 重新绑定 */
+    fun unbind() {
+        detachViewport()
+        lastVisible = null
+    }
+
+    private fun isInViewport(): Boolean {
+        if (!host.isShowing || host.width <= 0 || host.height <= 0) return false
+        // 没有滚动容器（状态栏等常驻区域）：显示即视为进入视口
+        val vp = viewport ?: return true
+        val rect = SwingUtilities.convertRectangle(host, Rectangle(0, 0, host.width, host.height), vp)
+        val visible = vp.viewRect.intersection(rect)
+        return visible.width > 0 && visible.height > 0
+    }
+
+    private fun bindViewport() {
+        val vp = SwingUtilities.getAncestorOfClass(JViewport::class.java, host) as? JViewport
+        if (vp === viewport) return
+        detachViewport()
+        viewport = vp
+        vp?.addChangeListener(this)
+        vp?.addComponentListener(this)
+    }
+
+    private fun detachViewport() {
+        val vp = viewport ?: return
+        vp.removeChangeListener(this)
+        vp.removeComponentListener(this)
+        viewport = null
+    }
+
+    override fun hierarchyChanged(e: HierarchyEvent) = check()
+
+    override fun stateChanged(e: ChangeEvent) = check()
+
+    override fun componentResized(e: ComponentEvent) = check()
+
+    override fun componentMoved(e: ComponentEvent) = check()
+
+    override fun componentShown(e: ComponentEvent) = check()
+
+    override fun componentHidden(e: ComponentEvent) = check()
+}
+
+/** 文本里的一个数值槽位：记录原格式，插值时保持千分位与小数位一致 */
+internal data class NumberDisplaySlot(
+    val start: Int,
+    val end: Int,
+    val value: Double,
+    val grouped: Boolean,
+    val decimals: Int,
+) {
+    fun render(value: Double): String {
+        val template = if (decimals > 0) "%,.${decimals}f" else "%,.0f"
+        val text = String.format(Locale.ROOT, template, value)
+        return if (grouped) text else text.replace(",", "")
+    }
+}
+
+/** 展示文本及其中需要滚动的数值槽位 */
+internal data class NumberDisplay(val text: String, val slots: List<NumberDisplaySlot>) {
+
+    /** 挖空数值后的文本骨架：位数变化不影响形状比较 */
+    fun skeleton(): String {
+        val sb = StringBuilder()
+        var cursor = 0
+        for (slot in slots) {
+            sb.append(text, cursor, slot.start).append('\u0000')
+            cursor = slot.end
+        }
+        sb.append(text, cursor, text.length)
+        return sb.toString()
+    }
+}
+
+/** 拼装展示文本并标记数值槽位 */
+internal class NumberDisplayBuilder {
+    private val sb = StringBuilder()
+    private val slots = ArrayList<NumberDisplaySlot>()
+
+    /** 纯文本段：账号名这类含数字的文案走这里，不参与滚动 */
+    fun text(value: String) {
+        sb.append(value)
+    }
+
+    /** 数值段：[rendered] 是已格式化的字面量，用于推断千分位与小数位 */
+    fun num(value: Double, rendered: String) {
+        val start = sb.length
+        sb.append(rendered)
+        slots += NumberDisplaySlot(
+            start,
+            sb.length,
+            value,
+            rendered.contains(','),
+            rendered.substringAfter('.', "").length,
+        )
+    }
+
+    /** 解析一段额度正文里的数字并标为槽位；账号名不要用这个入口 */
+    fun numbered(value: String) {
+        var cursor = 0
+        for (match in NUMBER.findAll(value)) {
+            sb.append(value, cursor, match.range.first)
+            val raw = match.value
+            val number = raw.replace(",", "").toDoubleOrNull()
+            if (number == null) sb.append(raw) else num(number, raw)
+            cursor = match.range.last + 1
+        }
+        sb.append(value, cursor, value.length)
+    }
+
+    fun build(): NumberDisplay = NumberDisplay(sb.toString(), slots)
+
+    private companion object {
+        val NUMBER = Regex("\\d[\\d,]*(?:\\.\\d+)?")
+    }
+}
+
+/**
+ * 多数值文本的缓动滚动。
+ *
+ * - 数值变化先记为「待播过渡」，进入视口（[setVisible] true）时才播放；
+ * - 每次过渡只播放一次，滚出视口只更新可见标记，不重置数值与动画；
+ * - [decreaseOnly] 为 true 时只有下降的数值才滚，上升直接落位（状态栏额度口径）。
+ */
+internal class RollingReadout(
+    private val decreaseOnly: Boolean = false,
+    private val onRender: (String) -> Unit,
+) {
+
+    /** 当前展示文本 */
+    var text: String = ""
+        private set
+
+    private var current: NumberDisplay? = null
+    private var target: NumberDisplay? = null
+    private var fromValues: List<Double> = emptyList()
+    private var toValues: List<Double> = emptyList()
+    private var progress = 1.0
+    private var armed = false
+    private var visible = false
+    private var tween: Tween? = null
+
+    /** 进入视口时触发待播过渡；离开视口不重置 */
+    fun setVisible(value: Boolean) {
+        visible = value
+        if (value && armed) play()
+    }
+
+    /** 喂入新的展示内容 */
+    fun offer(next: NumberDisplay, animate: Boolean = true) {
+        val cur = current
+        if (cur == null || !animate) {
+            commit(next)
+            return
+        }
+        // 动画期间轮询到同一目标：不打断、不重播
+        if (next.text == target?.text && tween?.running == true) return
+        if (next.text == text) return
+        if (cur.slots.isEmpty() || cur.slots.size != next.slots.size || cur.skeleton() != next.skeleton()) {
+            commit(next)
+            return
+        }
+        val from = valuesNow()
+        val to = next.slots.map { it.value }
+        val changed = from.indices.any { i ->
+            if (decreaseOnly) to[i] < from[i] - EPS else Math.abs(to[i] - from[i]) > EPS
+        }
+        if (!changed) {
+            commit(next)
+            return
+        }
+        target = next
+        fromValues = from
+        toValues = to
+        armed = true
+        if (visible) play()
+    }
+
+    /** 取消待播过渡，释放补间 */
+    fun dispose() {
+        tween?.stop()
+        tween = null
+        armed = false
+        target = null
+    }
+
+    private fun play() {
+        val next = target ?: return
+        armed = false
+        tween?.stop()
+        progress = 0.0
+        tween = Tween(DURATION_MS, { t -> Easing.outCubic(t) }) { p ->
+            progress = p
+            val t = target ?: return@Tween
+            if (p >= 1.0) {
+                // 终值取目标原文，避免插值格式的四舍五入留下尾差
+                commit(t)
+            } else {
+                text = interpolate(t, p)
+                onRender(text)
+            }
+        }
+        tween?.start()
+    }
+
+    private fun commit(next: NumberDisplay) {
+        tween?.stop()
+        tween = null
+        target = null
+        armed = false
+        progress = 1.0
+        current = next
+        text = next.text
+        onRender(text)
+    }
+
+    /** 动画中的起点取当前插值，连续变化不会跳回旧值 */
+    private fun valuesNow(): List<Double> {
+        if (tween?.running == true) {
+            return fromValues.indices.map { i ->
+                val f = fromValues[i]
+                val t = toValues.getOrElse(i) { f }
+                f + (t - f) * progress
+            }
+        }
+        return current?.slots?.map { it.value } ?: emptyList()
+    }
+
+    private fun interpolate(display: NumberDisplay, p: Double): String {
+        val sb = StringBuilder()
+        var cursor = 0
+        display.slots.forEachIndexed { i, slot ->
+            sb.append(display.text, cursor, slot.start)
+            val f = fromValues.getOrElse(i) { slot.value }
+            val t = toValues.getOrElse(i) { slot.value }
+            sb.append(slot.render(f + (t - f) * p))
+            cursor = slot.end
+        }
+        sb.append(display.text, cursor, display.text.length)
+        return sb.toString()
+    }
+
+    private companion object {
+        const val DURATION_MS = 720
+        const val EPS = 1e-6
     }
 }
 

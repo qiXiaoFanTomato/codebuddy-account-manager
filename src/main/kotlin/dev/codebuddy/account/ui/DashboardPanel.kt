@@ -197,10 +197,12 @@ class DashboardPanel(
         quotas: Map<String, QuotaSummary>,
         threshold: Int,
     ): JComponent? = when (id) {
-        // 今日消耗的主体是常驻 HeroPanel（数值动画跨刷新延续），统一套卡片外壳以便拖拽与调尺寸；
-        // 整宽对应 HTML 的 `.dash-card--wide`
-        DashboardCardId.HERO -> newCard(id, span = DASHBOARD_SPAN_FULL) { card ->
+        // 今日消耗与关键指标左右并排：两张卡都是半行宽，HERO 在左、KPI 在右。
+        // 今日消耗主体是常驻 HeroPanel（数值动画跨刷新延续），下方追加按模型分组的今日消耗。
+        DashboardCardId.HERO -> newCard(id) { card ->
             card.body.add(detach(heroStrip(saved, quotas)))
+            card.body.add(Box.createVerticalStrut(JBUI.scale(CardMetrics.blockGap)))
+            card.body.add(todayModelUsageSection())
         }
         DashboardCardId.KPI -> newCard(id) { card -> card.body.add(kpiRow(saved, active, quotas, threshold)) }
         DashboardCardId.USAGE -> newCard(id) { card -> fillUsageCard(card, saved) }
@@ -527,10 +529,13 @@ class DashboardPanel(
 
         val lowAccounts = rows.count { it.second.usableRemainPercent < threshold }
 
-        // 响应式：按可用宽度自动分列，窄工具窗下 4 张卡折成 2×2 而不是被压扁
-        val row = JPanel(
+        // 响应式：按可用宽度自动分列，窄工具窗下 4 张卡折成 2×2 而不是被压扁。
+        // 最大高度必须跟着当前首选高度走：写死一次会让换行后的卡片被父容器裁掉。
+        val row = object : JPanel(
             WrapGridLayout(JBUI.scale(8), JBUI.scale(8), JBUI.scale(KPI_MIN_WIDTH))
-        ).apply { isOpaque = false }
+        ) {
+            override fun getMaximumSize(): Dimension = Dimension(Int.MAX_VALUE, preferredSize.height)
+        }.apply { isOpaque = false }
         row.add(
             kpi(
                 title = "账号总数",
@@ -571,7 +576,6 @@ class DashboardPanel(
                 onClick = onOpenQuotaDetail,
             )
         )
-        row.maximumSize = Dimension(Int.MAX_VALUE, row.preferredSize.height)
         row.alignmentX = Component.LEFT_ALIGNMENT
         return row
     }
@@ -585,8 +589,7 @@ class DashboardPanel(
         onClick: () -> Unit,
     ): JComponent {
         val card = KpiTile(title, value, sub, color)
-        card.preferredSize = Dimension(JBUI.scale(150), JBUI.scale(92))
-        card.maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(92))
+        // 高度交给 KpiTile 按「标签 / 数值 / 说明」三行内容计算，固定 92dp 会裁掉说明文字
         card.alignmentX = Component.LEFT_ALIGNMENT
         installCardClick(card, tip, onClick)
         return card
@@ -597,7 +600,7 @@ class DashboardPanel(
     // ---------------------------------------------------------------
 
     /**
-     * 顶部 Hero 指标条：今日消耗积分为主视觉，右侧并列剩余积分 / 今日对话 / 账号总数。
+     * 顶部 Hero 指标条：今日消耗积分为主视觉，下方并列剩余积分 / 今日对话 / 账号总数。
      *
      * 全界面只保留这一处渐变，用来承担「第一眼看什么」的职责；
      * 其余区块一律用中性卡片，避免到处都是视觉焦点。
@@ -644,6 +647,48 @@ class DashboardPanel(
 
         usageHero.alignmentX = Component.LEFT_ALIGNMENT
         return usageHero
+    }
+
+    /**
+     * 今日各模型消耗：按模型分组统计今天各自的积分消耗，按积分降序排列。
+     *
+     * 数据取自 UsageTodayTracker.State.byModel()（仅基于已加载的今日记录），
+     * 行数按固定容量裁剪，超出部分折成提示，避免把整屏卡片一起撑高。
+     */
+    private fun todayModelUsageSection(): JComponent {
+        val st = UsageTodayTracker.state()
+        val models = st.byModel()
+        val section = FullWidthColumn()
+        section.add(
+            SectionHeader(
+                "今日各模型消耗",
+                subtitle = if (st.loaded && models.isNotEmpty()) "共 ${models.size} 个模型 · 按积分降序" else null,
+            )
+        )
+        section.add(Box.createVerticalStrut(JBUI.scale(CardMetrics.rowGap)))
+        section.add(
+            CardList(
+                rows = models.map { m ->
+                    val name = m.model.ifBlank { "未知模型" }
+                    CardRow(
+                        name = name,
+                        value = formatCredit(m.credit),
+                        tag = AccountUiKit.statusTag("${m.count} 次", AccountUiColors.textMuted),
+                        valueTone = AccountUiColors.textSecondary,
+                        valueWidthDp = 72,
+                        tooltip = "$name · 今日消耗 ${formatCredit(m.credit)} credits · ${m.count} 次请求",
+                    )
+                },
+                capacity = MODEL_USAGE_ROWS,
+                emptyText = when {
+                    st.loading -> "正在读取今日消耗…"
+                    st.loaded -> "今天还没有消耗记录"
+                    else -> "点上方数值查看消耗明细"
+                },
+                overflowText = { "另有 $it 个模型未展示" },
+            )
+        )
+        return section
     }
 
     // ---------------------------------------------------------------
@@ -1398,5 +1443,8 @@ class DashboardPanel(
 
         /** KPI 卡片最小列宽，低于此宽度不再分列（响应式折行依据） */
         const val KPI_MIN_WIDTH = 150
+
+        /** 今日各模型消耗最多展示的模型数，超出部分折成提示 */
+        const val MODEL_USAGE_ROWS = 4
     }
 }

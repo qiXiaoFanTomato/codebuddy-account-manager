@@ -65,8 +65,8 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
         foreground = AccountUiColors.textSecondary
     }
 
-    /** 底栏读数：CodeBuddy: <账号> · <额度> */
-    private lateinit var readoutLabel: JLabel
+    /** 底栏读数：CodeBuddy: <账号> · <额度>，额度下降时递减滚动 */
+    private lateinit var readoutLabel: RollingReadoutLabel
 
     private val filterField = JBTextField(14)
     private var sortMode: AccountSortMode = AccountSortMode.BY_DOMAIN
@@ -183,31 +183,45 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
         bar.maximumSize = Dimension(Int.MAX_VALUE, height)
 
         // 品牌：18px 方框 + 内嵌朱印点（对应 `.brand-mark`）
-        val brand = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(9), 0)).apply { isOpaque = false }
-        brand.add(BrandMark())
-        brand.add(JLabel("CodeBuddy Accounts").apply {
+        val brandRow = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(9), 0)).apply { isOpaque = false }
+        brandRow.add(BrandMark())
+        brandRow.add(JLabel("CodeBuddy Accounts").apply {
             font = baseLabelFont().deriveFont(Font.BOLD, AccountUiType.tab)
             foreground = AccountUiColors.onInk
         })
+        val brand = centeredInTitleBar(brandRow)
 
         viewTabs = SegmentedTabs(
             listOf("看板", "账号", "额度明细"),
             viewTabIndex(viewMode),
             { index -> setView(viewModeOf(index)) },
         ).apply { onDark = true }
-        val tabsHolder = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(14), 0)).apply {
-            isOpaque = false
-            add(viewTabs)
-        }
+        val tabsHolder = centeredInTitleBar(viewTabs, JBUI.scale(14), GridBagConstraints.WEST)
 
         // 标题栏工具区：与 HTML `.titlebar-tools` 的 ⋯ 对应，低频动作都收在这里
-        val tools = JPanel(FlowLayout(FlowLayout.RIGHT, 0, 0)).apply { isOpaque = false }
-        tools.add(buildMoreMenu())
+        val tools = centeredInTitleBar(buildMoreMenu(), 0, GridBagConstraints.EAST)
 
         bar.add(brand, BorderLayout.WEST)
         bar.add(tabsHolder, BorderLayout.CENTER)
         bar.add(tools, BorderLayout.EAST)
         return bar
+    }
+
+    /**
+     * 标题栏分组容器：FlowLayout 只把行贴在容器顶部，46dp 高的深墨带里品牌会明显偏上；
+     * GridBagLayout 的 WEST / EAST 锚点在水平靠边的同时保持垂直居中，对应设计稿的 align-items:center。
+     */
+    private fun centeredInTitleBar(
+        content: JComponent,
+        leftInset: Int = 0,
+        anchor: Int = GridBagConstraints.CENTER,
+    ): JComponent = JPanel(GridBagLayout()).apply {
+        isOpaque = false
+        add(content, GridBagConstraints().apply {
+            this.anchor = anchor
+            weightx = 1.0
+            insets = Insets(0, leftInset, 0, 0)
+        })
     }
 
     /** 视图 → tab 下标（看板在第一位） */
@@ -363,7 +377,6 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
         item("对话日报 / 周报") { doOpenReport() }
         item("历史共享到当前") { doSyncHistoryToCurrent() }
         batchItem = item("批量同步全部账号历史") { doSyncAllAccounts() }
-        item("扫描目录…") { DirectoryScanDialog.show(project) }
         menu.addSeparator()
         item("额度明细窗口") { QuotaDetailDialog.show(project) }
         item("消耗明细") { UsageDetailDialog.show(project) }
@@ -603,7 +616,7 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
         statusLabel.font = smallFont
         statusLabel.foreground = AccountUiColors.onInkDim
 
-        readoutLabel = JLabel("CodeBuddy: —").apply {
+        readoutLabel = RollingReadoutLabel("CodeBuddy: —").apply {
             // 读数含中文账号名，走界面字体
             font = AccountUiType.ui(AccountUiType.label)
             foreground = AccountUiColors.onInk
@@ -653,15 +666,22 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
         menu.show(anchor, 0, -menu.preferredSize.height - JBUI.scale(2))
     }
 
-    /** 底栏读数文案：按当前维度从真实额度拼出来 */
-    private fun readoutText(active: CredentialSnapshot?, quota: QuotaSummary?): String {
-        val name = active?.displayName ?: "未检测到账号"
-        if (quota == null) return "CodeBuddy: $name · 额度未查询"
-        if (quota.error != null) return "CodeBuddy: $name · 查询失败"
-        if (quota.packages.isEmpty()) return "CodeBuddy: $name · 无套餐"
+    /** 底栏读数：账号名前缀保持静态，额度正文里的数字标为滚动槽位 */
+    private fun readoutDisplay(active: CredentialSnapshot?, quota: QuotaSummary?): NumberDisplay {
+        val b = NumberDisplayBuilder()
+        b.text("CodeBuddy: ${active?.displayName ?: "未检测到账号"} · ")
+        b.numbered(readoutBody(quota))
+        return b.build()
+    }
+
+    /** 底栏额度正文：按当前维度从真实额度拼出来 */
+    private fun readoutBody(quota: QuotaSummary?): String {
+        if (quota == null) return "额度未查询"
+        if (quota.error != null) return "查询失败"
+        if (quota.packages.isEmpty()) return "无套餐"
 
         val unit = quota.unit.ifBlank { "credits" }
-        val body = when (AccountSettings.getInstance().statusBarMode) {
+        return when (AccountSettings.getInstance().statusBarMode) {
             QuotaDisplayMode.TOTAL_PERCENT -> "${"%.0f".format(quota.usableRemainPercent)}% 剩余"
             QuotaDisplayMode.REMAIN ->
                 "${AccountUiKit.formatNumber(quota.usableRemain)} / ${AccountUiKit.formatNumber(quota.usableSize)} $unit"
@@ -674,7 +694,6 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
                     "${it.name} ${AccountUiKit.formatNumber(it.remain)} $unit"
                 } ?: quota.summaryText()
         }
-        return "CodeBuddy: $name · $body"
     }
 
     /** 切换日志：账号视图底部的 `.log-bar`，只保留最近几行 */
@@ -730,7 +749,7 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
         centerStack?.let { (it.layout as CardLayout).show(it, target) }
 
         // 底栏读数（状态栏口径）+ 各视图标题右侧的 meta
-        readoutLabel.text = readoutText(active, active?.let { quotaMap[it.accountKey] })
+        readoutLabel.setReadout(readoutDisplay(active, active?.let { quotaMap[it.accountKey] }))
         // 详细概览挂在底栏提示上，悬停可见，不占视觉
         statusLabel.toolTipText = buildSummary(saved, active, quotaMap)
         rangeLabel.text = buildString {
@@ -1360,5 +1379,33 @@ private class BrandMark : JComponent() {
         } finally {
             g2.dispose()
         }
+    }
+}
+
+/**
+ * 底栏额度读数：数值下降时缓动递减，进入视口触发一次，滚出视口不重置。
+ *
+ * 固定 preferredSize 宽度，避免逐帧改文本时 FlowLayout 抖动。
+ */
+private class RollingReadoutLabel(text: String) : JLabel(text) {
+
+    private val rolling = RollingReadout(decreaseOnly = true) { rendered ->
+        this@RollingReadoutLabel.text = rendered
+    }
+
+    private val trigger = ViewportTrigger(this) { rolling.setVisible(it) }
+
+    private var minWidth = 0
+
+    fun setReadout(display: NumberDisplay) {
+        val fm = getFontMetrics(font)
+        minWidth = maxOf(minWidth, fm.stringWidth(display.text))
+        rolling.offer(display)
+        trigger.check()
+    }
+
+    override fun getPreferredSize(): Dimension {
+        val base = super.getPreferredSize()
+        return Dimension(maxOf(base.width, minWidth), base.height)
     }
 }

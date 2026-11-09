@@ -252,6 +252,17 @@ object AccountUiColors {
     val tagDomainBg = fixed(0xE8ECEF)
     val tagDomainFg = fixed(0x5A6978)
 
+    /** Token 有效标签：固定浅绿底，文字用 success */
+    val tagSuccessBg = fixed(0xE8F4EC)
+
+    /** 套餐分组字标：固定浅底 + 深字，IDE 深色主题下也不能变黑块 */
+    val glyphGiftBg = fixed(0xFFF3E2)
+    val glyphGiftFg = fixed(0xB45309)
+    val glyphBaseBg = fixed(0xE8F1FF)
+    val glyphBaseFg = fixed(0x1D4ED8)
+    val glyphPlainBg = fixed(0xE8ECEF)
+    val glyphPlainFg = fixed(0x4F5E6D)
+
     /** 认证域标签（workbuddy）：与主色区分的第二域名色 */
     var tagDomainAltBg: JBColor = fixed(0xEFECFB)
         private set
