@@ -153,6 +153,14 @@ object GrowthService {
         val dailyLimitReached: Boolean = false,
         val recordId: Long = 0L,
         val rewardCredit: Double = 0.0,
+        /** 接口 depart_at：派出时间，秒级时间戳；0 表示无 */
+        val departAt: Long = 0L,
+        /** 接口 arrive_at：预计到站时间，秒级时间戳；0 表示无 */
+        val arriveAt: Long = 0L,
+        /** 接口 server_now：服务端当前时间（秒级），用来抵消本地时钟偏差 */
+        val serverNow: Long = 0L,
+        /** 接口 duration_hours：单程时长（小时） */
+        val durationHours: Int = 0,
         val error: String? = null,
     ) {
         val ok: Boolean get() = error == null
@@ -163,6 +171,25 @@ object GrowthService {
                 "arrived" -> "已到站（可领奖）"
                 else -> "未知"
             }
+
+        /** 距到站还有多久（毫秒）；没有到站时间返回 null */
+        fun remainingMillis(): Long? {
+            if (arriveAt <= 0L) return null
+            val nowSec = if (serverNow > 0L) serverNow else System.currentTimeMillis() / 1000
+            return (arriveAt - nowSec).coerceAtLeast(0L) * 1000L
+        }
+
+        /** 回来时间文案，如「约 2 小时后回来」；没有到站时间返回 null */
+        fun etaText(): String? {
+            val millis = remainingMillis() ?: return null
+            if (millis <= 0L) return "已到站"
+            val hours = millis / 3_600_000L
+            val minutes = (millis % 3_600_000L) / 60_000L
+            return when {
+                hours >= 1L -> "约 $hours 小时${if (minutes > 0L) " $minutes 分钟" else ""}后回来"
+                else -> "约 ${minutes.coerceAtLeast(1L)} 分钟后回来"
+            }
+        }
     }
 
     /** 连登状态 */
@@ -494,11 +521,16 @@ object GrowthService {
         val parsed = parseAction(resp.body)
         if (!parsed.ok) return TravelState(error = parsed.error)
         val data = dataObject(resp.body)
+        // 字段取自接口实际返回：state / record_id / depart_at / arrive_at / server_now / duration_hours
         return TravelState(
             state = str(data, "state"),
             dailyLimitReached = bool(data, "daily_limit_reached") ?: false,
             recordId = long(data, "record_id") ?: 0L,
             rewardCredit = num(data, "reward_credit") ?: 0.0,
+            departAt = long(data, "depart_at") ?: 0L,
+            arriveAt = long(data, "arrive_at") ?: 0L,
+            serverNow = long(data, "server_now") ?: 0L,
+            durationHours = int(data, "duration_hours") ?: 0,
         )
     }
 

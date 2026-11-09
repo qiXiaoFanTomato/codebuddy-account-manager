@@ -148,6 +148,8 @@ object GrowthTracker {
             var adopted = 0
             var skipped = 0
             val errors = ArrayList<String>()
+            // 各账号猫猫的回来时间（如「启小凡 约 2 小时后回来」）
+            val etas = ArrayList<String>()
             forEachAccount(accountKeys) { snapshot, token ->
                 val settings = AccountSettings.getInstance()
                 val buddy = GrowthService.hasBuddy(snapshot.domain, token, snapshot.uid, settings.growthEnterpriseId)
@@ -210,8 +212,22 @@ object GrowthTracker {
                             val r = GrowthService.travelDepart(
                                 snapshot.domain, token, snapshot.uid, 4, settings.growthEnterpriseId,
                             )
-                            if (r.ok) departed++ else errors.add("${snapshot.displayName}：派出失败 ${r.error}")
+                            if (r.ok) {
+                                departed++
+                                // 派出后补查一次状态，拿到 arrive_at 才报得出回来时间
+                                val after = GrowthService.travelStatus(
+                                    snapshot.domain, token, snapshot.uid, settings.growthEnterpriseId,
+                                )
+                                after.etaText()?.let { etas.add("${snapshot.displayName} $it") }
+                            } else {
+                                errors.add("${snapshot.displayName}：派出失败 ${r.error}")
+                            }
                         }
+                    }
+
+                    "traveling" -> {
+                        // 在途中：报出还有多久回来
+                        ts.etaText()?.let { etas.add("${snapshot.displayName} $it") }
                     }
 
                     else -> skipped++
@@ -222,6 +238,11 @@ object GrowthTracker {
                 if (claimed > 0) append("，领奖 $claimed 次")
                 if (adopted > 0) append("，领养 $adopted 只")
                 if (skipped > 0) append("，跳过 $skipped 个")
+                if (etas.isNotEmpty()) {
+                    append("；")
+                    append(etas.take(3).joinToString("；"))
+                    if (etas.size > 3) append("；等 ${etas.size} 只")
+                }
                 if (errors.isNotEmpty()) append("，失败 ${errors.size} 项（${errors.take(2).joinToString("；")}）")
             }
         }, onDone)
