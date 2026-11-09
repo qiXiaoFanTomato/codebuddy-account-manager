@@ -82,6 +82,7 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
         onOpenList = { setView(VIEW_LIST) },
         onRefreshAll = { refreshQuotas(library.listSaved()) },
         onOpenQuotaDetail = { QuotaDetailDialog.show(project) },
+        onOpenExpiringQuota = { QuotaDetailDialog.showExpiring(project) },
         onOpenUsageDetail = { UsageDetailDialog.show(project) },
         onOpenHistory = { doOpenHistory() },
         onOpenReport = { doOpenReport() },
@@ -1015,11 +1016,16 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
 
         val best = candidates.first()
         val hot = AccountSettings.getInstance().hotSwitchEnabled && CodeBuddyBridge.isAvailable()
+        // 共享额度池：所有账号的可用细项按到期时间摊平成一条使用顺序
+        val pool = QuotaScheduler.mergeShares(
+            QuotaScheduler.pool(saved, library.quotaCache.loadAll(), exclude = active?.accountKey)
+        )
         val ok = Messages.showYesNoDialog(
             project,
-            "调度顺序（先消耗快过期的额度，再看剩余富余）：\n\n" +
-                QuotaScheduler.describe(candidates, 3) + "\n\n" +
-                "推荐：${best.snapshot.displayName}（${best.snapshot.domainHost}）\n" +
+            "额度共享池（跨账号，优先消耗离到期最近的额度）：\n\n" +
+                (if (pool.isEmpty()) "暂无可共享的额度" else QuotaScheduler.describePool(pool, 5)) + "\n\n" +
+                "推荐切换：${best.snapshot.displayName}（${best.snapshot.domainHost}）\n" +
+                "理由：${best.reason()}\n" +
                 "切换方式：${if (hot) "热切换，不重启 IDE" else "写入凭据后需重启 IDE"}\n\n确定切换？",
             "智能调度",
             Messages.getQuestionIcon()

@@ -567,6 +567,8 @@ class QuotaAccountCard(
     private val snapshot: CredentialSnapshot,
     private val summary: QuotaSummary?,
     private val active: Boolean,
+    /** 细项默认展开：临期视图要一眼看到到期时间，不用再点开分组 */
+    private val expandGroups: Boolean = false,
 ) : RoundedCard(
     fill = if (active) AccountUiColors.cardActiveBg else AccountUiColors.cardBg,
     stroke = if (active) AccountUiColors.ink else AccountUiColors.border,
@@ -586,7 +588,7 @@ class QuotaAccountCard(
             else -> {
                 // 默认全部折叠：卡片先只给「套餐分组 + 剩余」的概览，点开才看细项
                 for (group in brief.groups()) {
-                    val card = QuotaGroupCard(group)
+                    val card = QuotaGroupCard(group, initiallyExpanded = expandGroups)
                     card.alignmentX = Component.LEFT_ALIGNMENT
                     add(card)
                     add(Box.createVerticalStrut(JBUI.scale(6)))

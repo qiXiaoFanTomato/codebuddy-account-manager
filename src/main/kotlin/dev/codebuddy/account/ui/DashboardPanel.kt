@@ -15,6 +15,7 @@ import dev.codebuddy.account.service.AccountLibrary
 import dev.codebuddy.account.service.AccountSettings
 import dev.codebuddy.account.service.AutoRefreshService
 import dev.codebuddy.account.service.QuotaAlertSettings
+import dev.codebuddy.account.service.QuotaScheduler
 import dev.codebuddy.account.usage.ModelQuotaRuleState
 import dev.codebuddy.account.usage.ModelQuotaTracker
 import dev.codebuddy.account.usage.UsageRecord
@@ -43,6 +44,8 @@ class DashboardPanel(
     private val onOpenList: () -> Unit,
     private val onRefreshAll: () -> Unit,
     private val onOpenQuotaDetail: () -> Unit,
+    /** 「7 天内到期」卡片入口：只列临期额度，按账号分类 */
+    private val onOpenExpiringQuota: () -> Unit,
     private val onOpenUsageDetail: () -> Unit,
     private val onOpenHistory: () -> Unit,
     private val onOpenReport: () -> Unit,
@@ -562,8 +565,8 @@ class DashboardPanel(
                 value = if (rows.isEmpty()) "—" else "${soon.size} 条",
                 sub = if (soon.isEmpty()) "近期无到期额度" else "最近 ${QuotaTime.remainingText(soon.minOf { it.expireMillis })}",
                 color = if (soon.isEmpty()) AccountUiColors.textMuted else AccountUiColors.warning,
-                tip = "点击查看到期明细",
-                onClick = onOpenQuotaDetail,
+                tip = "点击只查看 7 天内到期的额度（按账号分类）",
+                onClick = onOpenExpiringQuota,
             )
         )
         row.add(
@@ -908,6 +911,20 @@ class DashboardPanel(
                     mono = false,
                 ),
             )
+            // 共享额度池里离到期最近的一份：说明下一次请求该吃哪个账号的哪份额度
+            val next = QuotaScheduler.mergeShares(
+                QuotaScheduler.pool(library.listSaved(), library.quotaCache.loadAll())
+            ).firstOrNull()
+            if (next != null) {
+                rows += AccountUiKit.fieldLine(
+                    "下一份额度",
+                    AccountUiKit.valueText(
+                        "${next.snapshot.displayName} · ${QuotaTime.remainingText(next.pkg.expireMillis)}",
+                        AccountUiColors.warning,
+                        mono = false,
+                    ),
+                )
+            }
         }
         if (st.coolingDown) {
             rows += AccountUiKit.fieldLine(

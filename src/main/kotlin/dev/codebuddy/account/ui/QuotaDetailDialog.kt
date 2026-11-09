@@ -23,7 +23,13 @@ import javax.swing.*
  *
  * 账号下拉选「全部账号」时每个账号一张卡片，纵向排列；卡片内按套餐分组折叠展示细项。
  */
-class QuotaDetailDialog(private val project: Project) : DialogWrapper(project) {
+class QuotaDetailDialog(
+    private val project: Project,
+    private val mode: Mode = Mode.ALL,
+) : DialogWrapper(project) {
+
+    /** 视图模式：全部额度 / 只看 7 天内到期的临期额度（按账号成卡） */
+    enum class Mode { ALL, EXPIRING }
 
     private val library = AccountLibrary.getInstance()
 
@@ -40,12 +46,15 @@ class QuotaDetailDialog(private val project: Project) : DialogWrapper(project) {
     private var suppressCombo = false
 
     init {
-        title = "CodeBuddy 额度明细"
+        title = if (mode == Mode.EXPIRING) "CodeBuddy 临期额度" else "CodeBuddy 额度明细"
         setSize(1000, 780)
 
         overviewTitle.font = overviewTitle.font.deriveFont(Font.BOLD, AccountUiType.title)
+        // JBLabel 默认前景取自 LAF（深色主题是浅白），纸面上会白字白底
+        overviewTitle.foreground = AccountUiColors.textPrimary
         overviewSub.foreground = AccountUiColors.textMuted
         statusLabel.foreground = AccountUiColors.textMuted
+        AccountUiKit.styleCombo(accountCombo) { (it as? AccountChoice)?.label ?: "" }
 
         accountCombo.addActionListener {
             if (!suppressCombo) render()
@@ -62,19 +71,24 @@ class QuotaDetailDialog(private val project: Project) : DialogWrapper(project) {
         val root = JPanel(BorderLayout())
         root.background = AccountUiColors.panelBg
 
-        // 顶部：账号选择 + 状态（统一顶栏样式）
+        // 顶部：账号选择 + 状态（统一顶栏样式）；临期视图固定看全部账号，不放下拉
         val filterRow = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(6), 0))
         filterRow.isOpaque = false
-        filterRow.add(JBLabel("账号"))
-        accountCombo.preferredSize = Dimension(JBUI.scale(280), accountCombo.preferredSize.height)
-        filterRow.add(accountCombo)
+        if (mode == Mode.ALL) {
+            filterRow.add(JBLabel("账号").apply { foreground = AccountUiColors.textSecondary })
+            accountCombo.preferredSize = Dimension(JBUI.scale(280), accountCombo.preferredSize.height)
+            filterRow.add(accountCombo)
+        } else {
+            filterRow.add(JBLabel("只显示 7 天内到期、仍有剩余的额度").apply {
+                foreground = AccountUiColors.textSecondary
+            })
+        }
         filterRow.add(refreshBtn)
 
-        val top = DialogTopBar("CodeBuddy 额度明细", "", filterRow)
+        val top = DialogTopBar(dialogTitle(), "", filterRow)
         topBar = top
 
-        val scroll = JBScrollPane(bodyPanel).apply {
-            border = JBUI.Borders.empty()
+        val scroll = AccountUiKit.styleScroll(JBScrollPane(bodyPanel)).apply {
             horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER
             verticalScrollBar.unitIncrement = 16
         }
@@ -135,10 +149,20 @@ class QuotaDetailDialog(private val project: Project) : DialogWrapper(project) {
         }
 
         // 有缓存的才算「有数据」，查询失败也保留卡片（展示失败原因）
-        val cards = targets.map { s -> s to quotas[s.accountKey] }
+        val now = System.currentTimeMillis()
+        val cards = targets.map { s ->
+            val summary = quotas[s.accountKey]
+            s to if (mode == Mode.EXPIRING) expiringOnly(summary, now) else summary
+        }
+        // 临期视图只保留真有临期细项的账号，其余账号不占版面
+        val visibleCards = if (mode == Mode.EXPIRING) {
+            cards.filter { (_, q) -> q?.takeIf { it.error == null }?.packages?.isNotEmpty() == true }
+        } else {
+            cards
+        }
 
         // 总览：多账号时汇总
-        val summaries = cards.mapNotNull { (_, q) -> q?.takeIf { it.error == null } }
+        val summaries = visibleCards.mapNotNull { (_, q) -> q?.takeIf { it.error == null } }
         val size = summaries.sumOf { it.usableSize }
         val remain = summaries.sumOf { it.usableRemain }
         val totalItems = summaries.sumOf { it.packages.size }
@@ -146,11 +170,15 @@ class QuotaDetailDialog(private val project: Project) : DialogWrapper(project) {
         val percent = if (size <= 0) 0.0 else (remain / size * 100.0)
         val unit = summaries.firstOrNull()?.unit ?: "credits"
 
-        overviewTitle.text = if (summaries.isEmpty()) {
-            "暂无额度数据"
-        } else {
-            "${if (accountKey == null) "所有账号合计" else cards.firstOrNull()?.first?.displayName ?: "当前账号"}：" +
-                "剩余 ${num(remain)} / ${num(size)} $unit（${"%.0f".format(percent)}%）"
+        overviewTitle.text = when {
+            summaries.isEmpty() && mode == Mode.EXPIRING -> "近 7 天没有到期额度"
+            summaries.isEmpty() -> "暂无额度数据"
+            mode == Mode.EXPIRING ->
+                "${visibleCards.size} 个账号有临期额度：" +
+                    "合计剩余 ${num(remain)} / ${num(size)} $unit"
+            else ->
+                "${if (accountKey == null) "所有账号合计" else cards.firstOrNull()?.first?.displayName ?: "当前账号"}：" +
+                    "剩余 ${num(remain)} / ${num(size)} $unit（${"%.0f".format(percent)}%）"
         }
 
         val nearest = summaries.asSequence()
@@ -158,7 +186,11 @@ class QuotaDetailDialog(private val project: Project) : DialogWrapper(project) {
             .filter { it.usable && it.remain > 0 && it.expireMillis != Long.MAX_VALUE }
             .minByOrNull { it.expireMillis }
         overviewSub.text = buildString {
-            append("细项 $totalItems 条，其中仍有效 $usableItems 条")
+            if (mode == Mode.EXPIRING) {
+                append("临期细项 $totalItems 条")
+            } else {
+                append("细项 $totalItems 条，其中仍有效 $usableItems 条")
+            }
             if (nearest != null) {
                 append("　|　最近到期：${nearest.displayGroup}（${QuotaTime.remainingText(nearest.expireMillis)}）")
             }
@@ -169,23 +201,37 @@ class QuotaDetailDialog(private val project: Project) : DialogWrapper(project) {
         overviewBar.percent = percent
 
         if (::topBar.isInitialized) {
-            topBar.update("CodeBuddy 额度明细", statusLabel.text.ifBlank { overviewSub.text })
+            topBar.update(dialogTitle(), statusLabel.text.ifBlank { overviewSub.text })
         }
 
-        // 卡片：当前账号置顶，其余按剩余比例倒序
+        // 卡片：临期视图按最近到期升序（越急越前）；普通视图当前账号置顶、其余按剩余比例倒序
         bodyPanel.removeAll()
         bodyPanel.add(overviewCard())
         bodyPanel.add(Box.createVerticalStrut(JBUI.scale(AccountUiSpacing.cardGap)))
         if (cards.isEmpty()) {
             bodyPanel.add(hintLabel("账号库为空，先导入账号。"))
+        } else if (visibleCards.isEmpty()) {
+            bodyPanel.add(hintLabel("近 7 天内没有到期额度（已过期或长期有效的细项不在此列出）。"))
+            bodyPanel.add(Box.createVerticalGlue())
         } else {
-            val ordered = cards.sortedWith(
-                compareByDescending<Pair<CredentialSnapshot, QuotaSummary?>> { it.first.accountKey == activeKey }
-                    .thenByDescending { it.second?.takeIf { q -> q.error == null }?.usableRemainPercent ?: -1.0 }
-                    .thenBy { it.first.displayName }
-            )
+            val ordered = if (mode == Mode.EXPIRING) {
+                visibleCards.sortedWith(
+                    compareBy<Pair<CredentialSnapshot, QuotaSummary?>> {
+                        it.second?.nextExpiring?.expireMillis ?: Long.MAX_VALUE
+                    }.thenBy { it.first.displayName }
+                )
+            } else {
+                visibleCards.sortedWith(
+                    compareByDescending<Pair<CredentialSnapshot, QuotaSummary?>> { it.first.accountKey == activeKey }
+                        .thenByDescending { it.second?.takeIf { q -> q.error == null }?.usableRemainPercent ?: -1.0 }
+                        .thenBy { it.first.displayName }
+                )
+            }
             for ((snapshot, summary) in ordered) {
-                val card = QuotaAccountCard(snapshot, summary, snapshot.accountKey == activeKey)
+                val card = QuotaAccountCard(
+                    snapshot, summary, snapshot.accountKey == activeKey,
+                    expandGroups = mode == Mode.EXPIRING,
+                )
                 card.alignmentX = Component.LEFT_ALIGNMENT
                 bodyPanel.add(card)
                 bodyPanel.add(Box.createVerticalStrut(JBUI.scale(AccountUiSpacing.cardGap)))
@@ -250,9 +296,35 @@ class QuotaDetailDialog(private val project: Project) : DialogWrapper(project) {
 
     private fun num(v: Double): String = AccountUiKit.formatNumber(v)
 
+    private fun dialogTitle(): String =
+        if (mode == Mode.EXPIRING) "CodeBuddy 临期额度" else "CodeBuddy 额度明细"
+
     companion object {
+
+        /** 临期窗口：与看板「7 天内到期」指标同一口径 */
+        private const val EXPIRING_WINDOW_MS = 7L * 24 * 3600 * 1000
+
+        /**
+         * 只保留临期细项：仍有剩余、未过期、且 7 天内到期。
+         *
+         * 返回副本而不是改原缓存，额度缓存要留给其它视图用全量数据。
+         */
+        private fun expiringOnly(summary: QuotaSummary?, now: Long): QuotaSummary? {
+            if (summary == null || summary.error != null) return summary
+            return summary.copy(
+                packages = summary.packages.filter {
+                    it.usable && it.remain > 0 && it.expireMillis - now in 0..EXPIRING_WINDOW_MS
+                }
+            )
+        }
+
         fun show(project: Project) {
             QuotaDetailDialog(project).show()
+        }
+
+        /** 只看临期额度（看板「7 天内到期」卡片点击入口） */
+        fun showExpiring(project: Project) {
+            QuotaDetailDialog(project, Mode.EXPIRING).show()
         }
     }
 }
