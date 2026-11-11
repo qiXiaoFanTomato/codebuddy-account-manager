@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "dev.codebuddy.account"
-version = "0.24.1"
+version = "0.29"
 
 repositories {
     maven { url = uri("https://maven.aliyun.com/repository/public") }
@@ -29,6 +29,10 @@ kotlin {
 }
 
 tasks {
+    // 随插件 jar 分发第三方开源声明，满足 Apache-2.0 与 CC BY-NC-SA 4.0 的署名/附本要求
+    processResources {
+        from(rootProject.file("THIRD-PARTY-NOTICES.md"))
+    }
     withType<JavaCompile> {
         sourceCompatibility = "21"
         targetCompatibility = "21"
