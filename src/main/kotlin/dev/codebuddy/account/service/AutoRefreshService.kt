@@ -4,7 +4,6 @@ import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.diagnostic.logger
-import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
 import dev.codebuddy.account.credential.SecretStorage
 import dev.codebuddy.account.hotswap.CodeBuddyBridge
@@ -191,11 +190,11 @@ class AutoRefreshService : Disposable {
         lastAutoSwitchAt.set(now)
         val result = library.hotSwitchTo(best.snapshot.accountKey)
         if (result.success) {
-            notify(
+            dev.codebuddy.account.pet.PetNotifier.success(
                 "已自动调度账号",
                 "${active.displayName} 剩余 ${"%.0f".format(mine.usableRemainPercent)}%，" +
                     "已切到 ${best.snapshot.displayName}（${best.reason()}），无需重启 IDE。",
-                NotificationType.INFORMATION
+                null,
             )
         } else {
             notify(
@@ -213,13 +212,9 @@ class AutoRefreshService : Disposable {
             "· ${s.displayName}（${s.domainHost}）：$state"
         } + if (list.size > 6) "\n… 等 ${list.size} 个" else ""
 
+    /** 统一提示出口：优先由桌宠承载，不可用时退回 IDE 气泡通知 */
     private fun notify(title: String, content: String, type: NotificationType) {
-        try {
-            NotificationGroupManager.getInstance()
-                .getNotificationGroup("CodeBuddy Account Manager")
-                .createNotification(title, content, type)
-                .notify(null)
-        } catch (_: Exception) { }
+        dev.codebuddy.account.pet.PetNotifier.notify(title, content, type, null)
     }
 
     private fun startWatching() {

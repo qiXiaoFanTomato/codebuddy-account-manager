@@ -182,17 +182,14 @@ class AccountLibrary {
         )
     }
 
-    /** 配额过低时发通知 */
+    /** 配额过低时发通知（优先由桌宠承载） */
     private fun fireQuotaAlert(snapshot: CredentialSnapshot, summary: dev.codebuddy.account.quota.QuotaSummary) {
         try {
-            com.intellij.notification.NotificationGroupManager.getInstance()
-                .getNotificationGroup("CodeBuddy Account Manager")
-                .createNotification(
-                    "CodeBuddy 额度不足",
-                    "账号 ${snapshot.displayName} 剩余额度仅 ${String.format("%.1f", summary.usableRemainPercent)}%（${summary.summaryText()}）",
-                    com.intellij.notification.NotificationType.WARNING
-                )
-                .notify(null)
+            dev.codebuddy.account.pet.PetNotifier.warn(
+                "CodeBuddy 额度不足",
+                "账号 ${snapshot.displayName} 剩余额度仅 ${String.format("%.1f", summary.usableRemainPercent)}%（${summary.summaryText()}）",
+                null,
+            )
         } catch (_: Exception) { }
     }
 

@@ -1,7 +1,6 @@
 package dev.codebuddy.account.ui
 
 import com.intellij.icons.AllIcons
-import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.fileChooser.FileChooserFactory
@@ -965,7 +964,7 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
                 if (r.error != null) {
                     notify("历史同步失败", r.error, NotificationType.ERROR)
                 } else {
-                    notify(
+                    notifySuccess(
                         "历史同步完成",
                         "目标账号：${target.displayName}\n" +
                             "新增会话 ${r.conversationsAdded} 个，复制消息目录 ${r.conversationsCopied} 个" +
@@ -1048,7 +1047,7 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
         refresh()
 
         if (r.success) {
-            notify(
+            notifySuccess(
                 "已热切换到 ${target.displayName}",
                 r.message
                     ?: "CodeBuddy 已重新加载新账号，无需重启 IDE。\n若账号/额度仍显示旧值，稍等几秒或再执行一次切换。"
@@ -1101,7 +1100,7 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
                 appendLog("已备份 secret-storage.xml.bak-<时间戳>")
                 appendLog("已切换到 ${target.displayName}，重启 IDE 后生效", notice = true)
                 refresh()
-                notify(
+                notifySuccess(
                     "切换成功",
                     "已切换到 ${target.displayName}。$syncMsg\n\n请重启 IDE 使 CodeBuddy 插件重新加载凭据。"
                 )
@@ -1149,7 +1148,7 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
                 HistoryReader.clearCache()
                 batchItem?.isEnabled = true
                 refresh()
-                notify(
+                notifySuccess(
                     "批量同步完成",
                     "账号 ${saved.size} 个：新增会话 $added 个，复制消息目录 $copied 个，失败 $failed 个。\n" +
                         "若侧边栏未刷新，请重启 IDE。"
@@ -1196,7 +1195,7 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
         when (val r = library.forceLogout()) {
             is SwitchResult.Success -> {
                 refresh()
-                notify(
+                notifySuccess(
                     "已退出登录",
                     "已清除 CodeBuddy 登录凭据。请重启 IDE，CodeBuddy 会回到未登录状态，之后可重新登录。"
                 )
@@ -1295,7 +1294,7 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
         val path = wrapper.file.toPath()
         try {
             Files.writeString(path, library.exportJson(setOf(snapshot.accountKey)))
-            notify(
+            notifySuccess(
                 "导出成功",
                 "已导出 ${snapshot.displayName} 到：${path.toAbsolutePath()}\n\n注意：文件包含完整凭据，请妥善保管。"
             )
@@ -1311,7 +1310,7 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
         val path = wrapper.file.toPath()
         try {
             Files.writeString(path, library.exportJson())
-            notify("导出成功", "已导出到：${path.toAbsolutePath()}\n\n注意：文件包含完整凭据，请妥善保管。")
+            notifySuccess("导出成功", "已导出到：${path.toAbsolutePath()}\n\n注意：文件包含完整凭据，请妥善保管。")
         } catch (e: Exception) {
             notify("导出失败", e.message ?: "未知错误", NotificationType.ERROR)
         }
@@ -1342,11 +1341,17 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
         refresh()
     }
 
+    /**
+     * 统一提示出口：优先由桌宠承载，桌宠不可用时退回 IDE 气泡通知。
+     * 见 [dev.codebuddy.account.pet.PetNotifier]。
+     */
     private fun notify(title: String, content: String, type: NotificationType = NotificationType.INFORMATION) {
-        NotificationGroupManager.getInstance()
-            .getNotificationGroup("CodeBuddy Account Manager")
-            .createNotification(title, content, type)
-            .notify(project)
+        dev.codebuddy.account.pet.PetNotifier.notify(title, content, type, project)
+    }
+
+    /** 操作成功的反馈（桌宠播「成功」动作） */
+    private fun notifySuccess(title: String, content: String) {
+        dev.codebuddy.account.pet.PetNotifier.success(title, content, project)
     }
 
     private companion object {

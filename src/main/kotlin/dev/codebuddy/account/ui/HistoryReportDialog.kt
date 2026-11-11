@@ -1,6 +1,5 @@
 package dev.codebuddy.account.ui
 
-import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
@@ -544,10 +543,7 @@ class HistoryReportDialog(
             } else {
                 "已复制生成指令，请打开 CodeBuddy 对话窗口粘贴发送（未找到 CodeBuddy 侧边栏）"
             }
-            NotificationGroupManager.getInstance()
-                .getNotificationGroup(NOTIFICATION_GROUP)
-                .createNotification("CodeBuddy 日报 / 周报", message, NotificationType.INFORMATION)
-                .notify(project)
+            dev.codebuddy.account.pet.PetNotifier.success("CodeBuddy 日报 / 周报", message, project)
         }
     }
 

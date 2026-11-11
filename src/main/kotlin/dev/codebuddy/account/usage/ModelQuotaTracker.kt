@@ -1,6 +1,5 @@
 package dev.codebuddy.account.usage
 
-import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
@@ -268,13 +267,8 @@ object ModelQuotaTracker {
         }
     }
 
+    /** 统一提示出口：优先由桌宠承载，不可用时退回 IDE 气泡通知 */
     private fun notify(title: String, content: String, type: NotificationType) {
-        try {
-            NotificationGroupManager.getInstance()
-                .getNotificationGroup("CodeBuddy Account Manager")
-                .createNotification(title, content, type)
-                .notify(null)
-        } catch (_: Exception) {
-        }
+        dev.codebuddy.account.pet.PetNotifier.notify(title, content, type, null)
     }
 }

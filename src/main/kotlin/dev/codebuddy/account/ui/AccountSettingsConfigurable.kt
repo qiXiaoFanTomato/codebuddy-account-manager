@@ -80,6 +80,7 @@ class AccountSettingsConfigurable : Configurable {
         }
     }
     private val modelQuotaWarnSpinner = JSpinner(SpinnerNumberModel(20, 0, 100, 1))
+    private val petCheck = JCheckBox("显示桌面宠物（多开 IDE 时全机只保留一个；外观与交互在右键菜单「桌宠设置」）")
     private var usageRefreshTimer: javax.swing.Timer? = null
 
     /** 界面色调（立即生效，与工具窗右上角的调色盘按钮是同一份状态） */
@@ -156,6 +157,8 @@ class AccountSettingsConfigurable : Configurable {
             })
             .addLabeledComponent("统计周期：", modelQuotaPeriodCombo)
             .addLabeledComponent("接近限额预警阈值（剩余 %）：", modelQuotaWarnSpinner)
+            .addVerticalGap(JBUI.scale(6))
+            .addComponent(petCheck)
             .addComponentFillVertically(JPanel(), 0)
             .panel
 
@@ -170,6 +173,7 @@ class AccountSettingsConfigurable : Configurable {
     override fun isModified(): Boolean {
         val s = AccountSettings.getInstance()
         val alert = QuotaAlertSettings.getInstance()
+        val pet = dev.codebuddy.account.pet.PetSettings.getInstance()
         return intValue(intervalMinSpinner) != s.autoRefreshMinutes ||
             intValue(intervalMaxSpinner) != s.autoRefreshMinutesMax ||
             alertCheck.isSelected != alert.state.enabled ||
@@ -195,7 +199,8 @@ class AccountSettingsConfigurable : Configurable {
             modelQuotaCheck.isSelected != s.modelQuotaEnabled ||
             modelQuotaRulesEditor.rules() != s.modelQuotaRules ||
             (modelQuotaPeriodCombo.selectedItem as? ModelQuotaPeriod) != s.modelQuotaPeriod ||
-            intValue(modelQuotaWarnSpinner) != s.modelQuotaWarnPercent
+            intValue(modelQuotaWarnSpinner) != s.modelQuotaWarnPercent ||
+            petCheck.isSelected != pet.enabled
     }
 
     override fun apply() {
@@ -233,6 +238,11 @@ class AccountSettingsConfigurable : Configurable {
         s.state.modelQuotaPeriod =
             ((modelQuotaPeriodCombo.selectedItem as? ModelQuotaPeriod) ?: ModelQuotaPeriod.MONTH).name
         s.state.modelQuotaWarnPercent = intValue(modelQuotaWarnSpinner).coerceIn(0, 100)
+
+        // 桌宠总开关：立即生效（关闭时释放单例锁，其他 IDE 实例可接管）
+        val pet = dev.codebuddy.account.pet.PetSettings.getInstance()
+        pet.enabled = petCheck.isSelected
+        dev.codebuddy.account.pet.PetService.getInstance().applySettings()
 
         alert.setEnabled(alertCheck.isSelected)
         alert.setThreshold(intValue(thresholdSpinner))
@@ -283,6 +293,9 @@ class AccountSettingsConfigurable : Configurable {
         modelQuotaRulesEditor.setRules(s.modelQuotaRules)
         modelQuotaPeriodCombo.selectedItem = s.modelQuotaPeriod
         modelQuotaWarnSpinner.value = s.modelQuotaWarnPercent.coerceIn(0, 100)
+
+        val pet = dev.codebuddy.account.pet.PetSettings.getInstance()
+        petCheck.isSelected = pet.enabled
     }
 
     /** 设置变更后立即重新统计模型限额 */

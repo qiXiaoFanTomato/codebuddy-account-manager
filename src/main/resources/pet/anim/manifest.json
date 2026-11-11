@@ -1,0 +1,418 @@
+{
+  "actions": [
+    {
+      "id": "act01",
+      "name": "悠闲哼歌",
+      "category": "小动作"
+    },
+    {
+      "id": "act02",
+      "name": "超大伸懒腰",
+      "category": "小动作"
+    },
+    {
+      "id": "act03",
+      "name": "原地敲击桌面互动",
+      "category": "小动作"
+    },
+    {
+      "id": "act04",
+      "name": "原地重力下蹲压缩",
+      "category": "小动作"
+    },
+    {
+      "id": "act05",
+      "name": "哈欠连天",
+      "category": "小动作"
+    },
+    {
+      "id": "act06",
+      "name": "原地小憩沉眠",
+      "category": "小动作"
+    },
+    {
+      "id": "act07",
+      "name": "女仆屈膝礼仪",
+      "category": "小动作"
+    },
+    {
+      "id": "act08",
+      "name": "被吓一跳",
+      "category": "小动作"
+    },
+    {
+      "id": "act09",
+      "name": "小幅度原地360度旋转展示",
+      "category": "小动作"
+    },
+    {
+      "id": "act10",
+      "name": "偷吃零食被抓住",
+      "category": "小动作"
+    },
+    {
+      "id": "act11",
+      "name": "用鲸鱼尾巴拍打地面",
+      "category": "小动作"
+    },
+    {
+      "id": "act12",
+      "name": "打瞌睡被惊醒",
+      "category": "小动作"
+    },
+    {
+      "id": "act13",
+      "name": "照镜子",
+      "category": "小动作"
+    },
+    {
+      "id": "act14",
+      "name": "整体换装试色",
+      "category": "小动作"
+    },
+    {
+      "id": "act15",
+      "name": "轻快记录",
+      "category": "小动作"
+    },
+    {
+      "id": "act16",
+      "name": "写代码",
+      "category": "小动作"
+    },
+    {
+      "id": "act17",
+      "name": "摇扇纳凉",
+      "category": "小动作"
+    },
+    {
+      "id": "act18",
+      "name": "晨间刷牙",
+      "category": "小动作"
+    },
+    {
+      "id": "act19",
+      "name": "原地专心玩魔方",
+      "category": "玩耍"
+    },
+    {
+      "id": "act20",
+      "name": "原地蹲下玩玩具汽车",
+      "category": "玩耍"
+    },
+    {
+      "id": "act21",
+      "name": "鲸鱼吐泡泡特效",
+      "category": "玩耍"
+    },
+    {
+      "id": "act22",
+      "name": "原地跳跃抓碎头顶物品",
+      "category": "玩耍"
+    },
+    {
+      "id": "act23",
+      "name": "玩游戏气急败坏",
+      "category": "玩耍"
+    },
+    {
+      "id": "act24",
+      "name": "玩水枪",
+      "category": "玩耍"
+    },
+    {
+      "id": "act25",
+      "name": "小提琴演奏",
+      "category": "玩耍"
+    },
+    {
+      "id": "act26",
+      "name": "蓝鲸现世",
+      "category": "玩耍"
+    },
+    {
+      "id": "act27",
+      "name": "优雅女仆舞",
+      "category": "玩耍"
+    },
+    {
+      "id": "act28",
+      "name": "轻快摇摆舞",
+      "category": "玩耍"
+    },
+    {
+      "id": "act29",
+      "name": "可爱宅舞",
+      "category": "玩耍"
+    },
+    {
+      "id": "act30",
+      "name": "吹气球",
+      "category": "玩耍"
+    },
+    {
+      "id": "act31",
+      "name": "动物环绕",
+      "category": "玩耍"
+    },
+    {
+      "id": "act32",
+      "name": "放风筝",
+      "category": "玩耍"
+    },
+    {
+      "id": "act33",
+      "name": "拆礼物",
+      "category": "玩耍"
+    },
+    {
+      "id": "act34",
+      "name": "变鸽子",
+      "category": "玩耍"
+    },
+    {
+      "id": "act35",
+      "name": "扑克魔术",
+      "category": "玩耍"
+    },
+    {
+      "id": "act36",
+      "name": "抽陀螺",
+      "category": "玩耍"
+    },
+    {
+      "id": "act37",
+      "name": "吹笛子",
+      "category": "玩耍"
+    },
+    {
+      "id": "act38",
+      "name": "蝴蝶蜜蜂环绕头顶开花",
+      "category": "玩耍"
+    },
+    {
+      "id": "act39",
+      "name": "撸猫",
+      "category": "玩耍"
+    },
+    {
+      "id": "act40",
+      "name": "凭空生花",
+      "category": "玩耍"
+    },
+    {
+      "id": "act41",
+      "name": "骑木马",
+      "category": "玩耍"
+    },
+    {
+      "id": "act42",
+      "name": "三球抛接",
+      "category": "玩耍"
+    },
+    {
+      "id": "act43",
+      "name": "踢毽子",
+      "category": "玩耍"
+    },
+    {
+      "id": "act44",
+      "name": "下五子棋",
+      "category": "玩耍"
+    },
+    {
+      "id": "act45",
+      "name": "荡秋千",
+      "category": "玩耍"
+    },
+    {
+      "id": "act46",
+      "name": "吃白饭",
+      "category": "吃什么"
+    },
+    {
+      "id": "act47",
+      "name": "大口吃零食",
+      "category": "吃什么"
+    },
+    {
+      "id": "act48",
+      "name": "吃Token",
+      "category": "吃什么"
+    },
+    {
+      "id": "act49",
+      "name": "吃早餐",
+      "category": "吃什么"
+    },
+    {
+      "id": "act50",
+      "name": "吃午餐",
+      "category": "吃什么"
+    },
+    {
+      "id": "act51",
+      "name": "吃晚餐",
+      "category": "吃什么"
+    },
+    {
+      "id": "act52",
+      "name": "吃冰淇淋融化",
+      "category": "吃什么"
+    },
+    {
+      "id": "act53",
+      "name": "吃大闸蟹",
+      "category": "吃什么"
+    },
+    {
+      "id": "act54",
+      "name": "吃糖葫芦",
+      "category": "吃什么"
+    },
+    {
+      "id": "act55",
+      "name": "吃长寿面",
+      "category": "吃什么"
+    },
+    {
+      "id": "act56",
+      "name": "吃西瓜",
+      "category": "吃什么"
+    },
+    {
+      "id": "act57",
+      "name": "涮火锅",
+      "category": "吃什么"
+    },
+    {
+      "id": "act58",
+      "name": "被落叶淹没",
+      "category": "时节"
+    },
+    {
+      "id": "act59",
+      "name": "中秋赏月吃月饼",
+      "category": "时节"
+    },
+    {
+      "id": "act60",
+      "name": "堆雪人",
+      "category": "时节"
+    },
+    {
+      "id": "act61",
+      "name": "放烟花",
+      "category": "时节"
+    },
+    {
+      "id": "act62",
+      "name": "吃粽子",
+      "category": "时节"
+    },
+    {
+      "id": "act63",
+      "name": "吃年糕",
+      "category": "时节"
+    },
+    {
+      "id": "act64",
+      "name": "吃青团",
+      "category": "时节"
+    },
+    {
+      "id": "act65",
+      "name": "吃腊八粥",
+      "category": "时节"
+    },
+    {
+      "id": "act66",
+      "name": "吃重阳糕",
+      "category": "时节"
+    },
+    {
+      "id": "act67",
+      "name": "收红包",
+      "category": "时节"
+    },
+    {
+      "id": "act68",
+      "name": "写福字",
+      "category": "时节"
+    },
+    {
+      "id": "act69",
+      "name": "穿针乞巧",
+      "category": "时节"
+    },
+    {
+      "id": "act70",
+      "name": "舞狮头",
+      "category": "时节"
+    },
+    {
+      "id": "act71",
+      "name": "讨糖南瓜灯",
+      "category": "时节"
+    },
+    {
+      "id": "act72",
+      "name": "插茱萸赏菊",
+      "category": "时节"
+    },
+    {
+      "id": "act73",
+      "name": "放河灯",
+      "category": "时节"
+    },
+    {
+      "id": "act74",
+      "name": "萌化小幽灵",
+      "category": "时节"
+    },
+    {
+      "id": "act75",
+      "name": "装点圣诞树",
+      "category": "时节"
+    },
+    {
+      "id": "act76",
+      "name": "放孔明灯",
+      "category": "时节"
+    },
+    {
+      "id": "act77",
+      "name": "吃汤圆",
+      "category": "时节"
+    },
+    {
+      "id": "act78",
+      "name": "吃饺子",
+      "category": "时节"
+    },
+    {
+      "id": "act79",
+      "name": "是啊，吃什么",
+      "category": "文字"
+    },
+    {
+      "id": "act80",
+      "name": "深度思考碎碎念",
+      "category": "文字"
+    }
+  ],
+  "whisper": [
+    {
+      "id": "whisper1",
+      "name": "碎碎念-擦桌碎碎念"
+    },
+    {
+      "id": "whisper2",
+      "name": "碎碎念-发呆碎碎念"
+    },
+    {
+      "id": "whisper3",
+      "name": "碎碎念-对屏碎碎念"
+    }
+  ]
+}

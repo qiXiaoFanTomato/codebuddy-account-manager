@@ -34,6 +34,9 @@ class CodeBuddyAccountStartup : ProjectActivity {
 
             // 启动自动刷新 + token 检查 + 目录监听（幂等）
             app.getService(AutoRefreshService::class.java).startFromSettings()
+
+            // 桌宠（档案柜精灵）：多开 IDE 时由跨进程锁保证全机只有一个
+            dev.codebuddy.account.pet.PetService.getInstance().startFromSettings()
         } catch (e: Exception) {
             log.warn("CodeBuddy 账号服务启动失败", e)
         }
@@ -85,10 +88,8 @@ class CodeBuddyAccountStartup : ProjectActivity {
         }
     }
 
+    /** 统一提示出口：优先由桌宠承载，不可用时退回 IDE 气泡通知 */
     private fun notify(title: String, content: String) {
-        com.intellij.notification.NotificationGroupManager.getInstance()
-            .getNotificationGroup("CodeBuddy Account Manager")
-            .createNotification(title, content, com.intellij.notification.NotificationType.WARNING)
-            .notify(null)
+        dev.codebuddy.account.pet.PetNotifier.warn(title, content, null)
     }
 }
