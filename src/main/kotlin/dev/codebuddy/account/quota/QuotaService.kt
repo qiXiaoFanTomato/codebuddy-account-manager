@@ -22,9 +22,14 @@ import java.time.Duration
  *   "code": 0,
  *   "data": { "Response": { "Data": { "Accounts": [
  *      { "SubProductName": "...", "CapacitySizePrecise": "100",
- *        "CapacityRemainPrecise": "96.66", "CycleStartTime": "...", ... }
+ *        "CapacityRemainPrecise": "96.66",
+ *        "ActualCycleCapacityUsed": "3.34", "CycleStartTime": "...", ... }
  *   ] } } }
  * }
+ *
+ * 注意：CapacityUsed / CapacityRemain 是结算口径，可能长时间不更新（实测主动账号的
+ * 「个人体验版」长期返回 已用 0 / 剩余全量），实时消耗只体现在 ActualCycleCapacityUsed，
+ * 因此已用必须取三者最大值，剩余按「总量 - 已用」兜底，否则剩余比例会恒为 100%。
  */
 object QuotaService {
 
@@ -96,11 +101,20 @@ object QuotaService {
                 val expireMs = QuotaTime.parse(expiredTime) ?: QuotaTime.parse(cycleEnd)
                 val expired = expireMs != null && expireMs < now
 
+                val size = dblOrNull(o, "CapacitySizePrecise", "CapacitySize") ?: 0.0
+                // 已用：结算值可能滞后，实时扣减值只在 ActualCycleCapacityUsed
+                val used = maxOf(
+                    dblOrNull(o, "CapacityUsedPrecise", "CapacityUsed") ?: 0.0,
+                    dblOrNull(o, "CycleCapacityUsedPrecise", "CycleCapacityUsed") ?: 0.0,
+                    dblOrNull(o, "ActualCycleCapacityUsed") ?: 0.0,
+                )
+                val remain = resolveRemain(size, used, dblOrNull(o, "CapacityRemainPrecise", "CapacityRemain"))
+
                 QuotaPackage(
                     name = firstNonBlank(o, "SubProductName", "PackageName", "ProductName"),
-                    size = dbl(o, "CapacitySizePrecise", "CapacitySize"),
-                    used = dbl(o, "CapacityUsedPrecise", "CapacityUsed"),
-                    remain = dbl(o, "CapacityRemainPrecise", "CapacityRemain"),
+                    size = size,
+                    used = used,
+                    remain = remain,
                     unit = str(o, "CapacityUnit"),
                     cycleStart = str(o, "CycleStartTime"),
                     cycleEnd = cycleEnd,
@@ -150,16 +164,29 @@ object QuotaService {
         return ""
     }
 
-    /** 优先取 precise 字段（字符串数字），退回整数/浮点字段 */
-    private fun dbl(o: JsonObject, vararg keys: String): Double {
+    /**
+     * 剩余量：接口的 CapacityRemain 可能没跟着 ActualCycleCapacityUsed 一起扣减，
+     * 所以取「接口剩余」与「总量 - 已用」的较小值，两者都缺失时按总量兜底。
+     */
+    private fun resolveRemain(size: Double, used: Double, apiRemain: Double?): Double {
+        if (size <= 0) return apiRemain ?: 0.0
+        val computed = (size - used).coerceIn(0.0, size)
+        return if (apiRemain == null) computed else minOf(apiRemain, computed).coerceIn(0.0, size)
+    }
+
+    /** 优先取 precise 字段（字符串数字），退回整数/浮点字段；全部缺失返回 null */
+    private fun dblOrNull(o: JsonObject, vararg keys: String): Double? {
         for (k in keys) {
             if (!o.has(k) || o.get(k).isJsonNull) continue
             val el = o.get(k)
             try {
-                return if (el.isJsonPrimitive && el.asJsonPrimitive.isString) el.asString.toDoubleOrNull() ?: 0.0
-                else el.asDouble
+                if (el.isJsonPrimitive && el.asJsonPrimitive.isString) {
+                    el.asString.toDoubleOrNull()?.let { return it }
+                } else {
+                    return el.asDouble
+                }
             } catch (_: Exception) { }
         }
-        return 0.0
+        return null
     }
 }
