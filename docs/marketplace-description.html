@@ -5,6 +5,33 @@ CodeBuddy Account Manager is a JetBrains IDE plugin for managing multiple CodeBu
 <p><img src="https://raw.githubusercontent.com/qiXiaoFanTomato/codebuddy-account-manager/main/docs/screenshots/dashboard.png" alt="首页看板" width="900"></p>
 <p><img src="https://raw.githubusercontent.com/qiXiaoFanTomato/codebuddy-account-manager/main/docs/screenshots/accounts.png" alt="账号库" width="900"></p>
 
+<h3>开源软件与素材声明</h3>
+<p><img src="https://raw.githubusercontent.com/qiXiaoFanTomato/codebuddy-account-manager/main/docs/screenshots/pet.png" alt="桌宠形象（来自 dsh-pet）" width="360"/></p>
+<p><b>桌宠形象已接入开源项目 <a href="https://github.com/PC2005-cloud/dsh-pet">dsh-pet</a></b>（PC2005-cloud），形象 / 素材按
+<a href="https://creativecommons.org/licenses/by-nc-sa/4.0/deed.zh-hans">CC BY-NC-SA 4.0</a>（署名 · 非商业 · 相同方式共享）使用；
+署名与合规声明见下方及
+<a href="https://github.com/qiXiaoFanTomato/codebuddy-account-manager/blob/main/THIRD-PARTY-NOTICES.md">THIRD-PARTY-NOTICES.md</a>。</p>
+<p>完整声明与许可证全文见
+<a href="https://github.com/qiXiaoFanTomato/codebuddy-account-manager/blob/main/THIRD-PARTY-NOTICES.md">THIRD-PARTY-NOTICES.md</a>（随插件包分发）。</p>
+<ul>
+  <li><b>dsh-pet</b>（<a href="https://github.com/PC2005-cloud/dsh-pet">PC2005-cloud/dsh-pet</a>）：代码 MIT；形象 / 素材
+  <a href="https://creativecommons.org/licenses/by-nc-sa/4.0/deed.zh-hans">CC BY-NC-SA 4.0</a>（署名 · 非商业 · 相同方式共享）。用于桌宠形象、动画、表情包与点击音效。</li>
+  <li><b>Gson 2.11.0</b>：Apache-2.0，JSON 解析，随包分发；<b>error_prone_annotations 2.27.0</b>：Apache-2.0，Gson 传递依赖，随包分发。</li>
+  <li><b>JUnit Jupiter 5.11.3</b>：<a href="https://www.eclipse.org/legal/epl-v20.html">EPL-2.0</a>，仅单元测试；<b>Kotlin JVM Gradle Plugin 2.4.0</b> 与 <b>IntelliJ Platform Gradle Plugin 2.2.1</b>：Apache-2.0，仅构建期；均不随包分发。</li>
+</ul>
+<p>桌宠形象来自社区二创项目 dsh-pet（原作者 <a href="https://github.com/PC2005-cloud/dsh-pet">PC2005-cloud</a>），按原项目「许可」段：</p>
+<ul>
+  <li>代码 MIT（Copyright (c) 2026 PC2005-cloud），本插件未使用其源码；素材（动画 / 提示词 / 源视频）允许开源使用，具体授权参考角色原型的形象授权 → <b>CC BY-NC-SA 4.0</b>（署名 · 非商业 · 相同方式共享）。</li>
+  <li><b>二创署名</b>：基于该项目的衍生 / 改版 / 换皮作品，在 GitHub 仓库、产品官网等公开渠道须附上原作者 GitHub 地址
+  <a href="https://github.com/PC2005-cloud/dsh-pet">github.com/PC2005-cloud/dsh-pet</a>；本仓库与本插件市场描述均已附上。</li>
+  <li><b>形象出处</b>：社区二创的 DeepSeek「大肥鱼」（鲸鱼娘），非 DeepSeek 官方形象；原型「溟月」出自 B 站
+  <a href="https://space.bilibili.com/4456176">@上善无形</a>，DeepSeek 版（女仆鲸鱼娘）设计出自 B 站
+  <a href="https://space.bilibili.com/4168597">@ZipZipPipe</a>。</li>
+  <li><b>原作者声明原文</b>：「大肥鱼是遵守CC BY-NC-SA 4.0协议的形象，不可以以任何形式商业化。若您非常喜爱该形象，希望其拥有实体，您可以自行定制。」（<a href="https://www.bilibili.com/opus/1247156596114456581">声明原文</a>）</li>
+  <li><b>修改说明</b>：原 VP9-alpha webm 动画逐帧转为 .petanim（JPEG 颜色层 + PNG 掩码），27 张表情包重命名为 m01…m27，点击音效保留为 pet/click-duck.wav；只做格式转换 / 重命名，未二次绘制形象。</li>
+  <li><b>合规做法</b>：插件免费分发、非商业使用；由原形象转换 / 改编的桌宠素材按 CC BY-NC-SA 4.0 相同方式共享；完整声明与许可证全文随插件包分发。</li>
+</ul>
+
 <h3>核心功能</h3>
 <ul>
   <li><b>账号库导入</b>：自动识别 CodeBuddy auth 目录下的 .info 凭据快照，并读取当前 IDE 已登录的凭据；官方入口登录/切号后自动归档。</li>

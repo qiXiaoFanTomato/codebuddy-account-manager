@@ -51,6 +51,22 @@ JetBrains IDE 插件：在本地统一管理多个 **CodeBuddy（coding-copilot-
 - **对话日报 / 周报**：基于本地历史会话生成今日日报与本周周报，默认按项目统计（项目名由会话消息里的路径反推，解析不到时显示为 `项目 <hash 前 8 位>`），另有账号 / 日期 / 时段 / 会话类型维度；左侧维度分布条与「今天 / 昨天 / 本周」快捷按钮都可点击筛选右侧明细，可复制 Markdown。
 - **用 CodeBuddy 生成**：只把区间、git 命令与口径写成简短指令复制到剪贴板并打开 CodeBuddy 对话窗口，由 CodeBuddy 在当前项目根目录自行执行 git log 读取区间内已 commit 的记录（提交说明 + 变更文件），以最近一条提交的 Author 为本人自动区分自己 / 他人提交后生成日报 / 周报正文；无需填写身份或路径，当前项目不写死绝对路径，仅报告中出现其它项目目录时才列出完整命令；不搬运提交数据，避免大量变更文件导致粘贴内容截断，未提交的工作区改动不计入。
 
+### 桌宠
+
+![桌宠形象（来自 dsh-pet）](docs/screenshots/pet.png)
+
+> 桌宠形象已接入开源项目 [dsh-pet](https://github.com/PC2005-cloud/dsh-pet)（PC2005-cloud），形象 / 素材按 [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/deed.zh-hans)（署名 · 非商业 · 相同方式共享）使用；署名与合规声明见「开源软件与素材声明」及 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。
+
+- **档案柜桌宠（形象来自 dsh-pet）**：无边框透明浮窗，按原项目 `config.jsonc` 的动画池驱动——待机循环、点击回应（5 选 1 随机）、余额六档（按已用百分比切档）、睡觉三段（开始 / 循环 / 起来）、拖拽悬空。
+- **80 个随机小动作**：按原版分类权重抽取（小动作 20 / 玩耍 20 / 吃什么 16 / 时节 14 / 文字 10），默认每 3 分钟自己演一段，可调间隔或关闭。抽取用**洗牌袋**：每个分类打乱后依次取，一轮内不重复、每段动画都能轮到，不会连着三次同一段。
+- **碎碎念**：默认每 5 分钟冒一句台词（配原版碎碎念动画），台词是人设文案，不调用任何模型。
+- **余额与消耗**：宠物身上显示剩余百分比；单击只播点击回应动画（不弹窗），**双击**打开额度明细——上半是当前账号余额，下半是上一轮对话的积分消耗（口径：最近一次请求 + 同分钟合计）。额度刷新后角色**正上方**浮出增减量：减少时从「心虚 / 心疼」动作组轮转一个反应，增加时按新档位重播余额动画。
+- **拖拽与抛出**：普通拖拽只是挪动位置，松手原地停住；只有在松手瞬间有足够速度（≥600 px/s，100% 尺寸下）才会「甩」出去，按原版参数（重力 1400 / 反弹 0.78 / 地面摩擦 2.5）下落并反弹。
+- **屏幕跑动**：随机动作里有 30% 概率改为跑一段——播原版 `moves` 池的走位动画（螃蟹走路 / 原地漂浮踏步 / 原地左转奔跑），窗口在 lead 起步、匀速位移、tail 站定的时间轴上平移 60~240px。
+- **多开只保留一个**：`%TEMP%/codebuddy-pet/pet.lock` 跨进程独占锁 + 回环端口标记；非持有者每 3 秒尝试接管，持有者退出后自动接手。
+- **系统提示统一由桌宠承载**：切号、导出、同步、退出登录等操作反馈，切换失败 / 导出失败 / 额度不足 / token 异常等错误，以及自动调度、模型限额、成长中心结果等状态变更，都改为桌宠冒气泡 + 配套动作呈现。动作按等级**分组轮转**：成功组（开心跃动 / 跳起抓物 / 可爱宅舞 / 收红包）、信息组（元气挥手 / 悠闲哼歌 / 照镜子 / 撸猫）、警告组（害羞惊讶 / 被吓一跳 / 打瞌睡惊醒 / 哈欠连天）、错误组（傲娇生气 / 玩游戏气急败坏 / 尾巴拍地 / 偷吃被抓），同等级内洗牌轮转不重样。气泡带等级色竖条 + 「操作成功 / 注意 / 出错了 / 提示」小标签 + 投影，宽度 280dp，**锚定在角色身上而不是窗口上**。展示时长按等级：错误 9 秒、警告 7 秒、其余 5 秒（长文本 +2 秒，上限 12 秒）；同一内容 5 秒内去重；多条按「错误 > 警告 > 成功 > 信息」排序，高优先级抢占，队列上限 6 条。桌宠关闭或非持有者时退回 IDE 通知。
+- **桌宠设置**：右键宠物打开，尺寸 / 不透明度 / 置顶 / 停靠四角 / 点击音效 / 待机动画 / 随机动作与间隔 / 碎碎念与间隔 / 提示是否由桌宠承载，改动即生效。
+
 ### 设置
 `Settings | Tools | CodeBuddy 账号管理器`：
 
@@ -156,6 +172,30 @@ dependencies {
 
 发现问题或有功能建议，请统一到 [GitHub Issues](https://github.com/qiXiaoFanTomato/codebuddy-account-manager/issues) 反馈，并附 IDE 版本、CodeBuddy 插件版本与复现步骤（请勿粘贴 token 等凭据内容）。
 
+## 开源软件与素材声明
+
+完整声明与许可证全文见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)（随插件包分发）。
+
+| 项目 | 版本 | 授权方式 | 用途 |
+| --- | --- | --- | --- |
+| [dsh-pet](https://github.com/PC2005-cloud/dsh-pet)（PC2005-cloud） | 素材 | 代码 MIT；形象 / 素材 [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/deed.zh-hans) | 桌宠形象、动画、表情包、点击音效 |
+| [Gson](https://github.com/google/gson) | 2.11.0 | Apache-2.0 | JSON 解析（随包分发） |
+| [error_prone_annotations](https://github.com/google/error-prone) | 2.27.0 | Apache-2.0 | Gson 传递依赖（随包分发） |
+| [JUnit Jupiter](https://github.com/junit-team/junit5) | 5.11.3 | [EPL-2.0](https://www.eclipse.org/legal/epl-v20.html) | 单元测试（不随包分发） |
+| [Kotlin JVM Gradle Plugin](https://github.com/JetBrains/kotlin) | 2.4.0 | Apache-2.0 | 构建（不随包分发） |
+| [IntelliJ Platform Gradle Plugin](https://github.com/JetBrains/intellij-platform-gradle-plugin) | 2.2.1 | Apache-2.0 | 构建（不随包分发） |
+
+桌宠形象来自社区二创项目 **dsh-pet**（原作者 [PC2005-cloud](https://github.com/PC2005-cloud/dsh-pet)），按原项目「许可」段：
+
+- 代码 MIT（Copyright (c) 2026 PC2005-cloud），本插件未使用其源码；素材（动画 / 提示词 / 源视频）允许开源使用，具体授权参考角色原型的形象授权 → **CC BY-NC-SA 4.0**（署名 · 非商业 · 相同方式共享）。
+- **二创署名**：基于该项目的衍生 / 改版 / 换皮作品，在 GitHub 仓库、产品官网等公开渠道须附上原作者 GitHub 地址 <https://github.com/PC2005-cloud/dsh-pet>；本仓库与插件市场描述均已附上。
+- **形象出处**：社区二创的 DeepSeek「大肥鱼」（鲸鱼娘），非 DeepSeek 官方形象；原型「溟月」出自 B 站 [@上善无形](https://space.bilibili.com/4456176)，DeepSeek 版（女仆鲸鱼娘）设计出自 B 站 [@ZipZipPipe](https://space.bilibili.com/4168597)。
+- **原作者声明原文**：「大肥鱼是遵守CC BY-NC-SA 4.0协议的形象，不可以以任何形式商业化。若您非常喜爱该形象，希望其拥有实体，您可以自行定制。」（[声明原文](https://www.bilibili.com/opus/1247156596114456581)）
+- **修改说明**：原 VP9-alpha webm 动画逐帧转为 `.petanim`（JPEG 颜色层 + PNG 掩码），27 张表情包重命名为 `m01`…`m27`，点击音效保留为 `pet/click-duck.wav`；只做格式转换 / 重命名，未二次绘制形象。
+- **合规做法**：插件免费分发、非商业使用；`src/main/resources/pet/**` 中由原形象转换 / 改编的素材按 CC BY-NC-SA 4.0 相同方式共享；完整声明与许可证全文随插件包分发。
+
 ## License
 
-本项目暂未指定开源许可证。如需在衍生项目或商业场景中使用，请先联系作者。
+本仓库代码部分暂未指定开源许可证；如需在衍生项目或商业场景中使用，请先联系作者。
+
+`src/main/resources/pet/**` 的桌宠形象与由原素材转换 / 改编的素材按 [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/deed.zh-hans) 提供，**禁止商业使用**，不随代码部分一并授权。第三方组件与素材的完整许可、署名与许可证全文见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。
