@@ -89,19 +89,24 @@ object HistoryReader {
         /** 会话类型（index.json 的 type 字段，如 craft），可能为空 */
         val type: String = "",
     ) {
-        /** 列表渲染用的单行摘要（避免在渲染器里做类型推断） */
-        fun summaryLine(accountLabel: String): String {
+        /** 列表渲染用的单行摘要（避免在渲染器里做类型推断）；checked 非空时前置勾选框 */
+        fun summaryLine(accountLabel: String, checked: Boolean? = null): String {
             val t = try {
                 if (lastMessageAt.isBlank()) "" else
                     java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
                         .withZone(java.time.ZoneId.systemDefault())
                         .format(java.time.Instant.parse(lastMessageAt))
             } catch (_: Exception) { "" }
+            val box = when (checked) {
+                true -> "☑ "
+                false -> "☐ "
+                null -> ""
+            }
             val n = name.take(40)
                 .replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
             val a = accountLabel.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
             val countText = if (messageCount >= 0) "$messageCount 条 · " else ""
-            return "<html><div style='width:360px'><b>$n</b><br/>" +
+            return "<html><div style='width:360px'><b>$box$n</b><br/>" +
                 "<span style='color:#888'>$t · $countText$a</span></div></html>"
         }
     }

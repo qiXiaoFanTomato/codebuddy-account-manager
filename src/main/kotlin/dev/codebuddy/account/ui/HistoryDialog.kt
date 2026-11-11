@@ -17,12 +17,15 @@ import com.intellij.ui.components.JBTextArea
 import com.intellij.ui.components.JBTextField
 import com.intellij.util.ui.JBUI
 import dev.codebuddy.account.credential.CredentialPaths
+import dev.codebuddy.account.history.ConversationArchive
 import dev.codebuddy.account.history.HistoryReader
 import dev.codebuddy.account.history.ProjectResolver
 import dev.codebuddy.account.scan.ScanProgress
 import dev.codebuddy.account.scan.ScanSummary
 import java.awt.*
 import java.awt.datatransfer.StringSelection
+import java.awt.event.MouseAdapter
+import java.awt.event.MouseEvent
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.InvalidPathException
@@ -30,8 +33,11 @@ import java.nio.file.Path
 import java.nio.file.Paths
 import java.time.Instant
 import java.time.LocalDate
+import java.time.LocalDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import java.util.Calendar
+import java.util.Date
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import javax.swing.*
@@ -42,9 +48,11 @@ import javax.swing.event.DocumentListener
  * 历史对话浏览器：目录扫描与历史会话浏览合并在同一窗口。
  *
  * 能力：
- *  - 通过目录扫描功能扫描所选目录的 index.json（可重扫、可停止、含跳过明细）
+ *  - 目录扫描：默认只看「最近 7 天」，可切「指定日期」或「全部对话」（切换后自动重扫）
  *  - 跨账号汇总所有本地历史会话（只读）
  *  - 关键字 + 账号筛选，可按时间或按项目分组；项目名来自项目路径清单精确反查
+ *  - 勾选多个会话后生成 CodeBuddy 官方导入文件（单个 .json / 多个 .zip），
+ *    在 CodeBuddy 历史对话里点「导入」即可还原到当前登录账号
  *  - 复制当前会话、导出 Markdown、打开会话所在目录
  *
  * 性能约束：
@@ -76,9 +84,13 @@ class HistoryDialog(
 
     private val dirField = JBTextField()
     private val recursiveBox = JCheckBox("包含子目录", true)
+    private val rangeCombo = JComboBox<ScanRange>()
+    private val dateSpinner = JSpinner(SpinnerDateModel(Date(), null, null, Calendar.DAY_OF_MONTH))
     private val scanBtn = JButton("扫描")
     private val stopBtn = JButton("停止")
     private val scanStatusLabel = JBLabel("就绪")
+    private val checkedLabel = JBLabel("已选 0 个")
+    private lateinit var importBtn: JComponent
     private val errorArea = JBTextArea().apply {
         isEditable = false
         lineWrap = false
@@ -87,6 +99,16 @@ class HistoryDialog(
         preferredSize = Dimension(0, JBUI.scale(80))
         isVisible = false
     }
+
+    /** 勾选的会话 id（多选导入用） */
+    private val checkedIds = LinkedHashSet<String>()
+
+    /** 本次扫描实际使用的时间范围与日期，供分组 / 汇总文案复用 */
+    private var activeRange: ScanRange = ScanRange.LAST_7_DAYS
+    private var activeDate: LocalDate? = null
+
+    /** 是否已成功扫描过（切换扫描范围时据此决定要不要自动重扫） */
+    private var hasScanned = false
 
     /** 当前扫描的取消标志，关闭窗口或点「停止」时置位 */
     @Volatile
@@ -119,6 +141,32 @@ class HistoryDialog(
         convList.addListSelectionListener { e ->
             if (!e.valueIsAdjusting) onSelect()
         }
+        convList.toolTipText = "点左侧勾选框多选，点其他区域预览内容"
+        // 勾选框区域：行首 24px 内点击切换勾选，其余区域维持预览
+        convList.addMouseListener(object : MouseAdapter() {
+            override fun mousePressed(e: MouseEvent) {
+                if (!SwingUtilities.isLeftMouseButton(e)) return
+                val index = convList.locationToIndex(e.point)
+                if (index < 0) return
+                val bounds = convList.getCellBounds(index, index) ?: return
+                if (!bounds.contains(e.point)) return
+                if (e.point.x - bounds.x > JBUI.scale(24)) return
+                val conv = runCatching { listModel.getElementAt(index) }.getOrNull()
+                    as? HistoryReader.Conversation ?: return
+                toggleChecked(conv)
+            }
+        })
+
+        // 扫描范围：默认最近 7 天；选「指定日期」才启用日期选择
+        for (range in ScanRange.entries) rangeCombo.addItem(range)
+        AccountUiKit.styleCombo(rangeCombo) { (it as? ScanRange)?.label ?: "" }
+        rangeCombo.addActionListener {
+            dateSpinner.isEnabled = rangeCombo.selectedItem == ScanRange.SPECIFIC_DATE
+            // 换范围后自动重扫一次，避免用户以为没生效；扫描中控件是禁用的，不会重复触发
+            if (hasScanned && rangeCombo.isEnabled && dirField.text.isNotBlank()) startScan()
+        }
+        dateSpinner.editor = JSpinner.DateEditor(dateSpinner, "yyyy-MM-dd")
+        dateSpinner.isEnabled = false
 
         contentArea.isEditable = false
         contentArea.lineWrap = true
@@ -188,6 +236,8 @@ class HistoryDialog(
         val searchRow = JPanel(BorderLayout())
         searchRow.add(searchField, BorderLayout.CENTER)
         filterPanel.add(searchRow)
+        filterPanel.add(Box.createVerticalStrut(JBUI.scale(4)))
+        filterPanel.add(buildSelectRow())
 
         left.add(filterPanel, BorderLayout.NORTH)
         left.add(JBScrollPane(convList), BorderLayout.CENTER)
@@ -244,8 +294,17 @@ class HistoryDialog(
         panel.add(pathRow)
         panel.add(Box.createVerticalStrut(JBUI.scale(6)))
 
+        val rangeRow = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(6), 0))
+        rangeRow.add(JBLabel("时间范围"))
+        rangeRow.add(rangeCombo)
+        rangeRow.add(dateSpinner)
+        dateSpinner.toolTipText = "选择「指定日期」时扫描当天有消息的会话"
+        rangeRow.add(recursiveBox)
+        rangeRow.maximumSize = Dimension(Int.MAX_VALUE, rangeRow.preferredSize.height)
+        panel.add(rangeRow)
+        panel.add(Box.createVerticalStrut(JBUI.scale(6)))
+
         val actionRow = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(6), 0))
-        actionRow.add(recursiveBox)
         scanBtn.addActionListener { startScan() }
         stopBtn.addActionListener { stopScan() }
         stopBtn.isEnabled = false
@@ -258,10 +317,34 @@ class HistoryDialog(
 
     private fun buildActionBar(): JPanel {
         val bar = JPanel(FlowLayout(FlowLayout.LEFT, 6, 4))
+        importBtn = JellyButton(
+            "导入到当前账号",
+            JellyButtonVariant.PRIMARY,
+            null,
+            "把勾选的对话生成 CodeBuddy 导入文件，再到 CodeBuddy 历史对话点「导入」",
+        ) { importSelected() }
+        bar.add(importBtn)
         bar.add(iconButton("复制内容") { copyContent() })
         bar.add(iconButton("导出 Markdown") { exportMarkdown() })
         bar.add(iconButton("打开会话目录") { openConversationDir() })
         return bar
+    }
+
+    /** 勾选操作行：全选可见 / 清空 / 已选数量 */
+    private fun buildSelectRow(): JComponent {
+        val row = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(6), 0))
+        row.add(JButton("全选可见").apply {
+            toolTipText = "勾选当前列表里的全部会话（受搜索 / 账号 / 时间范围限制）"
+            addActionListener { checkAllVisible() }
+        })
+        row.add(JButton("清空选择").apply {
+            addActionListener { clearChecked() }
+        })
+        checkedLabel.foreground = AccountUiColors.textMuted
+        checkedLabel.font = baseLabelFont().deriveFont(Font.PLAIN, AccountUiType.caption)
+        row.add(checkedLabel)
+        row.maximumSize = Dimension(Int.MAX_VALUE, row.preferredSize.height)
+        return row
     }
 
     private fun iconButton(text: String, action: () -> Unit): JComponent =
@@ -312,6 +395,11 @@ class HistoryDialog(
         cancelFlag = cancel
         val token = ++scanToken
 
+        val range = rangeCombo.selectedItem as? ScanRange ?: ScanRange.LAST_7_DAYS
+        val date = selectedDate()
+        activeRange = range
+        activeDate = if (range == ScanRange.SPECIFIC_DATE) date else null
+
         resetScanView()
         val options = HistoryReader.scanOptions(recursiveBox.isSelected)
         ApplicationManager.getApplication().executeOnPooledThread {
@@ -335,9 +423,12 @@ class HistoryDialog(
                 return@executeOnPooledThread
             }
 
+            // 时间范围在后台线程过滤：项目解析也要读盘，先缩小集合
+            val conversations = result.conversations.filter { inRange(it, range, date) }
+
             // 项目名解析涉及读盘（清单未命中时采样消息），留在后台线程
             val projects = try {
-                ProjectResolver.resolve(result.conversations)
+                ProjectResolver.resolve(conversations)
             } catch (_: Throwable) {
                 emptyMap<String, ProjectResolver.Project>()
             }
@@ -346,23 +437,55 @@ class HistoryDialog(
                 if (token != scanToken) return@invokeLater
                 try {
                     finishScanView()
-                    allConversations = result.conversations
+                    allConversations = conversations
                     projectNames = projects.mapValues { (_, p) -> p.name }
                     projectPaths = projects.mapValues { (_, p) -> p.path }
-                    initAccountCombo(result.conversations)
+                    initAccountCombo(conversations)
                     applyFilter()
-                    headerLabel.text = if (result.conversations.isEmpty()) {
-                        "未找到历史会话"
+                    headerLabel.text = if (conversations.isEmpty()) {
+                        "所选范围内未找到历史会话"
                     } else {
-                        "选择左侧会话查看内容"
+                        "勾选会话后点「导入到当前账号」，或点会话预览内容"
                     }
-                    showSummary(result.summary)
+                    showSummary(result.summary, conversations.size)
+                    hasScanned = true
                 } catch (t: Throwable) {
                     headerLabel.text = "渲染历史会话失败"
                     setScanError(t.message ?: t.javaClass.simpleName)
                 }
             }, ModalityState.any())
         }
+    }
+
+    /**
+     * 按扫描范围判断会话是否命中。
+     * 口径与会话列表一致：按「最后一条消息时间」（lastMessageAt）落日期。
+     */
+    private fun inRange(conv: HistoryReader.Conversation, range: ScanRange, date: LocalDate): Boolean =
+        when (range) {
+            ScanRange.LAST_7_DAYS -> {
+                val from = LocalDate.now(zone).minusDays(6)
+                val d = dateOf(conv)
+                d != null && !d.isBefore(from)
+            }
+
+            ScanRange.SPECIFIC_DATE -> dateOf(conv) == date
+            ScanRange.ALL -> true
+        }
+
+    private fun dateOf(conv: HistoryReader.Conversation): LocalDate? {
+        val raw = conv.lastMessageAt.ifBlank { conv.createdAt }
+        if (raw.isBlank()) return null
+        return try {
+            Instant.parse(raw).atZone(zone).toLocalDate()
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun selectedDate(): LocalDate {
+        val value = dateSpinner.value as? Date ?: Date()
+        return value.toInstant().atZone(zone).toLocalDate()
     }
 
     private fun stopScan() {
@@ -386,6 +509,11 @@ class HistoryDialog(
         stopBtn.isEnabled = true
         dirField.isEnabled = false
         recursiveBox.isEnabled = false
+        rangeCombo.isEnabled = false
+        dateSpinner.isEnabled = false
+        checkedIds.clear()
+        updateCheckedLabel()
+        if (::importBtn.isInitialized) importBtn.isEnabled = false
         headerLabel.text = "正在扫描历史对话…"
         loadingLabel.text = "扫描中…"
         scanStatusLabel.text = "正在扫描目录…"
@@ -400,6 +528,9 @@ class HistoryDialog(
         stopBtn.isEnabled = false
         dirField.isEnabled = true
         recursiveBox.isEnabled = true
+        rangeCombo.isEnabled = true
+        dateSpinner.isEnabled = rangeCombo.selectedItem == ScanRange.SPECIFIC_DATE
+        if (::importBtn.isInitialized) importBtn.isEnabled = true
     }
 
     /** 节流刷新进度：目录扫描回调很密集，避免 EDT 队列堆积 */
@@ -418,12 +549,14 @@ class HistoryDialog(
         if (progressRef.get() != null) scheduleProgressFlush()
     }
 
-    private fun showSummary(summary: ScanSummary) {
+    private fun showSummary(summary: ScanSummary, matched: Int) {
         scanStatusLabel.text = buildString {
             if (summary.cancelled) append("已取消 · ")
             append("扫描完成：").append(summary.files).append(" 个命中文件")
             append(" · ").append(summary.directories).append(" 个目录")
             append(" · 用时 ").append(summary.elapsedMs).append(" ms")
+            append(" · 范围 ").append(rangeLabel())
+            append(" · 命中会话 ").append(matched).append(" 个")
             if (summary.skipped > 0) append(" · 跳过 ").append(summary.skipped).append(" 项")
             if (summary.truncated) append(" · 已达扫描上限")
         }
@@ -436,9 +569,16 @@ class HistoryDialog(
             errorScroll.isVisible = true
         }
         if (allConversations.isEmpty() && !summary.cancelled) {
-            loadingLabel.text = "已扫描所选目录，未发现可读的 index.json"
+            loadingLabel.text = "所选时间范围内没有会话，可换成「全部对话」再扫一次"
             syncTopBar()
         }
+    }
+
+    /** 当前扫描范围的展示文案 */
+    private fun rangeLabel(): String = when (activeRange) {
+        ScanRange.LAST_7_DAYS -> "最近 7 天"
+        ScanRange.SPECIFIC_DATE -> activeDate?.toString() ?: "指定日期"
+        ScanRange.ALL -> "全部对话"
     }
 
     private fun setScanError(message: String) {
@@ -485,12 +625,13 @@ class HistoryDialog(
         }
 
         listModel.clear()
+        val singleDate = if (activeRange == ScanRange.SPECIFIC_DATE) activeDate else null
         var group = ""
         for (conv in ordered) {
-            val g = if (mode == GroupMode.PROJECT) {
-                projectNames[conv.workspace] ?: "未标注项目"
-            } else {
-                groupOf(conv.lastMessageAt)
+            val g = when {
+                mode == GroupMode.PROJECT -> projectNames[conv.workspace] ?: "未标注项目"
+                singleDate != null -> singleDate.toString()
+                else -> groupOf(conv.lastMessageAt)
             }
             if (g != group) {
                 group = g
@@ -501,6 +642,7 @@ class HistoryDialog(
 
         loadingLabel.text = "共 ${allConversations.size} 个会话" +
             if (filterText.isNotEmpty() || accountFilter != null) "，匹配 ${filtered.size} 个" else ""
+        updateCheckedLabel()
         syncTopBar()
     }
 
@@ -641,6 +783,127 @@ class HistoryDialog(
     }
 
     // ---------------------------------------------------------------
+    // 多选与导入
+    // ---------------------------------------------------------------
+
+    private fun toggleChecked(conv: HistoryReader.Conversation) {
+        if (!checkedIds.add(conv.id)) checkedIds.remove(conv.id)
+        updateCheckedLabel()
+        convList.repaint()
+    }
+
+    private fun clearChecked() {
+        if (checkedIds.isEmpty()) return
+        checkedIds.clear()
+        updateCheckedLabel()
+        convList.repaint()
+    }
+
+    /** 全选当前列表可见的会话（受搜索 / 账号 / 时间范围限制） */
+    private fun checkAllVisible() {
+        for (i in 0 until listModel.size()) {
+            val conv = runCatching { listModel.getElementAt(i) }.getOrNull()
+                as? HistoryReader.Conversation ?: continue
+            checkedIds.add(conv.id)
+        }
+        updateCheckedLabel()
+        convList.repaint()
+    }
+
+    private fun updateCheckedLabel() {
+        checkedLabel.text = "已选 ${checkedIds.size} 个"
+    }
+
+    /**
+     * 勾选的会话 -> CodeBuddy 官方导入文件。
+     *
+     * 单会话写 .json，多会话写 .zip（官方限制：一个 .json 只能装一个会话，单个不超过 20MB）。
+     * 生成后由用户到 CodeBuddy「历史对话」点「导入」选择该文件，还原到当前登录账号。
+     */
+    private fun importSelected() {
+        val selected = checkedIds.mapNotNull { id -> allConversations.firstOrNull { it.id == id } }
+        if (selected.isEmpty()) {
+            Messages.showInfoMessage(project, "请先在左侧勾选要导入的对话（点行首方框）。", "导入到当前账号")
+            return
+        }
+        val single = selected.size == 1
+        val ext = if (single) "json" else "zip"
+        val defaultName = if (single) {
+            ConversationArchive.defaultFileName(selected.first().name, ext)
+        } else {
+            "CodeBuddy对话导入_${DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss").format(LocalDateTime.now())}.zip"
+        }
+        val descriptor = FileSaverDescriptor("导入到当前账号", "选择导入文件的保存位置", ext)
+        val wrapper = FileChooserFactory.getInstance()
+            .createSaveFileDialog(descriptor, project)
+            .save(null as Path?, defaultName) ?: return
+        val target = wrapper.file.toPath()
+
+        if (::importBtn.isInitialized) importBtn.isEnabled = false
+        loadingLabel.text = "正在生成 ${selected.size} 个会话的导入文件…"
+        ApplicationManager.getApplication().executeOnPooledThread {
+            val outcome = try {
+                ConversationArchive.build(selected)
+            } catch (t: Throwable) {
+                ApplicationManager.getApplication().invokeLater({
+                    if (::importBtn.isInitialized) importBtn.isEnabled = true
+                    loadingLabel.text = "生成导入文件失败"
+                    setScanError(t.message ?: t.javaClass.simpleName)
+                }, ModalityState.any())
+                return@executeOnPooledThread
+            }
+            val written = outcome.artifacts.size
+            val error: String? = try {
+                if (written > 0) {
+                    if (single) {
+                        ConversationArchive.writeJson(outcome.artifacts.first(), target)
+                    } else {
+                        ConversationArchive.writeZip(outcome.artifacts, target)
+                    }
+                }
+                null
+            } catch (t: Throwable) {
+                t.message ?: t.javaClass.simpleName
+            }
+
+            ApplicationManager.getApplication().invokeLater({
+                if (::importBtn.isInitialized) importBtn.isEnabled = true
+                if (written == 0 || error != null) {
+                    val reason = error ?: outcome.failures.firstOrNull() ?: "没有可导入的会话"
+                    loadingLabel.text = "生成导入文件失败"
+                    setScanError(reason)
+                    Messages.showErrorDialog(project, reason, "导入到当前账号")
+                    return@invokeLater
+                }
+                loadingLabel.text = "已生成导入文件：${target.fileName}"
+                val skipped = outcome.failures
+                val text = buildString {
+                    append("已生成 ").append(written).append(" 个对话的导入文件：\n")
+                    append(target).append("\n\n")
+                    append("导入方法：打开 CodeBuddy 对话面板 →「历史对话」→ 点「导入」→ 选择该文件，")
+                    append("即可把上下文还原到当前登录账号。")
+                    if (skipped.isNotEmpty()) {
+                        append("\n\n跳过 ").append(skipped.size).append(" 个：\n")
+                        append(skipped.take(6).joinToString("\n"))
+                        if (skipped.size > 6) append("\n…")
+                    }
+                }
+                Messages.showInfoMessage(project, text, "导入到当前账号")
+                openQuietly(target.parent)
+            }, ModalityState.any())
+        }
+    }
+
+    private fun openQuietly(dir: Path?) {
+        if (dir == null) return
+        try {
+            Desktop.getDesktop().open(dir.toFile())
+        } catch (_: Exception) {
+            // 打不开目录不影响导入结果，路径已在提示框里给出
+        }
+    }
+
+    // ---------------------------------------------------------------
     // 渲染
     // ---------------------------------------------------------------
 
@@ -651,7 +914,10 @@ class HistoryDialog(
             val c = super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus) as JLabel
             when (value) {
                 is HistoryReader.Conversation -> {
-                    c.text = value.summaryLine(accountLabels[value.sourceUid] ?: value.sourceUid.take(8))
+                    c.text = value.summaryLine(
+                        accountLabels[value.sourceUid] ?: value.sourceUid.take(8),
+                        checkedIds.contains(value.id),
+                    )
                     c.border = JBUI.Borders.empty(6, 8)
                 }
 
@@ -680,6 +946,21 @@ class HistoryDialog(
 private enum class GroupMode(val label: String) {
     TIME("按时间"),
     PROJECT("按项目"),
+    ;
+
+    override fun toString(): String = label
+}
+
+/**
+ * 扫描时间范围：
+ *  - [LAST_7_DAYS] 默认值，只保留最近 7 天（含今天）有消息的会话
+ *  - [SPECIFIC_DATE] 只看指定日期有消息的会话
+ *  - [ALL] 全部扫描，不做时间过滤
+ */
+private enum class ScanRange(val label: String) {
+    LAST_7_DAYS("最近 7 天"),
+    SPECIFIC_DATE("指定日期"),
+    ALL("全部对话"),
     ;
 
     override fun toString(): String = label
