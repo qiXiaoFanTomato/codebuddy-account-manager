@@ -88,6 +88,14 @@ class PetAnimator(private val onFrame: () -> Unit) {
         play(listOf(Step(id, false), Step(PetAnimationLibrary.IDLE, true)))
     }
 
+    /** CodeBuddy 对话完成：专用庆祝动作，播完回待机 */
+    fun playRoundFinish() {
+        if (isDragging) return
+        if (isSleeping) wakeUp()
+        val id = PetAnimationLibrary.roundFinishAnimation() ?: return
+        play(listOf(Step(id, false), Step(PetAnimationLibrary.IDLE, true)))
+    }
+
     /** 额度减少时的反应动作：在「心虚 / 心疼 / 装没事」组里轮转，避免每次都一样 */
     fun playQuotaDownReaction() {
         if (isSleeping || isDragging || isBusy) return
@@ -105,6 +113,13 @@ class PetAnimator(private val onFrame: () -> Unit) {
     fun playWhisper(): Boolean {
         if (isSleeping || isDragging) return false
         val id = PetAnimationLibrary.whisperIds.randomOrNull() ?: return false
+        play(listOf(Step(id, false), Step(PetAnimationLibrary.IDLE, true)))
+        return true
+    }
+
+    /** 讲笑话抖包袱：播一段按笑话内容挑好的动作，播完回待机 */
+    fun playJokePunchline(id: String): Boolean {
+        if (isSleeping || isDragging) return false
         play(listOf(Step(id, false), Step(PetAnimationLibrary.IDLE, true)))
         return true
     }

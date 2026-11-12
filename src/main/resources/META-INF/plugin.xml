@@ -58,7 +58,7 @@
             <li><b>今日签到 / 一键签到</b>：对账号库中所有账号执行每日签到，按本地按日记录逐账号展示今日是否已签与本次签到结果。</li>
             <li><b>成长中心</b>：逐账号展示任务完成数、待领奖与进行中进度；「一键完成」自动接取任务、上报客户端行为事件并领奖，独立窗口另提供旅行巡检、活跃上报、全部保活、连登兑换、抽奖与补签。</li>
             <li><b>模型积分限额</b>：可同时监控多个模型，每条规则独立限额与预警阈值；模型从官方目录加载或手填关键字，达标时提醒切换账号，剩余低于阈值时预警。</li>
-            <li><b>桌面宠物</b>：形象与音效 1:1 取自开源项目 dsh-pet，含待机 / 点击回应 / 余额六档 / 睡觉 / 拖拽悬空共 16 段状态动画与 80 个随机小动作，另有碎碎念台词。单击只做互动不弹窗，双击查看当前账号余额与上一轮对话消耗；支持拖拽抛出、物理反弹、多开时全机只保留一只。</li>
+            <li><b>桌面宠物</b>：形象与音效 1:1 取自开源项目 dsh-pet，含待机 / 点击回应 / 余额六档 / 睡觉 / 拖拽悬空共 16 段状态动画与 80 个随机小动作，另有碎碎念台词。单击只做互动不弹窗，双击积分读数随机冒一句统计 / 鼓励 / 调侃文案并播配套动作，额度明细改由右键菜单进入；支持拖拽抛出、物理反弹、多开时全机只保留一只。</li>
             <li><b>提示由桌宠承载</b>：切号、导出、同步等操作反馈，失败与异常，以及自动调度、模型限额等状态变更，统一改为桌宠冒气泡并按「成功 / 信息 / 警告 / 错误」播对应动作；按等级控制展示时长，多条按优先级排队，桌宠关闭时自动退回 IDE 通知。</li>
         </ul>
 
@@ -171,6 +171,7 @@
         <applicationService serviceImplementation="dev.codebuddy.account.service.QuotaAlertSettings"/>
         <applicationService serviceImplementation="dev.codebuddy.account.pet.PetSettings"/>
         <applicationService serviceImplementation="dev.codebuddy.account.pet.PetService"/>
+        <applicationService serviceImplementation="dev.codebuddy.account.pet.CodeBuddyWatcher"/>
         <postStartupActivity implementation="dev.codebuddy.account.CodeBuddyAccountStartup"/>
         <applicationConfigurable parentId="tools"
                                  id="dev.codebuddy.account.settings"

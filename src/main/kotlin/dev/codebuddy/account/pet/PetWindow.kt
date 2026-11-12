@@ -1,11 +1,14 @@
 package dev.codebuddy.account.pet
 
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManager
 import com.intellij.util.ui.JBUI
 import dev.codebuddy.account.service.AccountLibrary
+import dev.codebuddy.account.pet.PetWhisper.TapMotion
 import dev.codebuddy.account.ui.AccountUiColors
 import dev.codebuddy.account.ui.HistoryDialog
+import dev.codebuddy.account.usage.UsageTodayTracker
 import java.awt.Color
 import java.awt.Cursor
 import java.awt.Dimension
@@ -28,10 +31,11 @@ import javax.swing.Timer
 /**
  * 桌宠浮窗：无边框透明 [JWindow]，只承载形象与交互。
  *
- * 交互（与需求「查看余额 / 对话」对应）：
+ * 交互：
  * - 悬停：描边转墨蓝、投影加深
- * - 单击：展开余额气泡（再次单击收起），拖动改变位置并持久化
- * - 双击 / 右键菜单：额度明细、历史对话、立即刷新
+ * - 单击：点击回应动画与音效；拖动改变位置并持久化
+ * - 双击积分读数：随机文案（统计 / 鼓励 / 调侃）+ 配套动作，不弹窗
+ * - 右键菜单 / 额度气泡：额度明细、历史对话、立即刷新
  *
  * 窗口不抢 IDE 焦点（`isFocusableWindow = false`），不进入任务栏（JWindow 天然无任务栏项）。
  */
@@ -74,6 +78,17 @@ class PetWindow(
     /** 额度变化浮字（如 「−3.34」），展示后自动淡出 */
     private var deltaText: String? = null
     private var deltaAt = 0L
+
+    /** 上次因额度变化说话的时间（节流用） */
+    private var lastQuotaSpeakAt = 0L
+
+    /** 讲笑话的第二拍定时器；每次新讲一条都会作废旧的一轮 */
+    private var jokeTimer: Timer? = null
+    private var jokeGeneration = 0
+    private var jokeActive = false
+
+    /** 强提醒是否临时提升了置顶状态（提示结束后恢复设置值） */
+    private var topBoosted = false
 
     init {
         window.isAlwaysOnTop = settings.alwaysOnTop
@@ -152,7 +167,7 @@ class PetWindow(
                 dragStartLocation = null
 
                 if (e.clickCount >= 2) {
-                    openQuotaDetail()
+                    showQuotaTap()
                 } else {
                     performClickAction()
                 }
@@ -180,6 +195,7 @@ class PetWindow(
     }
 
     fun hide() {
+        cancelJoke()
         bubble.hide()
         speech.hide()
         stopPhysics()
@@ -191,6 +207,7 @@ class PetWindow(
     }
 
     fun dispose() {
+        cancelJoke()
         bubble.dispose()
         speech.dispose()
         stopPhysics()
@@ -249,10 +266,7 @@ class PetWindow(
         }
     }
 
-    /**
-     * 单击只播放点击回应动画与音效，**不弹任何窗口**：
-     * 额度信息改由双击弹出（[PetQuotaDialog]），避免误触打断操作。
-     */
+    /** 单击只播放点击回应动画与音效，不弹任何窗口 */
     private fun performClickAction() {
         animator.onClick()
     }
@@ -271,6 +285,7 @@ class PetWindow(
         menu.add(JMenuItem("刷新一下额度").apply { addActionListener { onRefresh() } })
         menu.add(JMenuItem("看看额度与上一轮消耗…").apply { addActionListener { openQuotaDetail() } })
         menu.add(JMenuItem("让我说句话").apply { addActionListener { whisper(PetWhisper.nextLine()) } })
+        menu.add(JMenuItem("给我讲个笑话").apply { addActionListener { tellJoke() } })
         menu.add(JMenuItem("看一眼余额").apply { addActionListener { toggleBubble() } })
         menu.add(JMenuItem("翻翻聊过的记录…").apply { addActionListener { openHistory() } })
         menu.add(
@@ -286,7 +301,30 @@ class PetWindow(
         menu.show(canvas, e.x, e.y)
     }
 
-    /** 双击入口：当前账号余额 + 上一轮对话消耗 */
+    /**
+     * 双击积分读数：随机冒一句（统计 / 鼓励 / 调侃），并播对应动作。
+     *
+     * 不再打开 [PetQuotaDialog]；完整额度明细仍可由右键菜单与额度气泡进入。
+     * 统计类文案取本地缓存，数据没到就由文案池回退到鼓励 / 调侃，不编数字。
+     */
+    private fun showQuotaTap() {
+        bubble.hide()
+        // 系统提示展示期间让路，避免提示气泡被覆盖后又被提示收尾关掉
+        if (noticeActive) return
+        val reaction = PetWhisper.quotaTapLine(canvas.data, UsageTodayTracker.state())
+        when (reaction.motion) {
+            TapMotion.CHEER -> animator.playNotice(PetNotifier.Level.SUCCESS)
+            TapMotion.WHISPER -> if (!animator.playWhisper()) animator.onClick()
+            TapMotion.GUILTY -> animator.playQuotaDownReaction()
+            TapMotion.RANDOM -> if (!animator.playRandomAction()) animator.onClick()
+            TapMotion.BALANCE -> animator.replayBalance(canvas.data.balanceTier)
+        }
+        speech.show(reaction.text, characterBounds(), reaction.meme)
+        // 统计文案依赖今日消耗缓存：补一次拉取（缓存有效或正在加载时不会重复请求）
+        UsageTodayTracker.ensureFresh()
+    }
+
+    /** 额度明细入口：右键菜单与额度气泡上的「额度明细」按钮 */
     private fun openQuotaDetail() {
         bubble.hide()
         val project = activeProject() ?: return
@@ -294,13 +332,16 @@ class PetWindow(
     }
 
     /** 定时随机小动作（由 [PetService] 的定时器调用）；返回是否真的演了一段 */
-    fun playRandomAction(): Boolean = animator.playRandomAction()
+    fun playRandomAction(): Boolean {
+        if (jokeActive) return false
+        return animator.playRandomAction()
+    }
 
     /** 说一句话：播碎碎念动画 + 上方冒气泡（含配图）；返回是否真的说了 */
     fun whisper(line: PetWhisper.Line): Boolean {
         if (line.text.isBlank()) return false
-        // 提示展示期间不插话，避免两个气泡叠在一起
-        if (speech.isShowing && noticeActive) return false
+        // 提示或讲笑话期间不插话，避免两个气泡叠在一起
+        if (noticeActive || jokeActive) return false
         animator.playWhisper()
         speech.show(line.text, characterBounds(), line.meme)
         return true
@@ -310,20 +351,166 @@ class PetWindow(
     var noticeActive: Boolean = false
         private set
 
-    /** 用桌宠承载一条系统提示：先收起额度气泡，再播对应动作 + 冒提示气泡 */
-    fun showNotice(level: PetNotifier.Level, title: String, content: String, durationMs: Int) {
+    /**
+     * 用桌宠承载一条系统提示：先收起额度气泡，再播对应动作 + 冒提示气泡。
+     *
+     * [highlight] 为 CodeBuddy 对话完成的强提醒：临时置顶、两声提示音、
+     * 角色弹跳与专用庆祝动画，气泡也换成放大版。
+     */
+    fun showNotice(
+        level: PetNotifier.Level,
+        title: String,
+        content: String,
+        durationMs: Int,
+        highlight: Boolean = false,
+    ) {
         if (!window.isVisible) return
+        // 提示优先级最高：作废正在讲的笑话，避免第二拍覆盖提示气泡
+        cancelJoke()
         bubble.hide()
         noticeActive = true
-        animator.playNotice(level)
-        speech.showNotice(level, title, content, characterBounds(), durationMs)
+        if (highlight) {
+            boostTopForNotice()
+            canvas.startAttention()
+            PetSound.playNotice()
+            animator.playRoundFinish()
+        } else {
+            animator.playNotice(level)
+        }
+        speech.showNotice(level, title, content, characterBounds(), durationMs, highlight)
     }
 
     /** 当前提示结束（由服务侧定时器调用） */
     fun hideNotice() {
         noticeActive = false
         speech.hide()
+        restoreTopAfterNotice()
     }
+
+    /** 强提醒期间临时置顶：不抢焦点、不改窗口位置，IDE 全屏时也能浮在前面 */
+    private fun boostTopForNotice() {
+        if (window.isAlwaysOnTop) return
+        try {
+            window.isAlwaysOnTop = true
+            topBoosted = true
+        } catch (_: Throwable) {
+            topBoosted = false
+        }
+    }
+
+    private fun restoreTopAfterNotice() {
+        if (!topBoosted) return
+        topBoosted = false
+        try {
+            window.isAlwaysOnTop = settings.alwaysOnTop
+        } catch (_: Throwable) {
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // 讲笑话：在线优先，铺垫与抖包袱各配一次动作
+    // ---------------------------------------------------------------
+
+    /**
+     * 讲一个笑话：右键菜单与 [PetService] 的定时任务共用入口。
+     *
+     * 后台取在线中文冷笑话，失败由 [JokeService] 回退内置中文；
+     * 铺垫播碎碎念（说话）动画，抖包袱按笑话内容关键词挑一个对应动作，
+     * 两拍共用一个气泡；系统提示进来时整轮作废，不抢提示气泡。
+     *
+     * @return false 表示当前不方便（提示中 / 上一条还没讲完），定时触发会顺延
+     */
+    fun tellJoke(): Boolean {
+        if (!window.isVisible || noticeActive || jokeActive) return false
+        cancelJoke()
+        bubble.hide()
+        jokeActive = true
+        val generation = jokeGeneration
+
+        // 联网期间先给个即时反馈，避免点了菜单没反应
+        animator.playWhisper()
+        speech.show("等一下，我去翻翻段子库…", characterBounds(), null, JOKE_FETCH_HINT_MS)
+
+        ApplicationManager.getApplication().executeOnPooledThread {
+            val joke = JokeService.fetch()
+            SwingUtilities.invokeLater {
+                if (generation != jokeGeneration || !window.isVisible || noticeActive) {
+                    if (generation == jokeGeneration) jokeActive = false
+                    return@invokeLater
+                }
+                performJoke(joke, generation)
+            }
+        }
+        return true
+    }
+
+    /** 两拍展示：铺垫 → 抖包袱；单段笑话则是气泡 + 稍后补一个反应动作 */
+    private fun performJoke(joke: JokeService.Joke, generation: Int) {
+        val setup = joke.setup
+        val lead = if (joke.online) {
+            if (setup == null) "网上捞到一条：<br/>" else "网上捞到一条，主人听好：<br/>"
+        } else {
+            ""
+        }
+        animator.playWhisper()
+        if (setup == null) {
+            speech.show(lead + jokeHtml(joke.punchline), characterBounds(), JOKE_MEMES.random(), JOKE_KEEP_MS)
+            scheduleJokeStep(generation, JOKE_PUNCH_MS) { playPunchline(joke.punchline) }
+            return
+        }
+        speech.show(lead + jokeHtml(setup), characterBounds(), null, JOKE_SETUP_MS)
+        scheduleJokeStep(generation, JOKE_SETUP_MS) {
+            playPunchline(setup + " " + joke.punchline)
+            speech.show(jokeHtml(joke.punchline), characterBounds(), JOKE_MEMES.random(), JOKE_KEEP_MS)
+        }
+    }
+
+    /** 抖包袱动作：按内容选动画，睡着 / 被抓起 / 动画缺失时退回点击回应 */
+    private fun playPunchline(text: String) {
+        val id = PetAnimationLibrary.jokeActionId(text)
+        if (id == null || !animator.playJokePunchline(id)) animator.onClick()
+    }
+
+    /** 第二拍排一个 EDT 单次定时器；轮次失效或被提示打断就不再执行 */
+    private fun scheduleJokeStep(generation: Int, delayMs: Int, step: () -> Unit) {
+        jokeTimer?.stop()
+        jokeTimer = Timer(delayMs) { _ ->
+            jokeTimer = null
+            if (generation != jokeGeneration || !window.isVisible || noticeActive) {
+                if (generation == jokeGeneration) jokeActive = false
+            } else {
+                step()
+                // 笑点气泡还在展示，期间继续让碎碎念 / 随机动作避让
+                jokeTimer = Timer(JOKE_KEEP_MS) { _ ->
+                    jokeTimer = null
+                    if (generation == jokeGeneration) jokeActive = false
+                }.apply {
+                    isRepeats = false
+                    start()
+                }
+            }
+        }.apply {
+            isRepeats = false
+            start()
+        }
+    }
+
+    /** 作废当前一轮：新讲一条、系统提示插入、窗口关闭时都调用 */
+    private fun cancelJoke() {
+        jokeTimer?.stop()
+        jokeTimer = null
+        jokeGeneration++
+        jokeActive = false
+    }
+
+    /** 在线文本要转义后再进 `<html>` 气泡，避免特殊字符破坏渲染 */
+    private fun jokeHtml(text: String): String = text
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace("\"", "&quot;")
+        .replace("\r", "")
+        .replace("\n", "<br/>")
 
     /**
      * 额度刷新后展示变化量，并触发对应反应：
@@ -334,12 +521,37 @@ class PetWindow(
         if (!delta.isFinite() || Math.abs(delta) < 0.005) return
         deltaText = (if (delta > 0) "+" else "−") + dev.codebuddy.account.usage.formatCredit(Math.abs(delta))
         deltaAt = System.currentTimeMillis()
-        if (delta < 0) {
-            animator.playQuotaDownReaction()
-        } else {
-            animator.replayBalance(tier)
+        // 系统提示（含对话完成强提醒）期间只留浮字，不打断正在播的提示动作
+        if (!noticeActive) {
+            if (delta < 0) {
+                animator.playQuotaDownReaction()
+            } else {
+                animator.replayBalance(tier)
+            }
         }
+        speakQuotaDelta(delta)
         canvas.repaint()
+    }
+
+    /**
+     * 额度变化时顺带说一句（动作之外的语音反馈）。
+     *
+     * 节流原因：额度是 5 秒轮询的，一次请求就会推一次变化，不加限制会连续插话。
+     * - 常规变化：距上一次「额度台词」不足 [QUOTA_SPEAK_GAP_MS] 就不说，只保留浮字与动作
+     * - 大额回血（增量 ≥ 总量的 [QUOTA_BIG_UP_RATIO]）：不受节流限制，充值 / 周期重置必须说话
+     * - 系统提示展示中或额度气泡打开时不插话，避免两个气泡叠在一起
+     */
+    private fun speakQuotaDelta(delta: Double) {
+        val text = deltaText ?: return
+        val now = System.currentTimeMillis()
+        val total = canvas.data.quota?.takeIf { it.error == null }?.usableSize ?: 0.0
+        val bigUp = delta > 0 && total > 0 && delta >= total * QUOTA_BIG_UP_RATIO
+        if (!bigUp && now - lastQuotaSpeakAt < QUOTA_SPEAK_GAP_MS) return
+        if (noticeActive || bubble.isShowing) return
+        val line = PetWhisper.quotaLine(text, delta > 0)
+        if (line.text.isBlank()) return
+        speech.show(line.text, characterBounds(), line.meme)
+        lastQuotaSpeakAt = now
     }
 
     /**
@@ -589,6 +801,9 @@ class PetWindow(
         private var press = 0.0
         private var timer: Timer? = null
 
+        /** 强提醒弹跳 / 光环的开始时间（0 表示未激活） */
+        private var attentionAt = 0L
+
         init {
             isOpaque = false
             cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
@@ -623,6 +838,37 @@ class PetWindow(
                 press = 0.0
             }
             repaint()
+        }
+
+        /** 触发一次「弹跳 + 光环」；复用现有的 33ms 刷新，不额外起 Timer */
+        fun startAttention() {
+            if (!settings.animationsEnabled) return
+            attentionAt = System.currentTimeMillis()
+            repaint()
+        }
+
+        /** 注意力动效进度 0..1；结束返回 null 并清零 */
+        private fun attentionPhase(): Double? {
+            if (attentionAt == 0L) return null
+            val elapsed = System.currentTimeMillis() - attentionAt
+            if (elapsed >= ATTENTION_MS) {
+                attentionAt = 0L
+                return null
+            }
+            return elapsed.toDouble() / ATTENTION_MS
+        }
+
+        /** 角色脚下的朱印色扩散光环，随弹跳节奏脉冲三次 */
+        private fun drawAttentionHalo(g2: Graphics2D, phase: Double) {
+            val pulse = (phase * 3.0) % 1.0
+            val alpha = ((1.0 - pulse) * (1.0 - phase) * 110).toInt().coerceIn(0, 255)
+            val haloW = (width * (0.35 + pulse * 0.55)).toInt()
+            val haloH = (JBUI.scale(12) * (0.7 + pulse * 0.6)).toInt()
+            val x = (width - haloW) / 2
+            val y = height - haloH - JBUI.scale(2)
+            val seal = AccountUiColors.seal
+            g2.color = Color(seal.red, seal.green, seal.blue, alpha)
+            g2.fillOval(x, y, haloW, haloH)
         }
 
         /** 额度变化浮字：右上角小胶囊，展示 4.5 秒后淡出 */
@@ -682,6 +928,16 @@ class PetWindow(
                 val frame = animator.currentFrame
                 val bounds = PetAnimationLibrary.bounds
 
+                val phase = attentionPhase()
+                if (phase != null) drawAttentionHalo(g2, phase)
+                val oldTransform = g2.transform
+                if (phase != null) {
+                    // 三次衰减弹跳：只在绘制层位移，不动窗口坐标与气泡锚点
+                    val lift = (Math.abs(Math.sin(phase * Math.PI * 3.0)) *
+                        (1.0 - phase) * JBUI.scale(ATTENTION_LIFT_DP)).toInt()
+                    g2.translate(0, -lift)
+                }
+
                 if (animation != null && frame != null && bounds.width > 0) {
                     // 原版素材：按并集区域等比缩放，逐帧对齐各自裁剪偏移
                     val scale = width.toDouble() / bounds.width
@@ -720,6 +976,7 @@ class PetWindow(
                     )
                 }
 
+                g2.transform = oldTransform
                 drawQuotaDelta(g2)
             } finally {
                 g2.dispose()
@@ -730,6 +987,12 @@ class PetWindow(
     companion object {
         /** 悬停 / 按压缓动的刷新间隔（与素材帧率无关） */
         private const val PRESS_FRAME_MS = 33
+
+        /** 强提醒的弹跳 / 光环持续时间 */
+        private const val ATTENTION_MS = 1_800L
+
+        /** 弹跳最大高度（dp） */
+        private const val ATTENTION_LIFT_DP = 18
 
         /** 拖拽判定阈值（像素） */
         private const val DRAG_THRESHOLD = 4
@@ -769,5 +1032,26 @@ class PetWindow(
 
         /** 额度变化浮字的展示时长 */
         private const val DELTA_SHOW_MS = 4_500L
+
+        /** 两次「额度台词」之间的最小间隔（额度 5 秒一轮询，太密会连续插话） */
+        private const val QUOTA_SPEAK_GAP_MS = 90_000L
+
+        /** 增量达到总量的这个比例即视为大额回血，台词不受节流限制 */
+        private const val QUOTA_BIG_UP_RATIO = 0.2
+
+        /** 拉取笑话时的等待提示时长，要覆盖在线请求超时 */
+        private const val JOKE_FETCH_HINT_MS = 20_000
+
+        /** 铺垫停留时间：讲完铺垫再抖包袱 */
+        private const val JOKE_SETUP_MS = 2_800
+
+        /** 笑点气泡停留时间 */
+        private const val JOKE_KEEP_MS = 8_000
+
+        /** 单段笑话：气泡出来后多久补一个反应动作 */
+        private const val JOKE_PUNCH_MS = 1_600
+
+        /** 抖包袱气泡的配图候选 */
+        private val JOKE_MEMES = listOf("m05", "m07", "m17", "m26")
     }
 }

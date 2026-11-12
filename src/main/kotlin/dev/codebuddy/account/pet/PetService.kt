@@ -16,6 +16,9 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.swing.SwingUtilities
 
+/** 强提醒的优先级加权：必须大于所有普通等级（最高 ERROR = 3） */
+private const val HIGHLIGHT_PRIORITY_BOOST = 10
+
 /**
  * 桌宠展示数据：当前激活账号 + 该账号的额度快照。
  *
@@ -106,6 +109,9 @@ class PetService : Disposable {
     /** 碎碎念的定时器 */
     private var whisperTimer: javax.swing.Timer? = null
 
+    /** 主动讲笑话的定时器 */
+    private var jokeTimer: javax.swing.Timer? = null
+
     private val started = AtomicBoolean(false)
 
     /** 按设置启动（启动时与设置页开启时调用，幂等） */
@@ -137,7 +143,10 @@ class PetService : Disposable {
         SwingUtilities.invokeLater {
             stopRandomActions()
             stopWhisper()
+            stopJoke()
             clearNotices()
+            CodeBuddyWatcher.getInstance().stop()
+            CbWebObserver.stop()
             destroyWindow()
         }
         instance.release()
@@ -159,6 +168,7 @@ class PetService : Disposable {
             if (w == null) ensureOwnership() else w.applyAppearance()
             scheduleRandomActions()
             scheduleWhisper()
+            scheduleJoke()
         }
     }
 
@@ -246,6 +256,47 @@ class PetService : Disposable {
     }
 
     // ---------------------------------------------------------------
+    // 主动讲笑话
+    // ---------------------------------------------------------------
+
+    /** 重新排一次主动讲笑话；[delayMs] 为 null 时按设置间隔并在 ±20% 内抖动 */
+    private fun scheduleJoke(delayMs: Long? = null) {
+        jokeTimer?.stop()
+        jokeTimer = null
+        val settings = PetSettings.getInstance()
+        if (!settings.jokeEnabled) return
+        if (window == null) return
+        val base = settings.jokeMinutes * 60_000L
+        val jitter = ((Math.random() - 0.5) * 0.4 * base).toLong()
+        val delay = delayMs ?: (base + jitter).coerceAtLeast(MIN_RANDOM_DELAY_MS)
+        jokeTimer = javax.swing.Timer(delay.toInt()) { runJoke() }.apply {
+            isRepeats = false
+            start()
+        }
+    }
+
+    /** 定时触发：提示中或上一条还没讲完就顺延，不打断当前表演 */
+    private fun runJoke() {
+        jokeTimer = null
+        val w = window
+        if (w == null || !w.isShowing) {
+            scheduleJoke()
+            return
+        }
+        if (w.noticeActive) {
+            scheduleJoke(RANDOM_RETRY_MS)
+            return
+        }
+        val told = w.tellJoke()
+        scheduleJoke(if (told) null else RANDOM_RETRY_MS)
+    }
+
+    private fun stopJoke() {
+        jokeTimer?.stop()
+        jokeTimer = null
+    }
+
+    // ---------------------------------------------------------------
     // 系统提示队列（成功 / 警告 / 错误等由桌宠承载）
     // ---------------------------------------------------------------
 
@@ -254,7 +305,12 @@ class PetService : Disposable {
         val title: String,
         val content: String,
         val durationMs: Int,
-    )
+        /** 强提醒：插到普通提示之前，且桌宠侧有额外表现 */
+        val highlight: Boolean,
+    ) {
+        /** 强提醒优先级高于所有普通等级，避免被错误 / 警告抢占或挤出队列 */
+        val priority: Int get() = level.priority + if (highlight) HIGHLIGHT_PRIORITY_BOOST else 0
+    }
 
     private val pendingNotices = ArrayList<Notice>()
     private var activeNotice: Notice? = null
@@ -271,11 +327,12 @@ class PetService : Disposable {
         title: String,
         content: String,
         durationMs: Int? = null,
+        highlight: Boolean = false,
     ): Boolean {
         val settings = PetSettings.getInstance()
         if (!settings.enabled || !settings.noticePetEnabled) return false
         if (window == null) return false
-        val notice = Notice(level, title, content, durationMs ?: durationFor(level, content))
+        val notice = Notice(level, title, content, durationMs ?: durationFor(level, content), highlight)
         SwingUtilities.invokeLater { enqueueNotice(notice) }
         return true
     }
@@ -283,8 +340,9 @@ class PetService : Disposable {
     /**
      * 入队规则：
      * - 同一条内容 5 秒内只播一次（自动刷新一类的重复告警不会刷屏）
-     * - 空闲直接播；否则按等级优先级排队，同级先到先播
+     * - 空闲直接播；否则按有效优先级排队，同级先到先播
      * - 更高优先级会**抢占**当前提示（当前这条直接收起，不回头重播）
+     * - 强提醒（对话完成）优先级最高；两条强提醒互不抢占，按顺序都展示
      * - 队列上限 6 条，超出时挤掉优先级最低、最早的一条
      */
     private fun enqueueNotice(notice: Notice) {
@@ -300,13 +358,14 @@ class PetService : Disposable {
             presentNotice(notice)
             return
         }
-        if (notice.level.priority > current.level.priority) {
+        // 两条强提醒按先后顺序排队，避免后一轮完成把前一轮提示吞掉
+        if ((!notice.highlight || !current.highlight) && notice.priority > current.priority) {
             finishNotice(showNext = false)
             presentNotice(notice)
             return
         }
         if (pendingNotices.size >= MAX_PENDING_NOTICES) {
-            val lowest = pendingNotices.minByOrNull { it.level.priority }
+            val lowest = pendingNotices.minByOrNull { it.priority }
             if (lowest != null) pendingNotices.remove(lowest)
         }
         pendingNotices.add(notice)
@@ -315,7 +374,7 @@ class PetService : Disposable {
     private fun presentNotice(notice: Notice) {
         val w = window ?: return
         activeNotice = notice
-        w.showNotice(notice.level, notice.title, notice.content, notice.durationMs)
+        w.showNotice(notice.level, notice.title, notice.content, notice.durationMs, notice.highlight)
         noticeTimer?.stop()
         noticeTimer = javax.swing.Timer(notice.durationMs) { finishNotice(showNext = true) }.apply {
             isRepeats = false
@@ -329,7 +388,7 @@ class PetService : Disposable {
         activeNotice = null
         window?.hideNotice()
         if (!showNext) return
-        val next = pendingNotices.maxByOrNull { it.level.priority } ?: return
+        val next = pendingNotices.maxByOrNull { it.priority } ?: return
         pendingNotices.remove(next)
         presentNotice(next)
     }
@@ -435,6 +494,10 @@ class PetService : Disposable {
             refreshDataAsync()
             scheduleRandomActions()
             scheduleWhisper()
+            scheduleJoke()
+            // 桌宠就绪后才开始盯 CodeBuddy 日志与聊天面板，避免提示无处可显示
+            CodeBuddyWatcher.getInstance().start()
+            CbWebObserver.start()
         } catch (e: Exception) {
             log.warn("创建桌宠窗口失败，已释放所有权", e)
             instance.release()
@@ -551,7 +614,10 @@ class PetService : Disposable {
         connection = null
         stopRandomActions()
         stopWhisper()
+        stopJoke()
         clearNotices()
+        CodeBuddyWatcher.getInstance().stop()
+        CbWebObserver.stop()
         SwingUtilities.invokeLater { destroyWindow() }
         instance.release()
         executor.shutdownNow()

@@ -1069,6 +1069,11 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
         HistoryReader.clearCache()
         if (r.error != null) {
             notify("历史同步失败", r.error, NotificationType.WARNING)
+        } else {
+            // 账号间会话迁移完成：桌宠反馈（原来成功时是静默的，容易被误认为没同步）
+            dev.codebuddy.account.pet.CbEventCenter.onHistoryMigrated(
+                target.displayName, r.conversationsAdded, r.conversationsCopied,
+            )
         }
     }
 

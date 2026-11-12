@@ -36,6 +36,9 @@ object PetNotifier {
 
     const val GROUP_ID = "CodeBuddy Account Manager"
 
+    /** 对话完成提示的停留时长 */
+    private const val ROUND_FINISH_DURATION_MS = 12_000
+
     fun fromIDE(type: NotificationType?): Level = when (type) {
         NotificationType.ERROR -> Level.ERROR
         NotificationType.WARNING -> Level.WARN
@@ -53,9 +56,10 @@ object PetNotifier {
         content: String,
         project: Project? = null,
         durationMs: Int? = null,
+        highlight: Boolean = false,
     ) {
         val shownByPet = try {
-            PetService.getInstance().showNotice(level, title, content, durationMs)
+            PetService.getInstance().showNotice(level, title, content, durationMs, highlight)
         } catch (_: Throwable) {
             false
         }
@@ -66,6 +70,21 @@ object PetNotifier {
     /** 兼容旧调用：直接传 IDE 的 [NotificationType] */
     fun notify(title: String, content: String, type: NotificationType? = null, project: Project? = null) {
         notify(fromIDE(type), title, content, project)
+    }
+
+    /**
+     * CodeBuddy 一轮对话正常完成的强提醒：桌宠临时置顶、弹跳、响两声，
+     * 气泡用更大的标题与配图，停留 [ROUND_FINISH_DURATION_MS]。
+     */
+    fun roundFinished(project: String, steps: Int) {
+        val tail = if (steps > 0) "共 $steps 步，跑完了" else "本轮跑完了"
+        notify(
+            Level.SUCCESS,
+            "对话完成啦，回来看看",
+            "「$project」$tail",
+            durationMs = ROUND_FINISH_DURATION_MS,
+            highlight = true,
+        )
     }
 
     /** 成功反馈的便捷入口 */

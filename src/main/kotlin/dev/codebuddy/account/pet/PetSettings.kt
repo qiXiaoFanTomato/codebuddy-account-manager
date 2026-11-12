@@ -48,8 +48,32 @@ class PetSettings : PersistentStateComponent<PetSettings.State> {
         var whisperEnabled: Boolean = true,
         /** 碎碎念间隔（分钟） */
         var whisperMinutes: Int = 5,
+        /** 每隔几分钟主动给主人讲一个笑话 */
+        var jokeEnabled: Boolean = true,
+        /** 主动讲笑话的间隔（分钟） */
+        var jokeMinutes: Int = 10,
         /** 系统提示由桌宠承载（关掉则退回 IDE 气泡通知） */
         var noticePetEnabled: Boolean = true,
+        /** CodeBuddy 需要主人确认操作时提示（读 CodeBuddy 运行日志） */
+        var cbApproveNoticeEnabled: Boolean = true,
+        /** CodeBuddy 一轮结束 / 没跑顺时提示 */
+        var cbProgressNoticeEnabled: Boolean = true,
+        /** 超过设定分钟数仍未确认时，替主人点击「允许」（危险命令除外） */
+        var cbAutoApproveEnabled: Boolean = false,
+        /** 自动同意的等待分钟数 */
+        var cbAutoApproveMinutes: Int = 5,
+        /** 权限弹窗免打扰：页面里出现「允许 / 运行 + 拒绝」决策组时直接代点（危险命令除外） */
+        var cbNoDisturbEnabled: Boolean = false,
+        /** 高风险：连危险命令确认也代点；扣费 / 提权 / 凭证外发仍然永不代点 */
+        var cbNoDisturbDangerEnabled: Boolean = false,
+        /** 异常中断会话自动继续：页面 / 日志判定中断后点「继续 / 重试」 */
+        var cbAutoContinueEnabled: Boolean = false,
+        /** 模型频率限制与预计解封时间提示 */
+        var cbLimitNoticeEnabled: Boolean = true,
+        /** 成长计划与活跃状态提示 */
+        var cbGrowthNoticeEnabled: Boolean = true,
+        /** 账号间会话迁移结果提示 */
+        var cbHistoryNoticeEnabled: Boolean = true,
     )
 
     private var myState = State()
@@ -142,12 +166,83 @@ class PetSettings : PersistentStateComponent<PetSettings.State> {
             myState.whisperMinutes = value.coerceIn(MIN_RANDOM_MINUTES, MAX_RANDOM_MINUTES)
         }
 
+    var jokeEnabled: Boolean
+        get() = myState.jokeEnabled
+        set(value) {
+            myState.jokeEnabled = value
+        }
+
+    /** 主动讲笑话间隔（分钟），收敛到 1~60 */
+    var jokeMinutes: Int
+        get() = myState.jokeMinutes.coerceIn(MIN_RANDOM_MINUTES, MAX_RANDOM_MINUTES)
+        set(value) {
+            myState.jokeMinutes = value.coerceIn(MIN_RANDOM_MINUTES, MAX_RANDOM_MINUTES)
+        }
+
     /** 系统提示（操作反馈 / 错误 / 状态变更）是否由桌宠承载 */
     var noticePetEnabled: Boolean
         get() = myState.noticePetEnabled
         set(value) {
             myState.noticePetEnabled = value
         }
+
+    /** CodeBuddy 需要确认时是否提示 */
+    var cbApproveNoticeEnabled: Boolean
+        get() = myState.cbApproveNoticeEnabled
+        set(value) {
+            myState.cbApproveNoticeEnabled = value
+        }
+
+    /** CodeBuddy 轮次结束 / 异常时是否提示 */
+    var cbProgressNoticeEnabled: Boolean
+        get() = myState.cbProgressNoticeEnabled
+        set(value) {
+            myState.cbProgressNoticeEnabled = value
+        }
+
+    /** 是否超时自动同意 */
+    var cbAutoApproveEnabled: Boolean
+        get() = myState.cbAutoApproveEnabled
+        set(value) {
+            myState.cbAutoApproveEnabled = value
+        }
+
+    /** 自动同意的等待分钟数，收敛到 1~30 */
+    var cbAutoApproveMinutes: Int
+        get() = myState.cbAutoApproveMinutes.coerceIn(MIN_AUTO_APPROVE_MINUTES, MAX_AUTO_APPROVE_MINUTES)
+        set(value) {
+            myState.cbAutoApproveMinutes = value.coerceIn(MIN_AUTO_APPROVE_MINUTES, MAX_AUTO_APPROVE_MINUTES)
+        }
+
+    /** 权限弹窗免打扰 */
+    var cbNoDisturbEnabled: Boolean
+        get() = myState.cbNoDisturbEnabled
+        set(value) { myState.cbNoDisturbEnabled = value }
+
+    /** 危险命令是否也代点（高风险） */
+    var cbNoDisturbDangerEnabled: Boolean
+        get() = myState.cbNoDisturbDangerEnabled
+        set(value) { myState.cbNoDisturbDangerEnabled = value }
+
+    /** 异常中断会话自动继续 */
+    var cbAutoContinueEnabled: Boolean
+        get() = myState.cbAutoContinueEnabled
+        set(value) { myState.cbAutoContinueEnabled = value }
+
+    /** 模型频率限制与预计解封时间提示 */
+    var cbLimitNoticeEnabled: Boolean
+        get() = myState.cbLimitNoticeEnabled
+        set(value) { myState.cbLimitNoticeEnabled = value }
+
+    /** 成长计划与活跃状态提示 */
+    var cbGrowthNoticeEnabled: Boolean
+        get() = myState.cbGrowthNoticeEnabled
+        set(value) { myState.cbGrowthNoticeEnabled = value }
+
+    /** 账号间会话迁移结果提示 */
+    var cbHistoryNoticeEnabled: Boolean
+        get() = myState.cbHistoryNoticeEnabled
+        set(value) { myState.cbHistoryNoticeEnabled = value }
 
     /** 上次保存的坐标；未拖动过时返回 null */
     val savedPosition: Pair<Int, Int>?
@@ -171,6 +266,10 @@ class PetSettings : PersistentStateComponent<PetSettings.State> {
         /** 随机动作间隔范围（分钟） */
         const val MIN_RANDOM_MINUTES = 1
         const val MAX_RANDOM_MINUTES = 60
+
+        /** 自动同意等待分钟数范围 */
+        const val MIN_AUTO_APPROVE_MINUTES = 1
+        const val MAX_AUTO_APPROVE_MINUTES = 30
 
         /** 未设置坐标的哨兵值 */
         private const val NO_POSITION = Int.MIN_VALUE

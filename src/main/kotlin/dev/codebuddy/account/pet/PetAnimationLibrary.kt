@@ -2,6 +2,7 @@ package dev.codebuddy.account.pet
 
 import com.intellij.openapi.diagnostic.logger
 import java.awt.Rectangle
+import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -61,6 +62,9 @@ object PetAnimationLibrary {
 
     /** 额度减少时的反应动作（心虚 / 心疼 / 装没事） */
     private val QUOTA_DOWN_ACTIONS = listOf("act48", "click2", "act10", "act05")
+
+    /** 对话完成时的庆祝动作：跳跃 / 放烟花 / 宅舞 / 收红包 / 开心跃动 */
+    private val ROUND_FINISH_ACTIONS = listOf("act22", "act61", "act29", "act67", "click1")
 
     /** 洗牌袋：key → 本轮还没用过的候选；用完再重洗，保证每段动画都能轮到 */
     private val bags = HashMap<String, ArrayDeque<String>>()
@@ -154,8 +158,48 @@ object PetAnimationLibrary {
     fun noticeAnimation(level: PetNotifier.Level): String? =
         nextFromBag("notice:" + level.name, NOTICE_GROUPS[level] ?: CLICKS)
 
+    /** 对话完成专用动作（同组洗牌轮转，避免每次都是同一段） */
+    fun roundFinishAnimation(): String? = nextFromBag("roundFinish", ROUND_FINISH_ACTIONS)
+
     /** 额度减少时的反应动作（同样洗牌轮转，避免每次都同一个表情） */
     fun quotaDownReactionId(): String? = nextFromBag("quotaDown", QUOTA_DOWN_ACTIONS)
+
+    /** 笑话内容里的关键词 → 动作分类；在线英文笑话与内置中文笑话都能命中 */
+    private val JOKE_CATEGORY_KEYWORDS = listOf(
+        "吃什么" to listOf(
+            "吃", "饭", "面", "咖啡", "零食", "蛋糕", "包子",
+            "eat", "food", "coffee", "pizza", "beer", "mushroom",
+        ),
+        "玩耍" to listOf(
+            "跑", "跳", "健身", "球", "游戏", "玩", "木马", "秋千",
+            "run", "jump", "play", "game", "party", "dance",
+        ),
+        "文字" to listOf(
+            "代码", "bug", "sql", "程序", "编译", "测试", "接口", "缓存", "递归",
+            "服务器", "键盘", "数组", "日志", "需求", "文档", "机器人",
+            "code", "program", "test", "server", "compiler", "recursion", "cache", "data",
+        ),
+        "小动作" to listOf("笑", "脸", "镜子", "手", "laugh", "mirror", "smile"),
+    )
+
+    /** 没命中关键词时用的「开心 / 咯咯笑」动作组 */
+    private val JOKE_FALLBACK_ACTIONS = listOf("click4", "click1", "act22", "click5", "act29")
+
+    /**
+     * 讲笑话抖包袱时的对应动作：按内容关键词挑同分类的动作，
+     * 没命中就在开心动作组里轮转。动作缺失由 [nextFromBag] 过滤。
+     */
+    fun jokeActionId(text: String): String? {
+        val lower = text.lowercase(Locale.ROOT)
+        for ((category, keywords) in JOKE_CATEGORY_KEYWORDS) {
+            if (keywords.none { lower.contains(it) }) continue
+            val ids = manifest.actions
+                .filter { it.category == category && it.id in availableNames }
+                .map { it.id }
+            if (ids.isNotEmpty()) return nextFromBag("joke:$category", ids)
+        }
+        return nextFromBag("joke:fallback", JOKE_FALLBACK_ACTIONS)
+    }
 
     private fun hasResource(name: String): Boolean =
         PetAnimationLibrary::class.java.getResource(DIR + name + ".petanim") != null
