@@ -99,6 +99,7 @@ class GrowthCenterDialog(private val project: Project?) : DialogWrapper(project,
         toolbar.add(actionButton("一键完成") { runAction { cb -> GrowthTracker.completeAll(selectedKeys(), cb) } })
         toolbar.add(actionButton("旅行巡检") { runAction { cb -> GrowthTracker.travelAll(selectedKeys(), cb) } })
         toolbar.add(actionButton("活跃上报") { runAction { cb -> GrowthTracker.activityAll(selectedKeys(), cb) } })
+        toolbar.add(actionButton("活跃状态") { runBackground { checkActiveStatus() } })
         toolbar.add(actionButton("全部保活") { runAction { cb -> GrowthTracker.keepaliveAll(selectedKeys(), cb) } })
         toolbar.add(actionButton("连登兑换") { runBackground { redeemStreak() } })
         toolbar.add(actionButton("补签昨日") { runAction { cb -> GrowthTracker.makeupAll(selectedKeys(), cb) } })
@@ -153,6 +154,39 @@ class GrowthCenterDialog(private val project: Project?) : DialogWrapper(project,
                 reload()
             })
         }
+    }
+
+    /** 成长计划与活跃状态：查当日活跃 + 连登天数，查询结果由桌宠播报 */
+    private fun checkActiveStatus(): String {
+        val settings = AccountSettings.getInstance()
+        val library = AccountLibrary.getInstance()
+        val tokens = library.accessTokenMap()
+        val keys = selectedKeys()
+        val parts = ArrayList<String>()
+        var failed = 0
+        for (s in library.listSaved()) {
+            if (keys.isNotEmpty() && s.accountKey !in keys) continue
+            val token = tokens[s.accountKey]
+            if (token.isNullOrBlank()) {
+                parts.add("${s.displayName}：无 accessToken")
+                failed++
+                continue
+            }
+            val active = GrowthService.todayActive(s.domain, token, s.uid, settings.growthEnterpriseId)
+            val streak = GrowthService.streak(s.domain, token, s.uid, settings.growthEnterpriseId)
+            val state = when {
+                !active.ok -> "活跃状态查询失败（${active.error}）"
+                active.active -> "今日已活跃"
+                else -> "今日未活跃"
+            }
+            val tail = if (streak.ok) "连登 ${streak.days} 天" else "连登未知"
+            parts.add("${s.displayName}：$state，$tail")
+            if (!active.ok) failed++
+        }
+        if (parts.isEmpty()) return "账号库为空"
+        val summary = parts.joinToString("；")
+        if (failed == 0) dev.codebuddy.account.pet.CbEventCenter.onGrowthStatus(summary)
+        return summary
     }
 
     /** 连登兑换：兑换所有已解锁（连续登录天数足够）的档位 */

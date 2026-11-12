@@ -51,6 +51,9 @@ object GrowthService {
     const val BUDDY_FIRST_PATH = "/activity/growth/buddy/first"
     const val BUDDY_AGREEMENT_PATH = "/activity/growth/buddy/agreement"
     const val STREAK_PATH = "/activity/growth/streak"
+
+    /** 当日活跃状态（成长中心活跃地图） */
+    const val TODAY_ACTIVE_PATH = "/activity/growth/heatmap"
     const val REDEEM_PATH = "/activity/growth/redeem"
     const val LOTTERY_SUMMARY_PATH = "/activity/growth/lottery/summary"
     const val LOTTERY_DRAW_PATH = "/activity/growth/lottery/draw"
@@ -199,6 +202,17 @@ object GrowthService {
         val nextTierRemaining: Int = 0,
         val makeupCards: Int = 0,
         val tiers: List<RedeemTier> = emptyList(),
+        val error: String? = null,
+    ) {
+        val ok: Boolean get() = error == null
+    }
+
+    /** 当日活跃状态：成长中心活跃地图的 data.today */
+    data class ActiveState(
+        val active: Boolean = false,
+        val date: String = "",
+        val score: Double = 0.0,
+        val statusText: String = "",
         val error: String? = null,
     ) {
         val ok: Boolean get() = error == null
@@ -605,6 +619,26 @@ object GrowthService {
     // ---------------------------------------------------------------
     // 连登 / 兑换 / 抽奖
     // ---------------------------------------------------------------
+
+    /** 查询成长中心「今日是否活跃 / 活跃分 / 状态文案」；只读，不改写任务 */
+    fun todayActive(domain: String, accessToken: String, uid: String, enterpriseId: String = ""): ActiveState {
+        if (accessToken.isBlank()) return ActiveState(error = "accessToken 为空")
+        val resp = request(
+            base = webBase(domain), path = TODAY_ACTIVE_PATH, method = "GET",
+            token = accessToken, uid = uid, enterpriseId = enterpriseId, domain = domain, body = null,
+        )
+        if (resp.status != 200) return ActiveState(error = "HTTP ${resp.status}")
+        val parsed = parseAction(resp.body)
+        if (!parsed.ok) return ActiveState(error = parsed.error)
+        val today = dataObject(resp.body)?.getAsJsonObject("today")
+            ?: return ActiveState(error = "响应中缺少 data.today")
+        return ActiveState(
+            active = bool(today, "is_active") ?: false,
+            date = str(today, "date"),
+            score = num(today, "score") ?: 0.0,
+            statusText = str(today, "status_text"),
+        )
+    }
 
     fun streak(domain: String, accessToken: String, uid: String, enterpriseId: String = ""): StreakState {
         if (accessToken.isBlank()) return StreakState(error = "accessToken 为空")
