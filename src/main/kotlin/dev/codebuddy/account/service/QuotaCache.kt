@@ -42,26 +42,46 @@ class QuotaCache(private val cacheFile: Path) {
         }
     }
 
-    /** 更新单个账号的配额缓存 */
+    /**
+     * 更新单个账号的配额缓存。
+     * 「读-改-写」在跨进程锁内完成，避免多开时两个实例互相覆盖其它账号刚刷新的结果。
+     */
     fun put(uid: String, summary: QuotaSummary) {
         synchronized(lock) {
-            try {
-                val all = loadAll().toMutableMap()
-                all[uid] = summary
-                writeAll(all)
-            } catch (e: Exception) {
-                log.warn("写入配额缓存失败: $uid", e)
+            val locked = MultiInstanceCoordinator.withLockFor(cacheFile) {
+                putLocked(uid, summary)
+                true
             }
+            // 锁不可用时降级为仅 JVM 锁，至少保证本进程缓存可更新
+            if (locked == null) putLocked(uid, summary)
+        }
+    }
+
+    private fun putLocked(uid: String, summary: QuotaSummary) {
+        try {
+            val all = loadAll().toMutableMap()
+            all[uid] = summary
+            writeAll(all)
+        } catch (e: Exception) {
+            log.warn("写入配额缓存失败: $uid", e)
         }
     }
 
     fun remove(uid: String) {
         synchronized(lock) {
-            try {
-                val all = loadAll().toMutableMap()
-                if (all.remove(uid) != null) writeAll(all)
-            } catch (_: Exception) { }
+            val locked = MultiInstanceCoordinator.withLockFor(cacheFile) {
+                removeLocked(uid)
+                true
+            }
+            if (locked == null) removeLocked(uid)
         }
+    }
+
+    private fun removeLocked(uid: String) {
+        try {
+            val all = loadAll().toMutableMap()
+            if (all.remove(uid) != null) writeAll(all)
+        } catch (_: Exception) { }
     }
 
     private fun writeAll(all: Map<String, QuotaSummary>) {

@@ -45,15 +45,16 @@ object PendingSwitch {
     fun saveClear() = save(ACTION_CLEAR, "", "", "")
 
     private fun save(action: String, uid: String, nickname: String, json: String) {
+        val o = JsonObject()
+        o.addProperty("action", action)
+        o.addProperty("uid", uid)
+        o.addProperty("nickname", nickname)
+        o.addProperty("json", json)
+        o.addProperty("createdAt", System.currentTimeMillis())
+        // 跨进程串行化 + tmp/ATOMIC_MOVE，避免多开时读到半文件或写互相覆盖
+        val write = { MultiInstanceCoordinator.writeAtomic(file, o.toString()) }
         try {
-            Files.createDirectories(file.parent)
-            val o = JsonObject()
-            o.addProperty("action", action)
-            o.addProperty("uid", uid)
-            o.addProperty("nickname", nickname)
-            o.addProperty("json", json)
-            o.addProperty("createdAt", System.currentTimeMillis())
-            Files.writeString(file, o.toString(), StandardCharsets.UTF_8)
+            MultiInstanceCoordinator.withLockFor(file) { write() } ?: write()
         } catch (e: Exception) {
             log.warn("写入 pending-switch 失败", e)
         }
@@ -78,7 +79,8 @@ object PendingSwitch {
 
     fun clear() {
         try {
-            Files.deleteIfExists(file)
+            val remove = { Files.deleteIfExists(file) }
+            MultiInstanceCoordinator.withLockFor(file) { remove() } ?: remove()
         } catch (_: Exception) { }
     }
 }

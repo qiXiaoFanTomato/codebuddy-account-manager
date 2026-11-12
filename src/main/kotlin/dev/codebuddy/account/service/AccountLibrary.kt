@@ -112,13 +112,47 @@ class AccountLibrary {
     /** 当前 IDEA 正在使用的凭据（读 secret-storage.xml） */
     fun currentActive(): CredentialSnapshot? = SecretStorage.readCurrent()
 
-    /** 刷新指定账号的配额并写入缓存。key 为 accountKey */
-    fun refreshQuota(uid: String): dev.codebuddy.account.quota.QuotaSummary? {
-        val snapshot = listSaved().firstOrNull { it.accountKey == uid } ?: return null
+    /**
+     * 刷新指定账号的配额并写入缓存。key 为 accountKey。
+     * [auto] = true 表示自动定时路径：TTL 内复用其它实例的刷新结果，
+     * 并按跨进程最小间隔抑制同刻重复；手动刷新不受影响。
+     */
+    fun refreshQuota(uid: String, auto: Boolean = false): dev.codebuddy.account.quota.QuotaSummary? {
+        val saved = listSaved()
+        val snapshot = saved.firstOrNull { it.accountKey == uid } ?: return null
         // 从快照原文取 token（listSaved 已 hydrate，rawContent 非空）
         val token = extractAccessToken(snapshot.rawContent) ?: return null
-        val summary = dev.codebuddy.account.quota.QuotaService.fetch(snapshot.domain, token)
+        val coordinator = MultiInstanceCoordinator
+        val shared = coordinator.sharedQuotaCache(saved.map { it.accountKey })
+
+        if (auto) {
+            val cached = shared?.loadAll()?.get(uid)?.takeIf {
+                it.error == null && System.currentTimeMillis() - it.fetchedAt < coordinator.QUOTA_SHARED_TTL_MS
+            }
+            if (cached != null) {
+                quotaCache.put(uid, cached)
+                coordinator.noteRequest("quota:shared-hit")
+                return cached
+            }
+            if (!coordinator.claim("quota", uid, coordinator.QUOTA_MIN_INTERVAL_MS)) {
+                // 其它实例刚刷新过：复用共享结果，不再打接口
+                val recent = shared?.loadAll()?.get(uid)
+                if (recent != null) quotaCache.put(uid, recent)
+                return recent ?: quotaCache.loadAll()[uid]
+            }
+        }
+
+        val summary = limited("quota") {
+            dev.codebuddy.account.quota.QuotaService.fetch(snapshot.domain, token)
+        }
         quotaCache.put(uid, summary)
+        if (summary.error == null) {
+            // 写一份到全局共享缓存，供其它 IDE 进程复用
+            shared?.put(uid, summary)
+        } else if (auto) {
+            // 失败不占用闸门，允许立即重试
+            coordinator.releaseClaim("quota", uid)
+        }
 
         // 配额告警
         if (summary.error == null && summary.packages.isNotEmpty()) {
@@ -148,13 +182,15 @@ class AccountLibrary {
             ?: return dev.codebuddy.account.usage.UsagePage(error = "账号不在账号库中，请先导入")
         val token = extractAccessToken(snapshot.rawContent)
             ?: return dev.codebuddy.account.usage.UsagePage(error = "凭据快照中缺少 accessToken")
-        return dev.codebuddy.account.usage.UsageService.fetch(
-            domain = snapshot.domain,
-            accessToken = token,
-            startTime = startTime,
-            endTime = endTime,
-            pageSize = pageSize,
-        )
+        return limited("usage") {
+            dev.codebuddy.account.usage.UsageService.fetch(
+                domain = snapshot.domain,
+                accessToken = token,
+                startTime = startTime,
+                endTime = endTime,
+                pageSize = pageSize,
+            )
+        }
     }
 
     /**
@@ -172,14 +208,16 @@ class AccountLibrary {
             ?: return dev.codebuddy.account.usage.UsagePage(error = "账号不在账号库中，请先导入")
         val token = extractAccessToken(snapshot.rawContent)
             ?: return dev.codebuddy.account.usage.UsagePage(error = "凭据快照中缺少 accessToken")
-        return dev.codebuddy.account.usage.UsageService.fetchAll(
-            domain = snapshot.domain,
-            accessToken = token,
-            startTime = startTime,
-            endTime = endTime,
-            pageSize = dev.codebuddy.account.usage.UsageService.MAX_PAGE_SIZE,
-            maxPages = maxPages,
-        )
+        return limited("usage-all") {
+            dev.codebuddy.account.usage.UsageService.fetchAll(
+                domain = snapshot.domain,
+                accessToken = token,
+                startTime = startTime,
+                endTime = endTime,
+                pageSize = dev.codebuddy.account.usage.UsageService.MAX_PAGE_SIZE,
+                maxPages = maxPages,
+            )
+        }
     }
 
     /** 配额过低时发通知（优先由桌宠承载） */
@@ -250,19 +288,27 @@ class AccountLibrary {
      */
     fun importSnapshot(snapshot: CredentialSnapshot): Boolean {
         synchronized(lock) {
-            return try {
-                val target = snapshotsDir.resolve(dev.codebuddy.account.model.AccountKeys.toFileName(snapshot.accountKey))
-                Files.writeString(target, snapshot.rawContent, StandardCharsets.UTF_8)
-
-                val all = listSaved().filterNot { it.accountKey == snapshot.accountKey }.toMutableList()
-                all.add(snapshot.copy(sourcePath = target.toString()))
-                writeIndex(all)
-                AccountEvents.fireAccountsChanged()
-                true
-            } catch (e: Exception) {
-                log.warn("导入账号失败: ${snapshot.uid}", e)
-                false
+            // 「读索引 → 改 → 写索引」整体放在跨进程锁内，避免多开时丢失更新
+            val locked = MultiInstanceCoordinator.withLockFor(indexFile) {
+                importSnapshotLocked(snapshot)
             }
+            return locked ?: importSnapshotLocked(snapshot)
+        }
+    }
+
+    private fun importSnapshotLocked(snapshot: CredentialSnapshot): Boolean {
+        return try {
+            val target = snapshotsDir.resolve(dev.codebuddy.account.model.AccountKeys.toFileName(snapshot.accountKey))
+            Files.writeString(target, snapshot.rawContent, StandardCharsets.UTF_8)
+
+            val all = listSaved().filterNot { it.accountKey == snapshot.accountKey }.toMutableList()
+            all.add(snapshot.copy(sourcePath = target.toString()))
+            writeIndex(all)
+            AccountEvents.fireAccountsChanged()
+            true
+        } catch (e: Exception) {
+            log.warn("导入账号失败: ${snapshot.uid}", e)
+            false
         }
     }
 
@@ -286,15 +332,21 @@ class AccountLibrary {
     /** 删除账号库中的某个账号（不影响 IDE 当前凭据）。key 为 accountKey */
     fun delete(uid: String): Boolean {
         synchronized(lock) {
-            return try {
-                Files.deleteIfExists(snapshotsDir.resolve(dev.codebuddy.account.model.AccountKeys.toFileName(uid)))
-                writeIndex(listSaved().filterNot { it.accountKey == uid })
-                AccountEvents.fireAccountsChanged()
-                true
-            } catch (e: Exception) {
-                log.warn("删除账号失败: $uid", e)
-                false
-            }
+            // 「读索引 → 改 → 写索引」整体放在跨进程锁内，避免多开时丢失更新
+            val locked = MultiInstanceCoordinator.withLockFor(indexFile) { deleteLocked(uid) }
+            return locked ?: deleteLocked(uid)
+        }
+    }
+
+    private fun deleteLocked(uid: String): Boolean {
+        return try {
+            Files.deleteIfExists(snapshotsDir.resolve(dev.codebuddy.account.model.AccountKeys.toFileName(uid)))
+            writeIndex(listSaved().filterNot { it.accountKey == uid })
+            AccountEvents.fireAccountsChanged()
+            true
+        } catch (e: Exception) {
+            log.warn("删除账号失败: $uid", e)
+            false
         }
     }
 
@@ -528,18 +580,29 @@ class AccountLibrary {
     // 索引读写
     // ---------------------------------------------------------------
 
+    /** 写索引：跨进程串行化 + 独立 tmp 文件名 + ATOMIC_MOVE */
     private fun writeIndex(items: List<CredentialSnapshot>) {
         val json = CredentialParser.serializeIndex(items)
-        val tmp = indexFile.resolveSibling("index.json.tmp")
-        Files.writeString(tmp, json, StandardCharsets.UTF_8)
-        try {
-            Files.move(tmp, indexFile, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
-        } catch (_: Exception) {
-            Files.move(tmp, indexFile, StandardCopyOption.REPLACE_EXISTING)
-        }
+        val write = { MultiInstanceCoordinator.writeAtomic(indexFile, json) }
+        MultiInstanceCoordinator.withLockFor(indexFile) { write() } ?: write()
     }
 
     companion object {
+        /** 全局并发上限：限制消耗明细翻页等重请求占满线程池 */
+        private const val MAX_CONCURRENT_REQUESTS = 4
+        private val requestLimiter = java.util.concurrent.Semaphore(MAX_CONCURRENT_REQUESTS, true)
+
+        /** 统一的网络请求闸门：计数日志 + 并发上限 */
+        private fun <T> limited(kind: String, block: () -> T): T {
+            MultiInstanceCoordinator.noteRequest(kind)
+            requestLimiter.acquire()
+            try {
+                return block()
+            } finally {
+                requestLimiter.release()
+            }
+        }
+
         fun getInstance(): AccountLibrary = ApplicationManager.getApplication().getService(AccountLibrary::class.java)
     }
 }

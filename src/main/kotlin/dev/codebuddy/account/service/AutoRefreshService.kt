@@ -34,6 +34,14 @@ class AutoRefreshService : Disposable {
             Thread(r, "codebuddy-account-auto").apply { isDaemon = true }
         }
 
+    /** 主实例租约续期独立线程池，避免被刷新的同步请求阻塞 */
+    private val leaderExecutor: ScheduledExecutorService =
+        Executors.newSingleThreadScheduledExecutor { r ->
+            Thread(r, "codebuddy-account-leader").apply { isDaemon = true }
+        }
+
+    /** 每个 IDE 进程只启动一次，避免多开项目窗口反复重排定时任务 */
+    private val started = AtomicBoolean(false)
     private val refreshing = AtomicBoolean(false)
     /** 上次自动调度时间，避免短时间内反复切号 */
     private val lastAutoSwitchAt = java.util.concurrent.atomic.AtomicLong(0L)
@@ -46,12 +54,22 @@ class AutoRefreshService : Disposable {
     /** 已处理过的内容 hash，避免重复导入 */
     private val lastSeen = mutableMapOf<String, Int>()
 
-    /** 启动：按设置排程配额刷新 + 检查 token + 监听凭据文件 */
+    /** 启动：按设置排程配额刷新 + 检查 token + 监听凭据文件 + 主实例租约续期 */
     fun startFromSettings() {
+        if (!started.compareAndSet(false, true)) return
         val settings = AccountSettings.getInstance()
         reschedule(settings.autoRefreshMinutes.toLong(), settings.autoRefreshMinutesMax.toLong())
         if (settings.checkTokenOnStartup) checkTokensAsync()
         startWatching()
+
+        // 首个启动的进程抢占主实例租约，后续进程由续期任务维持或等待接管
+        MultiInstanceCoordinator.isLeader()
+        leaderExecutor.scheduleWithFixedDelay(
+            { try { MultiInstanceCoordinator.renewLeader() } catch (e: Exception) { log.warn("主实例续约失败", e) } },
+            MultiInstanceCoordinator.RENEW_MS,
+            MultiInstanceCoordinator.RENEW_MS,
+            TimeUnit.MILLISECONDS,
+        )
     }
 
     /**
@@ -81,6 +99,9 @@ class AutoRefreshService : Disposable {
         } else {
             minMinutes
         }
+        // 秒级抖动：多个 IDE 进程同时启动时错开请求，避免同刻突发
+        val jitterMs = ThreadLocalRandom.current().nextLong(0, MAX_JITTER_MS + 1)
+        val delayMs = delay * 60_000L + jitterMs
         val task = try {
             executor.schedule({
                 try {
@@ -90,7 +111,7 @@ class AutoRefreshService : Disposable {
                         if (generation == quotaGeneration) scheduleNext(minMinutes, maxMinutes, generation)
                     }
                 }
-            }, delay, TimeUnit.MINUTES)
+            }, delayMs, TimeUnit.MILLISECONDS)
         } catch (_: RejectedExecutionException) {
             return
         }
@@ -98,13 +119,20 @@ class AutoRefreshService : Disposable {
         synchronized(this) {
             if (generation == quotaGeneration) quotaTask = task else task.cancel(false)
         }
-        log.info("配额自动刷新已排程：$delay 分钟后执行（区间 $minMinutes~$maxMinutes 分钟）")
+        log.info("配额自动刷新已排程：$delay 分钟 + ${jitterMs / 1000}s 抖动后执行（区间 $minMinutes~$maxMinutes 分钟）")
     }
 
-    /** 一次配额刷新：遍历账号库刷新数据，并触发告警、自动调度与模型限额统计 */
+    /** 一次配额刷新：仅主实例打接口，其余实例复用共享配额结果 */
     private fun refreshAllQuotas() {
         if (!refreshing.compareAndSet(false, true)) return
         try {
+            if (AccountSettings.getInstance().state.multiInstanceLeaderOnly &&
+                !MultiInstanceCoordinator.isLeader()
+            ) {
+                log.info("非主实例跳过自动刷新，改用共享配额结果：${MultiInstanceCoordinator.instanceTag()}")
+                syncSharedQuota()
+                return
+            }
             val library = AccountLibrary.getInstance()
             val saved = library.listSaved()
             if (saved.isEmpty()) return
@@ -112,10 +140,10 @@ class AutoRefreshService : Disposable {
             var fail = 0
             // 注意：刷新缓存以 accountKey 为 key，不能传裸 uid
             for (s in saved) {
-                val summary = library.refreshQuota(s.accountKey)
+                val summary = library.refreshQuota(s.accountKey, auto = true)
                 if (summary == null || summary.error != null) fail++ else ok++
             }
-            log.info("自动刷新配额完成：成功 $ok 个，失败 $fail 个")
+            log.info("自动刷新配额完成：成功 $ok 个，失败 $fail 个，${MultiInstanceCoordinator.instanceTag()}")
             AccountEvents.fireQuotaChanged()
             autoSwitchIfNeeded()
             // 模型积分限额统计（如 DeepSeek 200 积分限制），用于达标提醒
@@ -127,6 +155,25 @@ class AutoRefreshService : Disposable {
         } finally {
             refreshing.set(false)
         }
+    }
+
+    /** 把主实例写入的共享配额结果同步到本地缓存，保证非主实例界面不留空 */
+    private fun syncSharedQuota() {
+        val library = AccountLibrary.getInstance()
+        val keys = library.listSaved().map { it.accountKey }
+        val shared = MultiInstanceCoordinator.sharedQuotaCache(keys) ?: return
+        val remote = shared.loadAll()
+        if (remote.isEmpty()) return
+        val local = library.quotaCache.loadAll()
+        var changed = false
+        for ((key, summary) in remote) {
+            val mine = local[key]
+            if (summary.error == null && (mine == null || mine.fetchedAt < summary.fetchedAt)) {
+                library.quotaCache.put(key, summary)
+                changed = true
+            }
+        }
+        if (changed) AccountEvents.fireQuotaChanged()
     }
 
     /** 启动时检查 token 过期情况（后台线程，汇总成一条通知） */
@@ -186,6 +233,9 @@ class AutoRefreshService : Disposable {
             )
             return
         }
+
+        // 跨进程共享冷却：多开时 10 分钟内只允许一个实例执行自动调度
+        if (!MultiInstanceCoordinator.claim("auto-switch", "global", AUTO_SWITCH_COOLDOWN_MS)) return
 
         lastAutoSwitchAt.set(now)
         val result = library.hotSwitchTo(best.snapshot.accountKey)
@@ -282,6 +332,7 @@ class AutoRefreshService : Disposable {
         try { watchService?.close() } catch (_: Exception) { }
         watchThread?.interrupt()
         executor.shutdownNow()
+        leaderExecutor.shutdownNow()
     }
 
     /** 智能调度当前状态（看板卡片展示用） */
@@ -316,6 +367,8 @@ class AutoRefreshService : Disposable {
     companion object {
         private const val AUTO_SWITCH_COOLDOWN_MS = 10 * 60 * 1000L
         private const val MAX_INTERVAL_MINUTES = 240L
+        /** 每轮排程附带的随机抖动上限（毫秒） */
+        private const val MAX_JITTER_MS = 30_000L
 
         fun getInstance(): AutoRefreshService =
             ApplicationManager.getApplication().getService(AutoRefreshService::class.java)

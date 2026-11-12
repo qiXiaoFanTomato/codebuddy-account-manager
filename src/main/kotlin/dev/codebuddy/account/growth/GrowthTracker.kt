@@ -7,6 +7,7 @@ import com.intellij.openapi.diagnostic.logger
 import dev.codebuddy.account.model.CredentialSnapshot
 import dev.codebuddy.account.service.AccountLibrary
 import dev.codebuddy.account.service.AccountSettings
+import dev.codebuddy.account.service.MultiInstanceCoordinator
 
 /**
  * 成长中心的跨账号聚合：任务查询 + 一键完成 + 旅行巡检 + 活跃上报 + token 保活。
@@ -21,6 +22,9 @@ object GrowthTracker {
     private val log = logger<GrowthTracker>()
 
     private const val STALE_MS = 5 * 60_000L
+
+    /** 同类写操作的跨进程冷却：抑制多开实例同刻重复提交，不改变单次操作的业务结果 */
+    private const val ACTION_COOLDOWN_MS = 15_000L
 
     /** 单个账号的任务快照 */
     data class AccountGrowth(
@@ -482,8 +486,13 @@ object GrowthTracker {
         }
     }
 
-    /** 统一执行包装：后台线程执行 + running 状态管理 + 结束后刷新状态 + EDT 回调 */
+    /** 统一执行包装：跨进程去重 + 后台线程执行 + running 状态管理 + 结束后刷新状态 + EDT 回调 */
     private fun launch(label: String, block: () -> String, onDone: ((String) -> Unit)?) {
+        // 同一类写操作短时间内只允许一个 IDE 实例执行，避免多开时重复接取 / 上报 / 领奖 / 保活
+        if (!MultiInstanceCoordinator.claim("growth-action", label, ACTION_COOLDOWN_MS)) {
+            onDone?.let { cb -> invokeOnEdt(cb, "$label 已由其它 IDE 实例执行，请稍后再试") }
+            return
+        }
         synchronized(lock) {
             if (running) {
                 onDone?.let { cb -> invokeOnEdt(cb, "$label 正在执行中") }
@@ -497,6 +506,7 @@ object GrowthTracker {
                 block()
             } catch (t: Throwable) {
                 log.warn("$label 失败", t)
+                MultiInstanceCoordinator.releaseClaim("growth-action", label)
                 "$label 失败：${t.message ?: t.javaClass.simpleName}"
             }
             finish(loadTasks())

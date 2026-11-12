@@ -19,7 +19,6 @@ import java.awt.event.MouseEvent
 import java.util.Locale
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
-import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 import javax.swing.SwingUtilities
 
@@ -61,9 +60,6 @@ class CodeBuddyStatusBarWidget(private val project: Project) :
         updateWidget()
     }
 
-    /** 后台轮询任务：定期检查额度是否变化 */
-    private var pollTask: ScheduledFuture<*>? = null
-
     override fun ID(): String = WIDGET_ID
 
     override fun getPresentation(): StatusBarWidget.WidgetPresentation = this
@@ -93,22 +89,16 @@ class CodeBuddyStatusBarWidget(private val project: Project) :
         rolling.setVisible(true)
         rolling.offer(computeDisplay(), animate = false)
 
-        // 后台定期检查额度变化：只有刷新过配额后数值才会下降
-        pollTask?.cancel(true)
-        pollTask = POLLER.scheduleWithFixedDelay(
-            { requestRefresh() },
-            POLL_INTERVAL_MS,
-            POLL_INTERVAL_MS,
-            TimeUnit.MILLISECONDS
-        )
+        // 全进程共用一个轮询任务：多开项目窗口时不再每个窗口各起一个 3 秒任务
+        INSTANCES.add(this)
+        ensurePoller()
     }
 
     override fun dispose() {
         rolling.dispose()
         connection?.disconnect()
         connection = null
-        pollTask?.cancel(true)
-        pollTask = null
+        INSTANCES.remove(this)
         statusBar = null
     }
 
@@ -308,6 +298,24 @@ class CodeBuddyStatusBarWidget(private val project: Project) :
             Executors.newSingleThreadScheduledExecutor { r ->
                 Thread(r, "codebuddy-statusbar-poll").apply { isDaemon = true }
             }
+
+        /** 所有已安装的状态栏实例：一个进程只跑一个轮询任务，逐个通知 */
+        private val INSTANCES = java.util.concurrent.CopyOnWriteArraySet<CodeBuddyStatusBarWidget>()
+        private val pollerStarted = java.util.concurrent.atomic.AtomicBoolean(false)
+
+        private fun ensurePoller() {
+            if (!pollerStarted.compareAndSet(false, true)) return
+            POLLER.scheduleWithFixedDelay(
+                {
+                    for (widget in INSTANCES) {
+                        try { widget.requestRefresh() } catch (_: Exception) { }
+                    }
+                },
+                POLL_INTERVAL_MS,
+                POLL_INTERVAL_MS,
+                TimeUnit.MILLISECONDS,
+            )
+        }
 
         @Volatile private var cachedSnapshot: CredentialSnapshot? = null
         @Volatile private var cachedQuotas: Map<String, QuotaSummary> = emptyMap()

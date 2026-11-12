@@ -20,6 +20,8 @@ class AccountSettings : PersistentStateComponent<AccountSettings.State> {
         var autoRefreshMinutes: Int = 15,
         /** 配额自动刷新间隔上限（分钟），与下限相等时为固定间隔 */
         var autoRefreshMinutesMax: Int = 15,
+        /** 多开 IDE 时仅由主实例执行自动刷新，其余实例复用共享配额结果 */
+        var multiInstanceLeaderOnly: Boolean = true,
         /** 切换账号时默认勾选「同步历史」 */
         var autoSyncHistoryOnSwitch: Boolean = true,
         /** 同步历史时一并复制缺失的消息目录 */

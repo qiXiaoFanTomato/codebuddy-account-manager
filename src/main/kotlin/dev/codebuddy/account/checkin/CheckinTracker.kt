@@ -6,6 +6,7 @@ import com.intellij.openapi.diagnostic.logger
 import dev.codebuddy.account.model.CredentialSnapshot
 import dev.codebuddy.account.service.AccountLibrary
 import dev.codebuddy.account.service.AccountSettings
+import dev.codebuddy.account.service.MultiInstanceCoordinator
 import java.time.LocalDate
 
 /**
@@ -78,17 +79,37 @@ object CheckinTracker {
      * @param onDone 在 EDT 回调，参数为本次汇总文案
      */
     fun checkinAll(onDone: ((String) -> Unit)? = null) {
+        val today = LocalDate.now()
+        val day = today.toString()
+        // 跨进程按日去重：多开 IDE 时同一批账号当天只提交一次，避免重复签到请求
+        val keys = try {
+            AccountLibrary.getInstance().listSaved().map { it.accountKey }.sorted()
+        } catch (t: Throwable) {
+            log.warn("读取账号库失败", t)
+            emptyList()
+        }
+        val dedupeKey = keys.joinToString("|")
+        if (!MultiInstanceCoordinator.claimDaily("checkin", dedupeKey, day)) {
+            onDone?.let { cb ->
+                dispatch(listOf { cb("今日签到已由其它 IDE 实例执行，无需重复提交") })
+            }
+            return
+        }
+
         synchronized(lock) {
-            if (running) return
+            if (running) {
+                MultiInstanceCoordinator.releaseDaily("checkin", dedupeKey, day)
+                return
+            }
             running = true
             state = state.copy(running = true)
         }
-        val today = LocalDate.now()
 
         ApplicationManager.getApplication().executeOnPooledThread {
             val summary = try {
-                submitAll(today)
+                submitAll(today, dedupeKey, day)
             } catch (t: Throwable) {
+                MultiInstanceCoordinator.releaseDaily("checkin", dedupeKey, day)
                 log.warn("一键签到失败", t)
                 finish(today, localItems(today))
                 "签到失败：${t.message ?: t.javaClass.simpleName}"
@@ -106,8 +127,8 @@ object CheckinTracker {
         }
     }
 
-    /** 对所有账号执行签到，返回汇总文案 */
-    private fun submitAll(today: LocalDate): String {
+    /** 对所有账号执行签到，返回汇总文案；全部失败时释放按日标记以便重试 */
+    private fun submitAll(today: LocalDate, dedupeKey: String, day: String): String {
         val settings = AccountSettings.getInstance()
         val library = AccountLibrary.getInstance()
         val saved: List<CredentialSnapshot> = try {
@@ -155,6 +176,9 @@ object CheckinTracker {
             }
         }
 
+        if (success == 0 && already == 0 && failed > 0) {
+            MultiInstanceCoordinator.releaseDaily("checkin", dedupeKey, day)
+        }
         finish(today, localItems(today, results))
 
         return buildString {

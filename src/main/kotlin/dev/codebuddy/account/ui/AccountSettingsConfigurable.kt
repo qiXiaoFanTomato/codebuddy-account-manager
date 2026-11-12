@@ -1,6 +1,7 @@
 package dev.codebuddy.account.ui
 
 import com.intellij.openapi.options.Configurable
+import com.intellij.ui.TitledSeparator
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.util.ui.FormBuilder
@@ -9,12 +10,14 @@ import dev.codebuddy.account.checkin.CheckinTracker
 import dev.codebuddy.account.quota.QuotaDisplayMode
 import dev.codebuddy.account.service.AccountEvents
 import dev.codebuddy.account.service.AccountSettings
+import dev.codebuddy.account.service.MultiInstanceCoordinator
 import dev.codebuddy.account.service.QuotaAlertSettings
 import dev.codebuddy.account.usage.ModelQuotaPeriod
 import java.awt.BorderLayout
 import java.awt.Component
 import java.awt.Dimension
 import java.awt.FlowLayout
+import javax.swing.BorderFactory
 import javax.swing.DefaultListCellRenderer
 import javax.swing.JCheckBox
 import javax.swing.JComboBox
@@ -50,6 +53,8 @@ class AccountSettingsConfigurable : Configurable {
     private val autoSwitchThresholdSpinner = JSpinner(SpinnerNumberModel(10, 1, 100, 1))
     private val statusBarCheck = JCheckBox("在状态栏显示当前账号与剩余额度（立即生效）")
     private val tokenCheck = JCheckBox("启动时检查 token 过期并提醒")
+    private val multiInstanceCheck = JCheckBox("多开 IDE 时仅由主实例自动刷新（其余实例复用共享配额结果）")
+    private val leaderStateLabel = JBLabel()
     private val modeCombo = JComboBox(QuotaDisplayMode.entries.toTypedArray()).apply {
         renderer = object : DefaultListCellRenderer() {
             override fun getListCellRendererComponent(
@@ -113,61 +118,83 @@ class AccountSettingsConfigurable : Configurable {
 
     override fun getDisplayName(): String = "CodeBuddy 账号管理器"
 
-    override fun getPreferredFocusedComponent(): JComponent = intervalMinSpinner
+    /** 默认焦点给复选框，避免方向键误改「立即生效」的界面色调 */
+    override fun getPreferredFocusedComponent(): JComponent = statusBarCheck
 
     override fun createComponent(): JComponent {
         val panel = FormBuilder.createFormBuilder()
-            .addLabeledComponent("界面色调（立即生效）：", themeCombo)
-            .addVerticalGap(JBUI.scale(6))
-            .addLabeledComponent("配额自动刷新间隔（分钟，最小 ~ 最大，0 表示关闭）：", intervalPanel)
-            .addVerticalGap(JBUI.scale(6))
-            .addComponent(alertCheck)
-            .addLabeledComponent("低额度提醒阈值（%）：", thresholdSpinner)
-            .addVerticalGap(JBUI.scale(6))
-            .addComponent(autoSyncCheck)
-            .addComponent(copyMessageCheck)
-            .addComponent(refreshAllCheck)
-            .addVerticalGap(JBUI.scale(6))
-            .addComponent(hotSwitchCheck)
-            .addComponent(autoSwitchCheck)
-            .addLabeledComponent("自动调度触发阈值（剩余 %）：", autoSwitchThresholdSpinner)
-            .addVerticalGap(JBUI.scale(6))
-            .addComponent(statusBarCheck)
-            .addLabeledComponent("状态栏额度维度：", modeCombo)
-            .addLabeledComponent("指定套餐（分组名包含该文字）：", packageField)
-            .addComponent(tokenCheck)
-            .addVerticalGap(JBUI.scale(6))
-            .addComponent(checkinCheck)
-            .addLabeledComponent("执行签到路径：", checkinSubmitField)
-            .addVerticalGap(JBUI.scale(6))
-            .addComponent(growthCheck)
-            .addLabeledComponent("成长任务列表路径：", growthTasksField)
-            .addLabeledComponent("成长任务接取路径：", growthAcceptField)
-            .addLabeledComponent("成长任务领奖路径（%s 为任务 code）：", growthClaimField)
-            .addLabeledComponent("企业 ID（可选，个人账号留空）：", growthEnterpriseField)
-            .addComponent(growthAutoActionsCheck)
-            .addVerticalGap(JBUI.scale(6))
-            .addComponent(modelQuotaCheck)
-            .addComponent(JBLabel("模型限额规则（可添加多个模型，每个模型一条独立限额）：").apply {
-                foreground = AccountUiColors.textMuted
+            .addComponent(section("界面与显示") {
+                addLabeledComponent("界面色调（立即生效）：", themeCombo)
+                addComponent(statusBarCheck)
+                addLabeledComponent("状态栏额度维度：", modeCombo)
+                addLabeledComponent("指定套餐（分组名包含该文字）：", packageField)
+                addComponent(petCheck)
             })
-            .addComponent(JBScrollPane(modelQuotaRulesEditor).apply {
-                border = JBUI.Borders.empty(2, 0)
-                preferredSize = Dimension(JBUI.scale(620), JBUI.scale(170))
+            .addComponent(section("额度刷新与提醒") {
+                addLabeledComponent("配额自动刷新间隔（分钟，最小 ~ 最大，0 表示关闭）：", intervalPanel)
+                addComponent(alertCheck)
+                addLabeledComponent("低额度提醒阈值（%）：", thresholdSpinner)
+                addComponent(tokenCheck)
+                addComponent(multiInstanceCheck)
+                addComponent(leaderStateLabel)
             })
-            .addLabeledComponent("统计周期：", modelQuotaPeriodCombo)
-            .addLabeledComponent("接近限额预警阈值（剩余 %）：", modelQuotaWarnSpinner)
-            .addVerticalGap(JBUI.scale(6))
-            .addComponent(petCheck)
-            .addComponentFillVertically(JPanel(), 0)
+            .addComponent(section("切号与智能调度") {
+                addComponent(autoSyncCheck)
+                addComponent(copyMessageCheck)
+                addComponent(refreshAllCheck)
+                addComponent(hotSwitchCheck)
+                addComponent(autoSwitchCheck)
+                addLabeledComponent("自动调度触发阈值（剩余 %）：", autoSwitchThresholdSpinner)
+            })
+            .addComponent(section("模型积分限额") {
+                addComponent(modelQuotaCheck)
+                addComponent(JBLabel("模型限额规则（可添加多个模型，每个模型一条独立限额）：").apply {
+                    foreground = AccountUiColors.textMuted
+                })
+                addComponent(JBScrollPane(modelQuotaRulesEditor).apply {
+                    border = JBUI.Borders.empty(2, 0)
+                    preferredSize = Dimension(JBUI.scale(620), JBUI.scale(170))
+                })
+                addLabeledComponent("统计周期：", modelQuotaPeriodCombo)
+                addLabeledComponent("接近限额预警阈值（剩余 %）：", modelQuotaWarnSpinner)
+            })
+            .addComponent(section("今日签到（实验特性）") {
+                addComponent(checkinCheck)
+                addLabeledComponent("执行签到路径：", checkinSubmitField)
+            })
+            .addComponent(section("成长中心任务（实验特性）") {
+                addComponent(growthCheck)
+                addLabeledComponent("成长任务列表路径：", growthTasksField)
+                addLabeledComponent("成长任务接取路径：", growthAcceptField)
+                addLabeledComponent("成长任务领奖路径（%s 为任务 code）：", growthClaimField)
+                addLabeledComponent("企业 ID（可选，个人账号留空）：", growthEnterpriseField)
+                addComponent(growthAutoActionsCheck)
+            })
             .panel
 
+        // 分组后内容较长，交给滚动容器，避免设置对话框把底部选项裁掉
+        val scroll = JBScrollPane(panel).apply {
+            border = null
+            viewportBorder = null
+            verticalScrollBar.unitIncrement = JBUI.scale(16)
+            preferredSize = Dimension(JBUI.scale(680), JBUI.scale(480))
+        }
         val wrapper = JPanel(BorderLayout())
         wrapper.border = JBUI.Borders.empty(12)
-        wrapper.add(panel, BorderLayout.NORTH)
+        wrapper.add(scroll, BorderLayout.CENTER)
         mainPanel = wrapper
         reset()
         return wrapper
+    }
+
+    /** 生成一节设置：IDE 原生标题分隔线 + 内容整体缩进 */
+    private fun section(title: String, body: FormBuilder.() -> Unit): JPanel {
+        val content = FormBuilder.createFormBuilder().apply(body).panel
+        content.border = BorderFactory.createEmptyBorder(0, JBUI.scale(20), 0, 0)
+        return JPanel(BorderLayout()).apply {
+            add(TitledSeparator(title), BorderLayout.NORTH)
+            add(content, BorderLayout.CENTER)
+        }
     }
 
     override fun isModified(): Boolean {
@@ -176,6 +203,7 @@ class AccountSettingsConfigurable : Configurable {
         val pet = dev.codebuddy.account.pet.PetSettings.getInstance()
         return intValue(intervalMinSpinner) != s.autoRefreshMinutes ||
             intValue(intervalMaxSpinner) != s.autoRefreshMinutesMax ||
+            multiInstanceCheck.isSelected != s.state.multiInstanceLeaderOnly ||
             alertCheck.isSelected != alert.state.enabled ||
             intValue(thresholdSpinner) != alert.state.thresholdPercent ||
             autoSyncCheck.isSelected != s.autoSyncHistoryOnSwitch ||
@@ -215,6 +243,7 @@ class AccountSettingsConfigurable : Configurable {
         val intervalMax = intValue(intervalMaxSpinner).coerceIn(intervalMin, 240)
         s.state.autoRefreshMinutes = intervalMin
         s.state.autoRefreshMinutesMax = intervalMax
+        s.state.multiInstanceLeaderOnly = multiInstanceCheck.isSelected
         s.state.autoSyncHistoryOnSwitch = autoSyncCheck.isSelected
         s.state.copyMessagesOnSync = copyMessageCheck.isSelected
         s.state.refreshAllWhenNoSelection = refreshAllCheck.isSelected
@@ -269,6 +298,8 @@ class AccountSettingsConfigurable : Configurable {
         val alert = QuotaAlertSettings.getInstance()
         intervalMinSpinner.value = s.autoRefreshMinutes
         intervalMaxSpinner.value = s.autoRefreshMinutesMax
+        multiInstanceCheck.isSelected = s.state.multiInstanceLeaderOnly
+        refreshLeaderLabel()
         alertCheck.isSelected = alert.state.enabled
         thresholdSpinner.value = alert.state.thresholdPercent.coerceIn(1, 100)
         autoSyncCheck.isSelected = s.autoSyncHistoryOnSwitch
@@ -296,6 +327,15 @@ class AccountSettingsConfigurable : Configurable {
 
         val pet = dev.codebuddy.account.pet.PetSettings.getInstance()
         petCheck.isSelected = pet.enabled
+    }
+
+    /** 只读展示当前实例的主实例角色与接口调用计数 */
+    private fun refreshLeaderLabel() {
+        val state = MultiInstanceCoordinator.leaderState()
+        val role = if (state.isLeader) "主实例" else "从实例（主实例 PID ${state.ownerPid}）"
+        leaderStateLabel.text = "当前 IDE 实例：$role，${MultiInstanceCoordinator.instanceTag()}"
+        val stats = MultiInstanceCoordinator.requestStats().entries.joinToString("、") { "${it.key}=${it.value}" }
+        leaderStateLabel.toolTipText = "本进程接口调用次数：${stats.ifBlank { "暂无" }}"
     }
 
     /** 设置变更后立即重新统计模型限额 */

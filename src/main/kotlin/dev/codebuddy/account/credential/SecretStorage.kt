@@ -3,6 +3,7 @@ package dev.codebuddy.account.credential
 import com.intellij.openapi.application.PathManager
 import com.intellij.openapi.diagnostic.logger
 import dev.codebuddy.account.model.CredentialSnapshot
+import dev.codebuddy.account.service.MultiInstanceCoordinator
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
@@ -61,9 +62,14 @@ object SecretStorage {
         return unescapeXml(m.groupValues[1])
     }
 
-    /** 写入新的凭据 JSON，替换掉旧条目 */
+    /** 写入新的凭据 JSON，替换掉旧条目；跨进程串行化「读-改-写」 */
     fun writeCurrent(snapshotJson: String): Result<Path> {
         val f = file() ?: return Result.failure(IllegalStateException("找不到 secret-storage.xml，请先登录一次 CodeBuddy"))
+        val locked = MultiInstanceCoordinator.withLockFor(f) { writeCurrentLocked(f, snapshotJson) }
+        return locked ?: writeCurrentLocked(f, snapshotJson)
+    }
+
+    private fun writeCurrentLocked(f: Path, snapshotJson: String): Result<Path> {
         return try {
             val xml = Files.readString(f, StandardCharsets.UTF_8)
             val escaped = escapeXml(snapshotJson)
@@ -100,6 +106,11 @@ object SecretStorage {
      */
     fun clearCredentials(): Result<Int> {
         val f = file() ?: return Result.failure(IllegalStateException("找不到 secret-storage.xml"))
+        val locked = MultiInstanceCoordinator.withLockFor(f) { clearCredentialsLocked(f) }
+        return locked ?: clearCredentialsLocked(f)
+    }
+
+    private fun clearCredentialsLocked(f: Path): Result<Int> {
         return try {
             val xml = Files.readString(f, StandardCharsets.UTF_8)
             var removed = 0
