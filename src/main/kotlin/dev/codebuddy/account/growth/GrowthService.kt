@@ -709,6 +709,23 @@ object GrowthService {
         return parsed.copy(message = "抽奖次数 ${int(data, "chances") ?: 0}")
     }
 
+    /** 抽奖概览：接口 data 目前只提供待抽奖次数（chances） */
+    data class LotteryState(val chances: Int = 0, val error: String? = null) {
+        val ok: Boolean get() = error == null
+    }
+
+    fun lotteryState(domain: String, accessToken: String, uid: String, enterpriseId: String = ""): LotteryState {
+        if (accessToken.isBlank()) return LotteryState(error = "accessToken 为空")
+        val resp = request(
+            base = chatBase(domain), path = LOTTERY_SUMMARY_PATH, method = "GET",
+            token = accessToken, uid = uid, enterpriseId = enterpriseId, domain = domain, body = null,
+        )
+        if (resp.status != 200) return LotteryState(error = "HTTP ${resp.status}")
+        val parsed = parseAction(resp.body)
+        if (!parsed.ok) return LotteryState(error = parsed.error)
+        return LotteryState(chances = int(dataObject(resp.body), "chances") ?: 0)
+    }
+
     fun lotteryDraw(domain: String, accessToken: String, uid: String, enterpriseId: String = ""): ActionResult {
         val body = JsonObject().apply { addProperty("client_token", UUID.randomUUID().toString()) }
         val resp = request(

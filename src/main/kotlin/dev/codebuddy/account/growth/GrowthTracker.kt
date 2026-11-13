@@ -23,6 +23,9 @@ object GrowthTracker {
 
     private const val STALE_MS = 5 * 60_000L
 
+    /** 成长计划详情（今日活跃 / 连登 / 旅行）的缓存时效：状态按天变化，不必跟任务一起 5 分钟一刷 */
+    private const val DETAIL_STALE_MS = 10 * 60_000L
+
     /** 同类写操作的跨进程冷却：抑制多开实例同刻重复提交，不改变单次操作的业务结果 */
     private const val ACTION_COOLDOWN_MS = 15_000L
 
@@ -48,6 +51,38 @@ object GrowthTracker {
         val claimableCredit: Double get() = tasks.filter { it.claimable }.sumOf { it.rewardCredit }
     }
 
+    /**
+     * 成长计划详情：单个账号的今日活跃 / 连登 / Buddy 旅行。
+     *
+     * 与 [AccountGrowth] 分开查询：这三项各自一个接口，跟任务列表一起查会把
+     * 「成长中心任务」卡也一起拖慢，所以只在看板需要时按独立缓存拉取。
+     */
+    data class AccountDetail(
+        val accountKey: String,
+        val displayName: String,
+        val active: GrowthService.ActiveState? = null,
+        val streak: GrowthService.StreakState? = null,
+        val travel: GrowthService.TravelState? = null,
+        val error: String? = null,
+    )
+
+    data class DetailState(
+        val items: List<AccountDetail> = emptyList(),
+        val fetchedAt: Long = 0L,
+        val loading: Boolean = false,
+    ) {
+        val loaded: Boolean get() = fetchedAt > 0L
+        val total: Int get() = items.size
+
+        /** 今日已活跃的账号数（查询失败的账号不计入） */
+        val activeCount: Int get() = items.count { it.active?.let { a -> a.ok && a.active } == true }
+
+        /** 各账号连登天数的最大值；全部查询失败时为 0 */
+        val maxStreakDays: Int get() = items.maxOfOrNull { it.streak?.takeIf { s -> s.ok }?.days ?: 0 } ?: 0
+
+        val failedCount: Int get() = items.count { it.error != null }
+    }
+
     data class State(
         val items: List<AccountGrowth> = emptyList(),
         val fetchedAt: Long = 0L,
@@ -67,12 +102,45 @@ object GrowthTracker {
     @Volatile
     private var state = State()
 
+    @Volatile
+    private var detailState = DetailState()
+
     private val lock = Any()
     private var loading = false
     private var running = false
+    private var detailLoading = false
+
+    /** 查询进行期间发生了写操作 / 强刷：本轮结果作废，结束后必须再查一次 */
+    private var detailReloadPending = false
     private val waiters = mutableListOf<() -> Unit>()
+    private val detailWaiters = mutableListOf<() -> Unit>()
 
     fun state(): State = state
+
+    /** 成长计划详情缓存（今日活跃 / 连登 / 旅行） */
+    fun details(): DetailState = detailState
+
+    /** 查询各账号的今日活跃 / 连登 / 旅行；[DETAIL_STALE_MS] 内直接复用缓存 */
+    fun ensureFreshDetails(force: Boolean = false, onLoaded: (() -> Unit)? = null) {
+        synchronized(lock) {
+            val fresh = !force && detailState.loaded &&
+                System.currentTimeMillis() - detailState.fetchedAt < DETAIL_STALE_MS
+            if (fresh) return
+            if (onLoaded != null) detailWaiters.add(onLoaded)
+            if (detailLoading) {
+                // 正在查询的是操作之前的旧状态：本轮返回后必须重查，否则界面停在旧值
+                detailReloadPending = true
+                return
+            }
+            detailLoading = true
+            detailReloadPending = false
+            detailState = detailState.copy(loading = true)
+        }
+
+        ApplicationManager.getApplication().executeOnPooledThread {
+            publishDetails(loadDetails())
+        }
+    }
 
     /** 查询各账号成长任务；缓存有效时不发请求也不回调 */
     fun ensureFresh(force: Boolean = false, onLoaded: (() -> Unit)? = null) {
@@ -121,7 +189,12 @@ object GrowthTracker {
             if (!list.ok) return@launch "${snapshot.displayName}：${list.error}"
             val task = list.tasks.firstOrNull { it.taskCode == taskCode }
                 ?: return@launch "${snapshot.displayName}：任务不存在或已刷新"
-            val outcome = runAutoAction(snapshot, token, task)
+            // 已达标的任务只差领奖：跳过行为上报，直接走 claim（否则不可自动完成的任务会卡在「需在客户端完成」）
+            val outcome = if (task.claimable) {
+                GrowthActions.Outcome(true, "已达标")
+            } else {
+                runAutoAction(snapshot, token, task)
+            }
             if (!outcome.ok) return@launch "${snapshot.displayName}：${outcome.message}"
             val claim = GrowthService.claimTask(
                 domain = snapshot.domain,
@@ -583,6 +656,17 @@ object GrowthTracker {
     private fun finish(items: List<AccountGrowth>) {
         synchronized(lock) { running = false }
         publish(items)
+        // 接取 / 上报 / 补签 / 旅行都可能改变活跃与连登，详情缓存一并过期，等看板下次读取时重查
+        invalidateDetails()
+    }
+
+    /** 详情缓存过期（不影响已渲染的旧数据，只让下一次 ensureFreshDetails 重新查询） */
+    private fun invalidateDetails() {
+        synchronized(lock) {
+            if (detailState.fetchedAt > 0L) detailState = detailState.copy(fetchedAt = 0L)
+            // 本轮查询发出于写操作之前：结果已过期，返回后补一次
+            if (detailLoading) detailReloadPending = true
+        }
     }
 
     private fun loadTasks(): List<AccountGrowth> {
@@ -612,6 +696,64 @@ object GrowthTracker {
                 )
                 AccountGrowth(s.accountKey, s.displayName, r.tasks, error = r.error)
             }
+        }
+    }
+
+    /** 逐账号查今日活跃 / 连登 / 旅行；与任务列表分开，避免拖慢成长中心任务卡 */
+    private fun loadDetails(): List<AccountDetail> {
+        val settings = AccountSettings.getInstance()
+        if (!settings.growthEnabled) return emptyList()
+
+        val library = AccountLibrary.getInstance()
+        val saved: List<CredentialSnapshot> = try {
+            library.listSaved()
+        } catch (t: Throwable) {
+            log.warn("读取账号库失败", t)
+            emptyList()
+        }
+
+        val tokens = library.accessTokenMap()
+        return saved.map { s ->
+            val token = tokens[s.accountKey]
+            if (token.isNullOrBlank()) {
+                AccountDetail(s.accountKey, s.displayName, error = "快照中无 accessToken")
+            } else {
+                AccountDetail(
+                    accountKey = s.accountKey,
+                    displayName = s.displayName,
+                    active = GrowthService.todayActive(s.domain, token, s.uid, settings.growthEnterpriseId),
+                    streak = GrowthService.streak(s.domain, token, s.uid, settings.growthEnterpriseId),
+                    travel = GrowthService.travelStatus(s.domain, token, s.uid, settings.growthEnterpriseId),
+                )
+            }
+        }
+    }
+
+    private fun publishDetails(items: List<AccountDetail>) {
+        val pending: List<() -> Unit>
+        val reload: Boolean
+        synchronized(lock) {
+            detailState = DetailState(items = items, fetchedAt = System.currentTimeMillis(), loading = false)
+            detailLoading = false
+            reload = detailReloadPending
+            detailReloadPending = false
+            pending = detailWaiters.toList()
+            detailWaiters.clear()
+        }
+        if (reload) {
+            // 本轮结果是写操作之前的：回调留给补查那一轮，界面才不会停在旧状态
+            synchronized(lock) { detailWaiters.addAll(pending) }
+            ensureFreshDetails(force = true)
+            return
+        }
+        pending.forEach { callback ->
+            ApplicationManager.getApplication().invokeLater({
+                try {
+                    callback()
+                } catch (t: Throwable) {
+                    log.warn("成长计划详情回调失败", t)
+                }
+            }, ModalityState.any())
         }
     }
 
