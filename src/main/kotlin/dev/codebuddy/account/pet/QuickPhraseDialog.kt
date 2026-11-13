@@ -51,6 +51,14 @@ class QuickPhraseDialog(
     /** 回填期间抑制选中事件，避免「一选中就保存」把正在编辑的内容覆盖掉 */
     private var loading = false
 
+    /**
+     * 编辑区当前对应的条目下标。
+     *
+     * 不能用 [phraseList] 的 selectedIndex 代替：选中事件触发时它已是「新选中项」，
+     * 拿它当写回目标会把当前编辑内容覆盖到新选中的条目上，表现为「切一次就改坏一条」。
+     */
+    private var editingIndex = -1
+
     init {
         title = "快捷短语"
         titleField.toolTipText = "标题留空时自动取正文首行"
@@ -143,16 +151,19 @@ class QuickPhraseDialog(
         .replace("<", "&lt;")
         .replace(">", "&gt;")
 
-    /** 列表选中变化：先保存上一条，再回填当前条 */
+    /** 列表选中变化：先把编辑区写回上一条（[editingIndex]），再回填当前条 */
     private fun showSelected() {
         if (loading) return
+        val target = phraseList.selectedIndex
+        if (target == editingIndex) return
         commit()
-        fillEditor(phraseList.selectedIndex)
+        fillEditor(target)
     }
 
     /** 把编辑区回填为指定条目；-1 表示清空 */
     private fun fillEditor(index: Int) {
         loading = true
+        editingIndex = index
         if (index in entries.indices) {
             titleField.text = entries[index].title
             textArea.text = entries[index].text
@@ -163,9 +174,9 @@ class QuickPhraseDialog(
         loading = false
     }
 
-    /** 把编辑区内容写回选中条目；正文为空时保留原值，不误删 */
+    /** 把编辑区内容写回 [editingIndex] 指向的条目；正文为空时保留原值，不误删 */
     private fun commit(): Boolean {
-        val index = phraseList.selectedIndex
+        val index = editingIndex
         if (index !in entries.indices) return false
         val phrase = QuickPhraseStore.normalize(
             QuickPhraseStore.Phrase(titleField.text, textArea.text)
@@ -173,7 +184,8 @@ class QuickPhraseDialog(
         if (phrase == entries[index]) return true
         entries[index] = phrase
         QuickPhraseStore.save(entries)
-        refresh(index)
+        // 只更新这一行，不重建列表也不改选中，避免打断正在进行的选中切换
+        if (index < model.size()) model.set(index, phrase)
         return true
     }
 
@@ -181,17 +193,16 @@ class QuickPhraseDialog(
         loading = true
         model.clear()
         entries.forEach(model::addElement)
-        if (entries.isNotEmpty()) {
-            phraseList.selectedIndex = select.coerceIn(0, entries.size - 1)
-        }
+        val target = if (entries.isEmpty()) -1 else select.coerceIn(0, entries.size - 1)
+        phraseList.selectedIndex = target
         loading = false
-        fillEditor(if (entries.isEmpty()) -1 else phraseList.selectedIndex)
+        fillEditor(target)
     }
 
     private fun addPhrase() {
         commit()
         // 编辑区有内容但列表里还没有对应条目：先作为新条目落库，别丢
-        if (phraseList.selectedIndex !in entries.indices) {
+        if (editingIndex !in entries.indices) {
             QuickPhraseStore.normalize(QuickPhraseStore.Phrase(titleField.text, textArea.text))?.let {
                 entries.add(it)
                 QuickPhraseStore.save(entries)
@@ -205,7 +216,7 @@ class QuickPhraseDialog(
     }
 
     private fun removePhrase() {
-        val index = phraseList.selectedIndex
+        val index = editingIndex
         if (index !in entries.indices) return
         val phrase = entries[index]
         val answer = Messages.showYesNoDialog(
@@ -223,7 +234,7 @@ class QuickPhraseDialog(
 
     private fun move(delta: Int) {
         commit()
-        val index = phraseList.selectedIndex
+        val index = editingIndex
         val target = index + delta
         if (index !in entries.indices || target !in entries.indices) return
         val moved = entries.removeAt(index)
@@ -239,7 +250,7 @@ class QuickPhraseDialog(
             PetNotifier.warn("快捷短语", "先写一条短语再发送")
             return
         }
-        val index = phraseList.selectedIndex
+        val index = editingIndex
         QuickPhraseStore.normalize(QuickPhraseStore.Phrase(titleField.text, text))?.let { phrase ->
             if (index in entries.indices) entries[index] = phrase else entries.add(phrase)
             QuickPhraseStore.save(entries)
