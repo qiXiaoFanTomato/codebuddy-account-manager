@@ -52,6 +52,7 @@ class AccountSettingsConfigurable : Configurable {
     private val autoSwitchCheck = JCheckBox("当前账号额度低于阈值时自动调度到其他账号")
     private val autoSwitchThresholdSpinner = JSpinner(SpinnerNumberModel(10, 1, 100, 1))
     private val statusBarCheck = JCheckBox("在状态栏显示当前账号与剩余额度（立即生效）")
+    private val throughputCheck = JCheckBox("在状态栏显示模型输出速度（tok/s，立即生效）")
     private val tokenCheck = JCheckBox("启动时检查 token 过期并提醒")
     private val multiInstanceCheck = JCheckBox("多开 IDE 时仅由主实例自动刷新（其余实例复用共享配额结果）")
     private val leaderStateLabel = JBLabel()
@@ -126,6 +127,7 @@ class AccountSettingsConfigurable : Configurable {
             .addComponent(section("界面与显示") {
                 addLabeledComponent("界面色调（立即生效）：", themeCombo)
                 addComponent(statusBarCheck)
+                addComponent(throughputCheck)
                 addLabeledComponent("状态栏额度维度：", modeCombo)
                 addLabeledComponent("指定套餐（分组名包含该文字）：", packageField)
                 addComponent(petCheck)
@@ -213,6 +215,7 @@ class AccountSettingsConfigurable : Configurable {
             autoSwitchCheck.isSelected != s.autoSwitchEnabled ||
             intValue(autoSwitchThresholdSpinner) != s.autoSwitchThresholdPercent ||
             statusBarCheck.isSelected != s.showStatusBarWidget ||
+            throughputCheck.isSelected != s.showStatusBarThroughput ||
             tokenCheck.isSelected != s.checkTokenOnStartup ||
             (modeCombo.selectedItem as? QuotaDisplayMode) != s.statusBarMode ||
             packageField.text.trim() != s.statusBarPackage ||
@@ -251,6 +254,12 @@ class AccountSettingsConfigurable : Configurable {
         s.state.autoSwitchEnabled = autoSwitchCheck.isSelected
         s.state.autoSwitchThresholdPercent = intValue(autoSwitchThresholdSpinner).coerceIn(1, 100)
         s.state.showStatusBarWidget = statusBarCheck.isSelected
+        // 关掉速度读数时释放「仅统计」日志监控；桌宠在跑的全量监控不受影响
+        val throughputWasOn = s.showStatusBarThroughput
+        s.state.showStatusBarThroughput = throughputCheck.isSelected
+        if (throughputWasOn && !throughputCheck.isSelected) {
+            dev.codebuddy.account.pet.CodeBuddyWatcher.getInstance().stopMetricsOnly()
+        }
         s.state.checkTokenOnStartup = tokenCheck.isSelected
         s.state.statusBarMode = ((modeCombo.selectedItem as? QuotaDisplayMode) ?: QuotaDisplayMode.TOTAL_PERCENT).name
         s.state.statusBarPackage = packageField.text.trim()
@@ -309,6 +318,7 @@ class AccountSettingsConfigurable : Configurable {
         autoSwitchCheck.isSelected = s.autoSwitchEnabled
         autoSwitchThresholdSpinner.value = s.autoSwitchThresholdPercent.coerceIn(1, 100)
         statusBarCheck.isSelected = s.showStatusBarWidget
+        throughputCheck.isSelected = s.showStatusBarThroughput
         tokenCheck.isSelected = s.checkTokenOnStartup
         modeCombo.selectedItem = s.statusBarMode
         packageField.text = s.statusBarPackage

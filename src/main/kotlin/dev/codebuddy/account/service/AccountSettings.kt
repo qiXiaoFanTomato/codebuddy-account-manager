@@ -28,6 +28,13 @@ class AccountSettings : PersistentStateComponent<AccountSettings.State> {
         var copyMessagesOnSync: Boolean = true,
         /** 在状态栏显示当前账号与剩余额度 */
         var showStatusBarWidget: Boolean = true,
+        /**
+         * 在状态栏显示模型输出速度（tok/s）。
+         *
+         * 数据来自 CodeBuddy 运行日志的 `Step execution metrics`，按「步」采样，
+         * 步耗时含工具执行与等待，因此是速度下界。
+         */
+        var showStatusBarThroughput: Boolean = true,
         /** 状态栏额度展示维度（QuotaDisplayMode.name） */
         var statusBarMode: String = "TOTAL_PERCENT",
         /** 「指定套餐」模式下用于匹配分组名的关键字 */
@@ -133,6 +140,7 @@ class AccountSettings : PersistentStateComponent<AccountSettings.State> {
     val autoSyncHistoryOnSwitch: Boolean get() = myState.autoSyncHistoryOnSwitch
     val copyMessagesOnSync: Boolean get() = myState.copyMessagesOnSync
     val showStatusBarWidget: Boolean get() = myState.showStatusBarWidget
+    val showStatusBarThroughput: Boolean get() = myState.showStatusBarThroughput
     val statusBarMode: dev.codebuddy.account.quota.QuotaDisplayMode
         get() = dev.codebuddy.account.quota.QuotaDisplayMode.of(myState.statusBarMode)
 

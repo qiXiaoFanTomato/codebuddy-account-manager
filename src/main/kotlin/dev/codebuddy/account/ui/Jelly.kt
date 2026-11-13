@@ -557,6 +557,9 @@ internal class NumberDisplayBuilder {
     private val sb = StringBuilder()
     private val slots = ArrayList<NumberDisplaySlot>()
 
+    /** 还没有写入任何内容（状态栏据此决定前缀分隔符） */
+    val isEmpty: Boolean get() = sb.isEmpty()
+
     /** 纯文本段：账号名这类含数字的文案走这里，不参与滚动 */
     fun text(value: String) {
         sb.append(value)

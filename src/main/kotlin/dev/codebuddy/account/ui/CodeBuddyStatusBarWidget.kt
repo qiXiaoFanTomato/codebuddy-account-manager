@@ -1,5 +1,6 @@
 package dev.codebuddy.account.ui
 
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.wm.StatusBar
 import com.intellij.openapi.wm.StatusBarWidget
@@ -8,6 +9,8 @@ import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.util.Consumer
 import com.intellij.util.messages.MessageBusConnection
 import dev.codebuddy.account.model.CredentialSnapshot
+import dev.codebuddy.account.pet.CbEventCenter
+import dev.codebuddy.account.pet.CodeBuddyWatcher
 import dev.codebuddy.account.quota.QuotaDisplayMode
 import dev.codebuddy.account.quota.QuotaSummary
 import dev.codebuddy.account.quota.QuotaTime
@@ -29,8 +32,14 @@ class CodeBuddyStatusBarWidgetFactory : StatusBarWidgetFactory {
 
     override fun getDisplayName(): String = "CodeBuddy 账号"
 
-    override fun isAvailable(project: Project): Boolean =
-        AccountSettings.getInstance().showStatusBarWidget
+    /**
+     * 输出速度是独立读数：主人关掉「账号与剩余额度」时，
+     * 只要速度开关还开着，这个 widget 也要继续存在，否则速度开关等于没生效。
+     */
+    override fun isAvailable(project: Project): Boolean {
+        val settings = AccountSettings.getInstance()
+        return settings.showStatusBarWidget || settings.showStatusBarThroughput
+    }
 
     override fun createWidget(project: Project): StatusBarWidget =
         CodeBuddyStatusBarWidget(project)
@@ -68,7 +77,8 @@ class CodeBuddyStatusBarWidget(private val project: Project) :
         this.statusBar = statusBar
 
         connection?.disconnect()
-        connection = project.messageBus.connect(this)
+        // 运行态广播（吞吐 / 限流）走应用级消息总线，订阅项目级总线收不到
+        connection = ApplicationManager.getApplication().messageBus.connect(this)
         connection?.subscribe(
             AccountEvents.TOPIC,
             object : AccountEvents {
@@ -83,8 +93,10 @@ class CodeBuddyStatusBarWidget(private val project: Project) :
                 // 看板布局只影响工具窗内容，状态栏读数无需重算
                 override fun dashboardLayoutChanged(origin: Any) = Unit
 
-                // 限流记录只影响看板卡片，状态栏读数不变
-                override fun runtimeChanged() = Unit
+                // 运行态变化主要是「最近一步输出速度」更新：只需重算文本，不算额度缓存
+                override fun runtimeChanged() {
+                    requestRefresh()
+                }
             }
         )
 
@@ -94,6 +106,7 @@ class CodeBuddyStatusBarWidget(private val project: Project) :
 
         // 全进程共用一个轮询任务：多开项目窗口时不再每个窗口各起一个 3 秒任务
         INSTANCES.add(this)
+        ensureThroughputWatcher()
         ensurePoller()
     }
 
@@ -108,8 +121,10 @@ class CodeBuddyStatusBarWidget(private val project: Project) :
     override fun getAlignment(): Float = Component.CENTER_ALIGNMENT
 
     override fun getText(): String {
-        // 兜底：若动态移除 widget 失败（内部 API 变动），至少让内容为空
-        if (!AccountSettings.getInstance().showStatusBarWidget) return ""
+        // 兜底：若动态移除 widget 失败（内部 API 变动），至少让内容为空；
+        // 只关掉额度展示时仍需留出速度读数，所以两个开关都关才彻底清空
+        val settings = AccountSettings.getInstance()
+        if (!settings.showStatusBarWidget && !settings.showStatusBarThroughput) return ""
         if (renderedText.isEmpty()) {
             // 尚未完成首次加载时同步取一次，保证状态栏不会空白
             rolling.offer(computeDisplay(), animate = false)
@@ -118,32 +133,41 @@ class CodeBuddyStatusBarWidget(private val project: Project) :
     }
 
     override fun getTooltipText(): String {
-        val snapshot = snapshot() ?: return "CodeBuddy 未登录，点击打开账号管理器"
         val sb = StringBuilder()
-        sb.append("${snapshot.displayName}（${snapshot.domainHost}）\n")
-        sb.append(
-            "Token：${
-                when {
-                    snapshot.isRefreshTokenExpired -> "已过期"
-                    snapshot.isAccessTokenExpired -> "access token 已过期"
-                    else -> "有效"
+        val snapshot = snapshot()
+        if (snapshot == null) {
+            sb.append("CodeBuddy 未登录\n")
+        } else {
+            val settings = AccountSettings.getInstance()
+            if (settings.showStatusBarWidget) {
+                sb.append("${snapshot.displayName}（${snapshot.domainHost}）\n")
+                sb.append(
+                    "Token：${
+                        when {
+                            snapshot.isRefreshTokenExpired -> "已过期"
+                            snapshot.isAccessTokenExpired -> "access token 已过期"
+                            else -> "有效"
+                        }
+                    }\n"
+                )
+                val quota = quotaOf(snapshot.accountKey)
+                if (quota != null && quota.error == null) {
+                    sb.append("额度：${quota.summaryText()}（${"%.0f".format(quota.usableRemainPercent)}%）\n")
+                    sb.append("细项：${quota.packages.size} 条，其中仍有效 ${quota.usablePackages.size} 条\n")
+
+                    // 分组明细（总的 + 细的）
+                    for (group in quota.groups().take(4)) {
+                        sb.append("· ${group.name}：${group.usageText()}（${group.packages.size} 条）\n")
+                    }
+
+                    quota.nextExpiring?.let {
+                        sb.append("最近到期：${it.displayGroup}（${QuotaTime.remainingText(it.expireMillis)}）\n")
+                    }
                 }
-            }\n"
-        )
-        val quota = quotaOf(snapshot.accountKey)
-        if (quota != null && quota.error == null) {
-            sb.append("额度：${quota.summaryText()}（${"%.0f".format(quota.usableRemainPercent)}%）\n")
-            sb.append("细项：${quota.packages.size} 条，其中仍有效 ${quota.usablePackages.size} 条\n")
-
-            // 分组明细（总的 + 细的）
-            for (group in quota.groups().take(4)) {
-                sb.append("· ${group.name}：${group.usageText()}（${group.packages.size} 条）\n")
-            }
-
-            quota.nextExpiring?.let {
-                sb.append("最近到期：${it.displayGroup}（${QuotaTime.remainingText(it.expireMillis)}）\n")
             }
         }
+        // 速度明细放 tooltip：状态栏正文只留一个读数，避免挤压账号与额度
+        throughputSample()?.let { sb.append("输出速度：${it.detail()}\n") }
         sb.append("点击打开账号管理器")
         return "<html>${sb.toString().trimEnd().replace("\n", "<br/>")}</html>"
     }
@@ -186,14 +210,31 @@ class CodeBuddyStatusBarWidget(private val project: Project) :
 
     /** 按当前设置拼出状态栏文本，并记录其中数值的槽位 */
     private fun computeDisplay(): NumberDisplay {
-        val snapshot = snapshot() ?: return NumberDisplay("CodeBuddy: 未登录", emptyList())
-        val quota = quotaOf(snapshot.accountKey)
-        if (quota == null || quota.error != null) {
-            return NumberDisplay("CodeBuddy: ${snapshot.displayName}", emptyList())
-        }
-
         val settings = AccountSettings.getInstance()
         val b = NumberDisplayBuilder()
+        // 账号与额度是可选段：主人只想要速度时，这两段整体不占位
+        if (settings.showStatusBarWidget) appendAccountPart(b, settings)
+        // 模型输出速度：只在最近一步刚结束时出现，静置后自动隐去，避免挂着陈旧读数；
+        // 走 text 段而不是 num 段，不参与额度数值的缓动滚动
+        throughputSample()?.let { usage ->
+            if (b.isEmpty) b.text("CodeBuddy ") else b.text(" · ")
+            b.text(speedText(usage))
+        }
+        return b.build()
+    }
+
+    /** 账号名 + 按展示维度选择的额度读数；没有账号或额度数据时只留可用信息 */
+    private fun appendAccountPart(b: NumberDisplayBuilder, settings: AccountSettings) {
+        val snapshot = snapshot() ?: run {
+            b.text("CodeBuddy: 未登录")
+            return
+        }
+        val quota = quotaOf(snapshot.accountKey)
+        if (quota == null || quota.error != null) {
+            b.text("CodeBuddy: ${snapshot.displayName}")
+            return
+        }
+
         b.text("CodeBuddy: ${snapshot.displayName} · ")
         when (settings.statusBarMode) {
             QuotaDisplayMode.TOTAL_PERCENT -> {
@@ -246,8 +287,11 @@ class CodeBuddyStatusBarWidget(private val project: Project) :
                 }
             }
         }
-        return b.build()
     }
+
+    /** 速度读数正文：只取整，后缀统一 tok/s */
+    private fun speedText(usage: CbEventCenter.UsageSample): String =
+        String.format(Locale.ROOT, "%.0f", usage.tokensPerSecond) + " tok/s"
 
     /** 与 [dev.codebuddy.account.quota.QuotaPackage.fmt] 保持一致的显示格式 */
     private fun formatOf(value: Double): String =
@@ -255,6 +299,37 @@ class CodeBuddyStatusBarWidget(private val project: Project) :
         else String.format(Locale.ROOT, "%.2f", value)
 
     private fun intText(value: Double): String = String.format(Locale.ROOT, "%.0f", value)
+
+    // ---------------------------------------------------------------
+    // 输出速度（tok/s）
+    // ---------------------------------------------------------------
+
+    /**
+     * 最近一步的输出速度；开关关闭、没有样本或样本过期时返回 null。
+     *
+     * 口径是 CodeBuddy 日志 `Step execution metrics` 的「本步输出 token / 本步耗时」，
+     * 步耗时含工具执行与等待，所以读数是实际生成速度的下界。
+     */
+    private fun throughputSample(): CbEventCenter.UsageSample? {
+        if (!AccountSettings.getInstance().showStatusBarThroughput) return null
+        val usage = CbEventCenter.recentUsage() ?: return null
+        if (System.currentTimeMillis() - usage.at > THROUGHPUT_TTL_MS) return null
+        if (usage.tokensPerSecond <= 0.0) return null
+        return usage
+    }
+
+    /**
+     * 需要速度读数时确保日志监控在跑：桌宠关闭时它不会启动，这里用「仅统计」模式拉起，
+     * 只解析吞吐、不判权限确认。桌宠已在跑时不会降级成仅统计。
+     */
+    private fun ensureThroughputWatcher() {
+        if (!AccountSettings.getInstance().showStatusBarThroughput) return
+        try {
+            CodeBuddyWatcher.getInstance().startMetricsOnly()
+        } catch (_: Exception) {
+            // 监控不可用时只是没有速度读数，不影响账号与额度展示
+        }
+    }
 
     // ---------------------------------------------------------------
     // 数据（3 秒节流）
@@ -294,6 +369,9 @@ class CodeBuddyStatusBarWidget(private val project: Project) :
         /** 额度变化轮询间隔（毫秒） */
         private const val POLL_INTERVAL_MS = 3000L
 
+        /** 吞吐样本有效期：超过 2 分钟没有新的一步，视为空闲，不再显示旧速度 */
+        private const val THROUGHPUT_TTL_MS = 2 * 60_000L
+
         private val LOCK = Any()
 
         /** 后台轮询线程（守护线程，随 IDE 退出） */
@@ -311,7 +389,11 @@ class CodeBuddyStatusBarWidget(private val project: Project) :
             POLLER.scheduleWithFixedDelay(
                 {
                     for (widget in INSTANCES) {
-                        try { widget.requestRefresh() } catch (_: Exception) { }
+                        try {
+                            // 设置页重新打开速度开关后无需重启 IDE：轮询顺手把监控拉起（幂等）
+                            widget.ensureThroughputWatcher()
+                            widget.requestRefresh()
+                        } catch (_: Exception) { }
                     }
                 },
                 POLL_INTERVAL_MS,
