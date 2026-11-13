@@ -80,8 +80,6 @@ class AccountSettings : PersistentStateComponent<AccountSettings.State> {
         var dashboardHiddenCards: MutableList<String> = mutableListOf(),
         /** 看板卡片顺序（DashboardCardId.name），缺省按枚举声明顺序 */
         var dashboardCardOrder: MutableList<String> = mutableListOf(),
-        /** 看板统一的卡片尺寸档位（DashboardCardSize.name），所有卡片共用 */
-        var dashboardCardSize: String = "MEDIUM_2X2",
     )
 
     private var myState = State()
@@ -197,7 +195,7 @@ class AccountSettings : PersistentStateComponent<AccountSettings.State> {
     }
 
     // ---------------------------------------------------------------
-    // 看板卡片布局：隐藏 / 顺序 / 尺寸
+    // 看板卡片布局：隐藏 / 顺序
     // ---------------------------------------------------------------
 
     /** 已隐藏的看板卡片名集合 */
@@ -219,21 +217,10 @@ class AccountSettings : PersistentStateComponent<AccountSettings.State> {
         myState.dashboardCardOrder = order.toMutableList()
     }
 
-    /** 看板统一的卡片尺寸档位名（DashboardCardSize.name） */
-    val dashboardCardSize: String
-        get() = myState.dashboardCardSize
-
-    /** 记录统一的卡片尺寸档位 */
-    fun setDashboardCardSize(sizeName: String) {
-        if (sizeName.isBlank()) return
-        myState.dashboardCardSize = sizeName
-    }
-
-    /** 清空看板布局覆盖，恢复默认（隐藏的卡片全部回来，顺序与尺寸回默认） */
+    /** 清空看板布局覆盖，恢复默认（隐藏的卡片全部回来，顺序回默认） */
     fun resetDashboardLayout() {
         myState.dashboardHiddenCards = mutableListOf()
         myState.dashboardCardOrder = mutableListOf()
-        myState.dashboardCardSize = "MEDIUM_2X2"
     }
 
     companion object {

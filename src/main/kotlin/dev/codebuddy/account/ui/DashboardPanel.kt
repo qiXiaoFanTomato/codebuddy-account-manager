@@ -43,10 +43,10 @@ import javax.swing.*
  *
  * 全部功能都以卡片形式铺在网格里（[DashboardCardGridLayout]）。点「管理卡片」进入编辑模式后，
  * 卡片可拖拽排序、可移除，也能从「＋ 添加卡片」里恢复；增删与重排都带过渡动画。
- * 工具条上的「尺寸」统一切换全屏卡片的高度档位
- * （2×1 / 2×2 / 2×4）——所有卡片始终同宽同高，内容按档位容量裁剪，不因数据条数高矮不齐。
+ * 卡片高度自适应：不低于 2×2 基准高度，列表超出 2×2 容量时自己长高到 2×4 的高度（不封顶），
+ * 同一行内对齐到该行最高的一张，不需要高度的卡片不会被旁边的长卡拖高。
  *
- * 卡片的可见性、顺序与统一尺寸记在 [AccountSettings]，重开工具窗仍是用户排过的样子。
+ * 卡片的可见性与顺序记在 [AccountSettings]，重开工具窗仍是用户排过的样子。
  *
  * 除账号 / 额度数据外，这里也承载 CodeBuddy 运行态（限流、成长计划、观察代点、事件记录、
  * 对话活跃）：原先的「CodeBuddy 增强助手」窗口已删除，同一功能点只在这套卡片里出现一次。
@@ -269,21 +269,19 @@ class DashboardPanel(
     /**
      * 建一张可增删 / 可拖拽排序的卡片。
      *
-     * 尺寸档位由看板统一指定（工具栏切换），所有卡片同宽同高；
-     * 内容按档位容量裁剪，卡片之间不会因为数据条数不同而高矮不齐。
+     * 所有卡片同宽（半行），高度自适应内容：不低于基准高度，装不下就自己长高。
      */
     private fun newCard(
         id: DashboardCardId,
         title: String = id.title,
         subtitle: String? = null,
-        span: Int = currentSize().columns,
+        span: Int = DASHBOARD_CARD_SPAN,
         fill: (DashboardCard) -> Unit,
     ): DashboardCard {
         val card = DashboardCard(
             id = id,
             title = title,
             subtitle = subtitle,
-            size = currentSize(),
             span = span,
             onRemove = { card -> removeCardWithAnimation(card, id) },
         )
@@ -292,11 +290,7 @@ class DashboardPanel(
         return card
     }
 
-    /** 当前统一的卡片尺寸档位 */
-    private fun currentSize(): DashboardCardSize =
-        DashboardCardSize.of(settings.dashboardCardSize) ?: DashboardCardSize.DEFAULT
-
-    /** 按当前顺序 / 可见性 / 统一尺寸重建网格（不触发数据刷新） */
+    /** 按当前顺序 / 可见性重建网格（不触发数据刷新） */
     private fun rebuildGrid() {
         if (lastSaved.isEmpty()) return
         val hidden = settings.hiddenDashboardCards
@@ -463,21 +457,14 @@ class DashboardPanel(
     }
 
     /**
-     * 看板标题行右侧：统一尺寸 +「＋ 添加卡片」（仅编辑态）+「管理卡片 / 完成编辑」。
+     * 看板标题行右侧：「＋ 添加卡片」（仅编辑态）+「管理卡片 / 完成编辑」。
      *
      * 由外部（主面板的 `.view-head`）挂载，看板自身不再单独占一行工具条，
      * 与 design/plugin-ui.html 的 `.view-head` 一行标题 + 右侧操作保持一致。
+     * 卡片高度不再提供手动档位，装箱策略完全由内容决定。
      */
     fun headerControls(): JComponent {
         val actions = JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(6), 0)).apply { isOpaque = false }
-        lateinit var sizeButton: JellyButton
-        sizeButton = JellyButton(
-            "尺寸 ${currentSize().label}",
-            JellyButtonVariant.SECONDARY,
-            null,
-            "统一切换全部卡片的尺寸",
-        ) { showSizeMenu(sizeButton) }
-        actions.add(sizeButton)
 
         lateinit var add: JellyButton
         add = JellyButton(
@@ -499,28 +486,6 @@ class DashboardPanel(
         editButton = manage
         actions.add(manage)
         return actions
-    }
-
-    /** 尺寸菜单：一处切换，全部卡片跟着换尺寸与高度 */
-    private fun showSizeMenu(anchor: JComponent) {
-        val menu = JPopupMenu()
-        val group = ButtonGroup()
-        val current = currentSize()
-        for (size in DashboardCardSize.entries) {
-            val item = JRadioButtonMenuItem(
-                "${size.label}　${size.columns} 格宽 · ${size.heightDp} dp 高",
-                size == current,
-            )
-            item.addActionListener {
-                settings.setDashboardCardSize(size.name)
-                (anchor as? JellyButton)?.text = "尺寸 ${size.label}"
-                AccountEvents.fireDashboardLayoutChanged(this@DashboardPanel)
-                rebuildWithTransition()
-            }
-            group.add(item)
-            menu.add(item)
-        }
-        menu.show(anchor, 0, anchor.height)
     }
 
     /** 编辑模式下的「添加卡片」：列出所有已隐藏卡片，末项可一键恢复默认布局 */
@@ -1814,8 +1779,8 @@ class DashboardPanel(
         }
 
         fun walk(component: Component) {
-            // 按钮 / 链接 / 拖拽抓手 / 尺寸按钮自己有动作，不再叠卡片点击，
-            // 否则点「刷新」会连带打开明细窗口，点尺寸按钮会连带跳转
+            // 按钮 / 链接 / 拖拽抓手 / 卡片自带小控件自己有动作，不再叠卡片点击，
+            // 否则点「刷新」会连带打开明细窗口，点抓手会连带跳转
             if (component is AbstractButton || component is JellyButton ||
                 component is ActionPill || component is CardIconButton ||
                 (component as? JComponent)?.getClientProperty(DASHBOARD_CARD_ACTION_KEY) == true

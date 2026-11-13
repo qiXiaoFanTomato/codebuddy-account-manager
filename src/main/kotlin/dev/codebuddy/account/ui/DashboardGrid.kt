@@ -29,10 +29,10 @@ import javax.swing.TransferHandler
 const val DASHBOARD_SPAN_FULL: Int = 0
 
 /**
- * 标记卡片自带的交互控件（拖拽抓手 / 尺寸按钮）。
+ * 标记卡片自带的交互控件（拖拽抓手 / 移除按钮）。
  *
  * 「整卡可点击」的安装会遍历所有子组件挂监听，遇到带此标记的组件必须跳过，
- * 否则点尺寸按钮会连带触发卡片本身的点击动作。
+ * 否则点小控件会连带触发卡片本身的点击动作。
  */
 const val DASHBOARD_CARD_ACTION_KEY: String = "codebuddy.dashboardCardAction"
 
@@ -67,42 +67,17 @@ enum class DashboardCardId(val title: String) {
     }
 }
 
-/**
- * 卡片尺寸档位：统一列数 × 高度档位，全局生效，不按卡片单独设置。
- *
- * 三档都占 2 格宽（4 格网格里一行两张），靠高度区分：
- * - 2×1 宽扁，适合「主指标 + 一两行」；
- * - 2×2 近方，适合 KPI 与短列表；
- * - 2×4 高，适合逐条明细。
- *
- * [heightDp] 是整屏卡片的统一高度下限；内容更高时整屏一起抬高
- * （见 [DashboardCardGridLayout]），保证任何时刻所有卡片等高。
- */
-enum class DashboardCardSize(val label: String, val columns: Int, val heightDp: Int) {
-
-    SMALL_2X1("2×1", 2, 196),
-    MEDIUM_2X2("2×2", 2, 292),
-    TALL_2X4("2×4", 2, 532),
-    ;
-
-    companion object {
-
-        /** 默认档位 */
-        val DEFAULT: DashboardCardSize get() = MEDIUM_2X2
-
-        /** 解析设置里存的档位名（容忍存成 label 的旧数据） */
-        fun of(name: String?): DashboardCardSize? =
-            entries.firstOrNull { it.name == name || it.label == name }
-    }
-}
+/** 卡片默认跨列数：4 格网格里一行两张 */
+const val DASHBOARD_CARD_SPAN: Int = 2
 
 /**
- * 看板卡片网格：按可用宽度分格，所有卡片同宽（2 格）、同高。
+ * 看板卡片网格：按可用宽度分格，所有卡片同宽（[DASHBOARD_CARD_SPAN] 格）。
  *
  * 与 [WrapGridLayout] 的差别：
  * - 列数向下取偶数，2 格宽的卡片刚好铺满每行，不会留半列空位；
- * - 卡片高度取「全屏最高卡片」，一次布局后所有卡片等高，
- *   内容少的卡片多出来的空间由卡片内部的 glue 吃掉。
+ * - 卡片高度自适应：内容少停在基准高度，内容多自己长高；
+ *   同一行内对齐到该行最高的一张，行与行之间互不牵连，
+ *   所以不需要高的卡片不会被旁边的长卡拖高。
  */
 class DashboardCardGridLayout(
     private val hgap: Int,
@@ -132,24 +107,18 @@ class DashboardCardGridLayout(
             }
             val columns = columnCount(available)
             val cellWidth = cellWidth(available, columns)
-            val visible = visibleChildren(parent)
-            // 统一高度：取全屏最高的那张卡，剩下的卡片一起对齐到这个高度
-            val uniformHeight = uniformHeight(visible)
 
-            var x = insets.left
             var y = insets.top
-            var used = 0
-            for (comp in visible) {
-                val span = spanOf(comp, columns)
-                if (used > 0 && used + span > columns) {
-                    y += uniformHeight + vgap
-                    x = insets.left
-                    used = 0
+            for (row in rowsOf(visibleChildren(parent), columns)) {
+                // 行内等高：该行最高的那张卡决定整行高度，行与行不互相牵连
+                val rowHeight = row.maxOf { it.preferredSize.height }
+                var x = insets.left
+                for (comp in row) {
+                    val w = spanWidth(cellWidth, spanOf(comp, columns))
+                    comp.setBounds(x, y, w, rowHeight)
+                    x += w + hgap
                 }
-                val w = spanWidth(cellWidth, span)
-                comp.setBounds(x, y, w, uniformHeight)
-                x += w + hgap
-                used += span
+                y += rowHeight + vgap
             }
         }
     }
@@ -162,15 +131,13 @@ class DashboardCardGridLayout(
                 ?: lastAvailableWidth.takeIf { it > 0 }
                 ?: (minCellWidth * 4 + hgap * 3)
             val columns = columnCount(available)
-            val visible = visibleChildren(parent)
-            val uniformHeight = uniformHeight(visible)
+            val rows = rowsOf(visibleChildren(parent), columns)
 
-            // 行数：每行铺满 columns 格
-            var spanSum = 0
-            visible.forEach { spanSum += spanOf(it, columns) }
-            val rows = if (visible.isEmpty()) 0 else (spanSum + columns - 1) / columns
-
-            val height = if (rows <= 0) 0 else rows * uniformHeight + (rows - 1) * vgap
+            var height = 0
+            rows.forEachIndexed { index, row ->
+                if (index > 0) height += vgap
+                height += row.maxOf { it.preferredSize.height }
+            }
             return Dimension(
                 insets.left + insets.right + available,
                 insets.top + insets.bottom + height,
@@ -178,15 +145,30 @@ class DashboardCardGridLayout(
         }
     }
 
-    /** 整屏统一高度：所有卡片首选高度的最大值 */
-    private fun uniformHeight(visible: List<Component>): Int =
-        visible.maxOfOrNull { it.preferredSize.height } ?: 0
+    /** 按格数分行：放不下就换行，每行总格数不超过 [columns] */
+    private fun rowsOf(visible: List<Component>, columns: Int): List<List<Component>> {
+        val rows = mutableListOf<MutableList<Component>>()
+        var current = mutableListOf<Component>()
+        var used = 0
+        for (comp in visible) {
+            val span = spanOf(comp, columns)
+            if (used > 0 && used + span > columns) {
+                rows.add(current)
+                current = mutableListOf()
+                used = 0
+            }
+            current.add(comp)
+            used += span
+        }
+        if (current.isNotEmpty()) rows.add(current)
+        return rows
+    }
 
     /**
      * 格数：可用宽度能排下几个 [minCellWidth]，并向下取偶数。
      *
      * 卡片统一 2 格宽，列数取偶后每行刚好铺满，不会出现半列空位；
-     * 极窄（不足 2 格）时退回 1 列，卡片仍是满宽等高。
+     * 极窄（不足 2 格）时退回 1 列，卡片仍是满宽。
      */
     fun columnCount(available: Int): Int {
         if (available <= 0) return 1
@@ -217,7 +199,7 @@ class DashboardCardGridLayout(
          * 单格最小宽度（dp）。
          *
          * 取 160 是为了让常规工具窗稳定成 4 格：半行卡片两两并排、
-         * 整行卡片独占一行，与三档尺寸（2 格宽）正好对齐。
+         * 整行卡片独占一行，与 [DASHBOARD_CARD_SPAN] 格宽正好对齐。
          */
         const val MIN_CELL_WIDTH: Int = 160
     }
@@ -328,7 +310,7 @@ class FlowWrapLayout(
  *
  * 编辑能力由外壳统一提供，且只在 [setEditing] 打开编辑模式后可用，业务侧只管往 [body] 里塞内容：
  * - 标题栏拖拽抓手 [dragHandle] 按住拖动 → 重排顺序（DnD 由 [CardTransferHandler] 完成）；
- * - 尺寸档位由看板统一指定（[size]），卡片自身不再单独切换；
+ * - 高度自适应：不低于基准高度（[CardMetrics.baseCardHeight]），内容多就自己长高，不再手动切档；
  * - [dropLine] 是拖拽落点提示，由 [CardDropTracker] 在拖拽过程中设置。
  */
 class DashboardCard(
@@ -336,9 +318,8 @@ class DashboardCard(
     title: String,
     subtitle: String? = null,
     showHeader: Boolean = true,
-    size: DashboardCardSize = DashboardCardSize.DEFAULT,
-    /** 跨列数：默认与尺寸档位一致；[DASHBOARD_SPAN_FULL] 表示独占整行（HTML 的 `.dash-card--wide`） */
-    private val span: Int = size.columns,
+    /** 跨列数：默认半行宽；[DASHBOARD_SPAN_FULL] 表示独占整行（HTML 的 `.dash-card--wide`） */
+    private val span: Int = DASHBOARD_CARD_SPAN,
     private val onRemove: ((DashboardCard) -> Unit)? = null,
 ) : RoundedCard(AccountUiColors.cardBg, AccountUiColors.border, AccountUiRadius.card, elevated = true) {
 
@@ -348,14 +329,11 @@ class DashboardCard(
     /** 底部动作条：固定在卡片底边，与内容区之间留一个区块间距 */
     val actions = CardActionBar()
 
-    /** 明细行容量：随尺寸档位变化，内容按这个数裁剪 */
-    val listRows: Int get() = CardMetrics.listRows(size)
+    /** 明细行容量：固定上限，再多折「另有 N 项」，避免单卡被数据无限拉长 */
+    val listRows: Int get() = CardMetrics.maxListRows
 
     /** 拖拽抓手：挂在标题栏右侧 */
     val dragHandle: JComponent = CardDragHandle(this)
-
-    /** 统一的尺寸档位：由看板设置决定，所有卡片相同 */
-    val size: DashboardCardSize = size
 
     /** 编辑态进度：0 常态，1 编辑中，驱动强调色描边淡入淡出 */
     private val editAnim = JellyValue(this, 0.0)
@@ -466,14 +444,14 @@ class DashboardCard(
     }
 
     /**
-     * 卡片首选高度：档位高度与内容高度取大者。
+     * 卡片首选高度：基准高度与内容高度取大者，不设上限。
      *
-     * 宽度由网格布局决定；高度先按内容算，网格再取全屏最大值统一，
-     * 所以内容多的卡不会裁内容，内容少的卡会补白到同一高度。
+     * 宽度由网格布局决定；高度按内容算，所以装不下的卡会自己长高（等同自动升到 2×4，
+     * 内容再多也继续长），装得下的卡停在基准高度；网格只把同一行对齐到该行最高的一张。
      */
     override fun getPreferredSize(): Dimension {
         val base = super.getPreferredSize()
-        return Dimension(base.width, maxOf(base.height, JBUI.scale(size.heightDp)))
+        return Dimension(base.width, maxOf(base.height, JBUI.scale(CardMetrics.baseCardHeight)))
     }
 
     override fun paintComponent(g: Graphics) {

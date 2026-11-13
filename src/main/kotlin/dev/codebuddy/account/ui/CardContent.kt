@@ -25,7 +25,7 @@ import javax.swing.SwingUtilities
  *
  * 内容区自上而下只有三层，每层职责唯一，不允许卡片各写一套：
  * 1. 主指标 [CardHeadline]：全卡唯一的大号数值 + 单位 + 右侧状态；
- * 2. 明细 [CardList]：行式列表（行由 [CardRow] 组成），按尺寸档位的容量裁剪，
+ * 2. 明细 [CardList]：行式列表（行由 [CardRow] 组成），最多展开 [CardMetrics.maxListRows] 行，
  *    超出折成「另有 N 项」；
  * 3. 动作 [CardActionBar]：固定在卡片底边，左对齐、按宽度换行。
  *
@@ -46,25 +46,17 @@ object CardMetrics {
     /** 明细行右侧数值列宽（dp） */
     const val valueWidth = 96
 
-    /** 卡片外壳开销（dp）：标题栏 + 上下内边距 + 标题下的分隔线 */
-    const val chromeDp = 76
-
-    /** 动作条开销（dp）：一行按钮 + 与内容之间的间距 */
-    const val actionBarDp = 36
-
-    /** 主指标行开销（dp）：数值行 + 与列表之间的间距 */
-    const val headlineDp = 32
-
     /**
-     * 明细行容量：按统一档位高度倒推能放几行。
+     * 卡片基准高度（dp）：也就是 2×2 的高度，所有卡片的最低高度。
      *
-     * 2×1 只留最关键的两行，2×4 才铺满整列；容量固定后，
-     * 卡片高度不会被数据条数拉高拉低，整屏才能保持等高。
+     * 卡片不再手动切档：内容装得下就停在基准高度；
+     * 装不下由卡片自己长高（[DashboardCard.getPreferredSize]），
+     * 列表再多也只在 [maxListRows] 行内展开，超出的折「另有 N 项」。
      */
-    fun listRows(size: DashboardCardSize): Int {
-        val budget = (size.heightDp - chromeDp - actionBarDp - headlineDp).coerceAtLeast(0)
-        return (budget / (rowHeight + rowGap)).coerceIn(2, 16)
-    }
+    const val baseCardHeight = 292
+
+    /** 明细行容量上限（dp 换算约等于 2×4 的 532 高度）：再多就折成「另有 N 项」 */
+    const val maxListRows = 16
 }
 
 /**
@@ -236,7 +228,7 @@ class CardRow(
 /**
  * 明细列表：按容量显示行，多出来的折成「另有 N 项」。
  *
- * 容量来自尺寸档位（[CardMetrics.listRows]），数据条数再多也不会把卡撑变形；
+ * 容量上限为 [CardMetrics.maxListRows]，数据条数再多也不会把卡无限拉长；
  * 列表为空时给一行空态文案，保持卡内排版不塌陷。
  */
 class CardList(
