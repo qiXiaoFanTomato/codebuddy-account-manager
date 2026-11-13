@@ -288,6 +288,7 @@ class PetWindow(
         menu.add(JMenuItem("给我讲个笑话").apply { addActionListener { tellJoke() } })
         menu.add(JMenuItem("看一眼余额").apply { addActionListener { toggleBubble() } })
         menu.add(JMenuItem("翻翻聊过的记录…").apply { addActionListener { openHistory() } })
+        menu.add(JMenuItem("快捷短语…").apply { addActionListener { openPhrases() } })
         menu.add(
             JMenuItem(if (animator.isSleeping) "叫醒我" else "打个盹").apply {
                 addActionListener {
@@ -586,6 +587,12 @@ class PetWindow(
     private fun openSettings() {
         bubble.hide()
         PetSettingsDialog.show { PetService.getInstance().applySettings() }
+    }
+
+    /** 快捷短语：管理常用语并发送到 CodeBuddy 输入框 */
+    private fun openPhrases() {
+        bubble.hide()
+        QuickPhraseDialog.show(activeProject()?.name)
     }
 
     /** 手动拖动后改为「自由拖动」模式并记住坐标 */

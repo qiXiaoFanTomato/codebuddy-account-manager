@@ -58,6 +58,8 @@
             <li><b>今日签到 / 一键签到</b>：对账号库中所有账号执行每日签到，按本地按日记录逐账号展示今日是否已签与本次签到结果。</li>
             <li><b>成长中心</b>：逐账号展示任务完成数、待领奖与进行中进度；「一键完成」自动接取任务、上报客户端行为事件并领奖，独立窗口另提供旅行巡检、活跃上报、全部保活、连登兑换、抽奖与补签。</li>
             <li><b>模型积分限额</b>：可同时监控多个模型，每条规则独立限额与预警阈值；模型从官方目录加载或手填关键字，达标时提醒切换账号，剩余低于阈值时预警。</li>
+            <li><b>快捷短语</b>：Tools 菜单 / 看板 / 桌宠右键管理常用短语，双击即注入 CodeBuddy 输入框并发送；输入框已有草稿时追加不覆盖，「仅填入」可先改再发。</li>
+            <li><b>异常中断自动继续</b>：页面 DOM 与运行日志双通道识别中断，自动点「继续 / 重试」；同一页面 10 分钟内最多代点 5 次，超过后只提示不再续跑，避免模型持续失败时无限消耗额度。</li>
             <li><b>桌面宠物</b>：形象与音效 1:1 取自开源项目 dsh-pet，含待机 / 点击回应 / 余额六档 / 睡觉 / 拖拽悬空共 16 段状态动画与 80 个随机小动作，另有碎碎念台词。单击只做互动不弹窗，双击积分读数随机冒一句统计 / 鼓励 / 调侃文案并播配套动作，额度明细改由右键菜单进入；支持拖拽抛出、物理反弹、多开时全机只保留一只。</li>
             <li><b>提示由桌宠承载</b>：切号、导出、同步等操作反馈，失败与异常，以及自动调度、模型限额等状态变更，统一改为桌宠冒气泡并按「成功 / 信息 / 警告 / 错误」播对应动作；按等级控制展示时长，多条按优先级排队，桌宠关闭时自动退回 IDE 通知。</li>
         </ul>
@@ -80,6 +82,7 @@
             <li>历史同步只处理目标账号已存在的工作区目录，只新增不覆盖。</li>
             <li>今日签到与成长中心接口非官方公开接口，路径与字段可能随版本变化，失败只提示且可在设置页改路径或关闭。</li>
             <li>模型限额只做统计与预警，不会拦截 CodeBuddy 客户端的模型调用。</li>
+            <li>快捷短语与中断自动继续都依赖 JCEF 注入读写聊天面板，CodeBuddy 页面改版后可能找不到输入框 / 按钮；失败只提示，不影响 IDE。</li>
         </ul>
         <h3>源码与反馈</h3>
         <p>源码仓库：<a href="https://github.com/qiXiaoFanTomato/codebuddy-account-manager">github.com/qiXiaoFanTomato/codebuddy-account-manager</a>。</p>
@@ -186,6 +189,12 @@
                 class="dev.codebuddy.account.ui.OpenPanelAction"
                 text="CodeBuddy Account Manager"
                 description="Open CodeBuddy account manager panel">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+        </action>
+        <action id="CodeBuddyAccountManager.QuickPhrase"
+                class="dev.codebuddy.account.ui.QuickPhraseAction"
+                text="CodeBuddy 快捷短语"
+                description="管理常用短语并发送到 CodeBuddy 输入框">
             <add-to-group group-id="ToolsMenu" anchor="last"/>
         </action>
     </actions>
