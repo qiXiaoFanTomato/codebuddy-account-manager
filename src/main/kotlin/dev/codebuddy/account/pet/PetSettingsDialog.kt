@@ -6,6 +6,7 @@ import com.intellij.ui.components.JBScrollPane
 import com.intellij.util.ui.FormBuilder
 import com.intellij.util.ui.JBUI
 import dev.codebuddy.account.ui.AccountUiColors
+import dev.codebuddy.account.ui.AccountUiType
 import java.awt.BorderLayout
 import java.awt.Component
 import java.awt.Dimension
@@ -55,6 +56,21 @@ class PetSettingsDialog(private val onChange: () -> Unit) : DialogWrapper(true) 
             PetSettings.MIN_AUTO_APPROVE_MINUTES,
             PetSettings.MAX_AUTO_APPROVE_MINUTES,
             1,
+        )
+    )
+    private val approvalModeCombo = labelCombo(CbApprovalMode.entries.toTypedArray()) { it.label }
+    private val approvalNormalCombo = labelCombo(CbNormalPolicy.entries.toTypedArray()) { it.label }
+    private val approvalDangerCombo = labelCombo(CbDangerPolicy.entries.toTypedArray()) { it.label }
+    private val approvalHint = JBLabel().apply {
+        font = AccountUiType.ui(AccountUiType.micro)
+        foreground = AccountUiColors.textMuted
+    }
+    private val hookSecondsSpinner = JSpinner(
+        SpinnerNumberModel(
+            45,
+            PetSettings.MIN_HOOK_SECONDS,
+            PetSettings.MAX_HOOK_SECONDS,
+            5,
         )
     )
     private val whisperCheck = JCheckBox("每隔几分钟冒一句碎碎念台词")
@@ -141,9 +157,14 @@ class PetSettingsDialog(private val onChange: () -> Unit) : DialogWrapper(true) 
                 addLabeledComponent("主动讲笑话间隔（分钟）：", jokeMinutesSpinner)
             })
             .addVerticalGap(JBUI.scale(8))
-            .addComponent(section("提示联动") {
+            .addComponent(section("CodeBuddy 确认") {
                 addComponent(noticeCheck)
-                addLabeledComponent("超时代点等待（分钟）：", cbAutoApproveSpinner)
+                addLabeledComponent("处理方式：", approvalModeCombo)
+                addComponent(approvalHint)
+                addLabeledComponent("普通命令：", approvalNormalCombo)
+                addLabeledComponent("危险命令：", approvalDangerCombo)
+                addLabeledComponent("桌宠弹窗等待（秒）：", hookSecondsSpinner)
+                addLabeledComponent("页面超时放行等待（分钟）：", cbAutoApproveSpinner)
             })
             .addVerticalGap(JBUI.scale(8))
             .addComponent(buttonRow(resetButton))
@@ -183,6 +204,50 @@ class PetSettingsDialog(private val onChange: () -> Unit) : DialogWrapper(true) 
             buttons.forEach { add(it) }
         }
 
+    /** 枚举下拉统一用中文标签渲染 */
+    private fun <T> labelCombo(values: Array<T>, label: (T) -> String): JComboBox<T> =
+        JComboBox(values).apply {
+            renderer = object : DefaultListCellRenderer() {
+                override fun getListCellRendererComponent(
+                    list: JList<*>?,
+                    value: Any?,
+                    index: Int,
+                    isSelected: Boolean,
+                    cellHasFocus: Boolean,
+                ): Component {
+                    @Suppress("UNCHECKED_CAST")
+                    val item = value as? T
+                    return super.getListCellRendererComponent(
+                        list,
+                        if (item != null) label(item) else "",
+                        index,
+                        isSelected,
+                        cellHasFocus,
+                    )
+                }
+            }
+        }
+
+    /**
+     * 按处理方式联动：只有当前通道真正用得到的项才可编辑。
+     *
+     * 桌宠弹窗通道没有「危险命令自动放行」这条路径，所以危险策略锁定为「永远人工」；
+     * 「不干预」时三个策略项全部置灰，避免主人以为它们在生效。
+     */
+    private fun refreshApprovalState() {
+        val mode = approvalModeCombo.selectedItem as? CbApprovalMode ?: CbApprovalMode.NONE
+        approvalNormalCombo.isEnabled = mode != CbApprovalMode.NONE
+        approvalDangerCombo.isEnabled = mode == CbApprovalMode.PAGE
+        if (!approvalDangerCombo.isEnabled) approvalDangerCombo.selectedItem = CbDangerPolicy.ASK
+        hookSecondsSpinner.isEnabled = mode == CbApprovalMode.HOOK
+        cbAutoApproveSpinner.isEnabled = mode == CbApprovalMode.PAGE
+        approvalHint.text = when (mode) {
+            CbApprovalMode.NONE -> "只提醒，不自作决定"
+            CbApprovalMode.PAGE -> "页面自动点「允许」（旧通道），桌宠 hook 不启用"
+            CbApprovalMode.HOOK -> "桌宠气泡给同意 / 取消，危险命令只能人工点"
+        }
+    }
+
     override fun getPreferredFocusedComponent(): JComponent = scaleSpinner
 
     override fun doOKAction() {
@@ -200,6 +265,16 @@ class PetSettingsDialog(private val onChange: () -> Unit) : DialogWrapper(true) 
         randomCheck.addActionListener { apply() }
         randomMinutesSpinner.addChangeListener { apply() }
         noticeCheck.addActionListener { apply() }
+        approvalModeCombo.addActionListener {
+            refreshApprovalState()
+            apply()
+        }
+        approvalNormalCombo.addActionListener {
+            refreshApprovalState()
+            apply()
+        }
+        approvalDangerCombo.addActionListener { apply() }
+        hookSecondsSpinner.addChangeListener { apply() }
         cbAutoApproveSpinner.addChangeListener { apply() }
         whisperCheck.addActionListener { apply() }
         whisperMinutesSpinner.addChangeListener { apply() }
@@ -222,7 +297,12 @@ class PetSettingsDialog(private val onChange: () -> Unit) : DialogWrapper(true) 
         randomCheck.isSelected = s.randomActionsEnabled
         randomMinutesSpinner.value = s.randomActionMinutes
         noticeCheck.isSelected = s.noticePetEnabled
+        approvalModeCombo.selectedItem = s.cbApprovalMode
+        approvalNormalCombo.selectedItem = s.cbApprovalNormal
+        approvalDangerCombo.selectedItem = s.cbApprovalDanger
+        hookSecondsSpinner.value = s.cbApprovalTimeoutSeconds
         cbAutoApproveSpinner.value = s.cbAutoApproveMinutes
+        refreshApprovalState()
         whisperCheck.isSelected = s.whisperEnabled
         whisperMinutesSpinner.value = s.whisperMinutes
         jokeCheck.isSelected = s.jokeEnabled
@@ -245,7 +325,12 @@ class PetSettingsDialog(private val onChange: () -> Unit) : DialogWrapper(true) 
         randomCheck.isSelected = true
         randomMinutesSpinner.value = 3
         noticeCheck.isSelected = true
+        approvalModeCombo.selectedItem = CbApprovalMode.NONE
+        approvalNormalCombo.selectedItem = CbNormalPolicy.ASK
+        approvalDangerCombo.selectedItem = CbDangerPolicy.ASK
+        hookSecondsSpinner.value = 45
         cbAutoApproveSpinner.value = 5
+        refreshApprovalState()
         whisperCheck.isSelected = true
         whisperMinutesSpinner.value = 5
         jokeCheck.isSelected = true
@@ -267,6 +352,14 @@ class PetSettingsDialog(private val onChange: () -> Unit) : DialogWrapper(true) 
         s.randomActionsEnabled = randomCheck.isSelected
         s.randomActionMinutes = (randomMinutesSpinner.value as? Number)?.toInt() ?: s.randomActionMinutes
         s.noticePetEnabled = noticeCheck.isSelected
+        s.cbApprovalMode =
+            (approvalModeCombo.selectedItem as? CbApprovalMode) ?: CbApprovalMode.NONE
+        s.cbApprovalNormal =
+            (approvalNormalCombo.selectedItem as? CbNormalPolicy) ?: CbNormalPolicy.ASK
+        s.cbApprovalDanger =
+            (approvalDangerCombo.selectedItem as? CbDangerPolicy) ?: CbDangerPolicy.ASK
+        s.cbApprovalTimeoutSeconds =
+            (hookSecondsSpinner.value as? Number)?.toInt() ?: s.cbApprovalTimeoutSeconds
         s.cbAutoApproveMinutes =
             (cbAutoApproveSpinner.value as? Number)?.toInt() ?: s.cbAutoApproveMinutes
         s.whisperEnabled = whisperCheck.isSelected

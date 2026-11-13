@@ -33,8 +33,18 @@ object CodeBuddyApprover {
 
     private val log = logger<CodeBuddyApprover>()
 
-    /** CodeBuddy 对话侧边栏的 ToolWindow id（与 [dev.codebuddy.account.hotswap.CodeBuddyBridge] 一致） */
-    private const val CHAT_TOOL_WINDOW_ID = "com.tencent.code.intel.extension.WebviewBrowser"
+    /**
+     * CodeBuddy 对话侧边栏可能所在的 ToolWindow id。
+     *
+     * 新版（实测 marscode 1.7.0.4）把聊天面板注册为 `Trae AI`（工厂 `com.codeverse.factory.ChatTabFactory`），
+     * 旧版才是 `com.tencent.code.intel.extension.WebviewBrowser`；旧 id 仍能查到窗口但 contents 为空，
+     * 只认旧 id 会一直拿不到 JCEF，代点与页面提示全部失效。
+     */
+    private val CHAT_TOOL_WINDOW_IDS = listOf(
+        "Trae AI",
+        "MarsCode",
+        "com.tencent.code.intel.extension.WebviewBrowser",
+    )
 
     /** 运行期才存在的 JCEF 浏览器接口（编译期无依赖） */
     private const val CEF_BROWSER = "org.cef.browser.CefBrowser"
@@ -47,6 +57,10 @@ object CodeBuddyApprover {
     private const val MAX_SCAN_LEVELS = 10
     private const val MAX_SCAN_NODES = 200
 
+    /** 兜底全量扫描的组件树深度与限频（候选 id 不命中时才走，避免每轮轮询遍历整棵 Swing 树） */
+    private const val MAX_FALLBACK_DEPTH = 8
+    private const val FALLBACK_INTERVAL_MS = 30_000L
+
     /** 一次解析结果；未命中也要短期记住，避免每轮轮询把整棵树重扫一遍 */
     private class Resolved(val browser: Any?, val at: Long)
 
@@ -58,6 +72,9 @@ object CodeBuddyApprover {
 
     @Volatile
     private var lastDiagnosticAt = 0L
+
+    @Volatile
+    private var lastFallbackAt = 0L
 
     /**
      * 注入点击脚本。
@@ -189,13 +206,47 @@ object CodeBuddyApprover {
     }
 
     private fun walkProject(project: Project, out: MutableList<Any>) {
-        try {
-            val window = ToolWindowManager.getInstance(project).getToolWindow(CHAT_TOOL_WINDOW_ID) ?: return
-            for (content in window.contentManager.contents) {
-                collect(content.component, out)
-            }
+        val manager = try {
+            ToolWindowManager.getInstance(project)
         } catch (_: Exception) {
-            // 面板尚未创建时忽略
+            return
+        }
+        var found = false
+        for (id in CHAT_TOOL_WINDOW_IDS) {
+            val window = try {
+                manager.getToolWindow(id)
+            } catch (_: Exception) {
+                null
+            } ?: continue
+            val before = out.size
+            try {
+                for (content in window.contentManager.contents) {
+                    collect(content.component, out)
+                }
+            } catch (_: Exception) {
+                // 单个窗口不可用不影响其它候选
+            }
+            if (out.size > before) found = true
+        }
+        if (found) return
+        // 候选 id 都不命中（CodeBuddy 再改 id）：限频扫一遍全部 ToolWindow 兜底
+        val now = System.currentTimeMillis()
+        if (now - lastFallbackAt < FALLBACK_INTERVAL_MS) return
+        lastFallbackAt = now
+        try {
+            val budget = intArrayOf(MAX_SCAN_NODES)
+            for (id in manager.toolWindowIds) {
+                val window = try {
+                    manager.getToolWindow(id)
+                } catch (_: Exception) {
+                    null
+                } ?: continue
+                for (content in window.contentManager.contents) {
+                    collect(content.component, out, 0, budget)
+                }
+            }
+        } catch (_: Throwable) {
+            // 兜底扫描失败按找不到处理
         }
     }
 
@@ -204,15 +255,24 @@ object CodeBuddyApprover {
      *
      * 命中一个面板后不再深入它的子组件；命中不到才继续遍历，避免在 JCEF 内部组件上做无谓扫描。
      */
-    private fun collect(component: Component, out: MutableList<Any>) {
+    private fun collect(component: Component, out: MutableList<Any>) = collect(component, out, 0, null)
+
+    /**
+     * [budget] 非空时用于兜底全量扫描：限制节点数与递归深度，避免在 EDT 上遍历整棵 Swing 树。
+     */
+    private fun collect(component: Component, out: MutableList<Any>, depth: Int, budget: IntArray?) {
         if (out.size >= MAX_BROWSERS) return
+        if (budget != null) {
+            if (budget[0] <= 0 || depth > MAX_FALLBACK_DEPTH) return
+            budget[0]--
+        }
         val browser = cachedCef(component)
         if (browser != null) {
             if (out.none { it === browser }) out.add(browser)
             return
         }
         if (component is Container) {
-            for (child in component.components) collect(child, out)
+            for (child in component.components) collect(child, out, depth + 1, budget)
         }
     }
 
@@ -309,18 +369,32 @@ object CodeBuddyApprover {
 
     private fun diagnose(): String = try {
         ProjectManager.getInstance().openProjects.filter { !it.isDisposed }.joinToString("; ") { project ->
-            val window = try {
-                ToolWindowManager.getInstance(project).getToolWindow(CHAT_TOOL_WINDOW_ID)
+            val manager = try {
+                ToolWindowManager.getInstance(project)
             } catch (_: Throwable) {
                 null
+            } ?: return@joinToString "${project.name}: 无法读取 ToolWindowManager"
+            val parts = CHAT_TOOL_WINDOW_IDS.map { id ->
+                val window = try {
+                    manager.getToolWindow(id)
+                } catch (_: Throwable) {
+                    null
+                }
+                if (window == null) {
+                    "$id=无"
+                } else {
+                    val contents = window.contentManager.contents
+                    "$id=${contents.size}[" +
+                        contents.take(3).joinToString(", ") { describe(it.component, 0) } + "]"
+                }
             }
-            if (window == null) {
-                "${project.name}: 无 ToolWindow"
-            } else {
-                val contents = window.contentManager.contents
-                "${project.name}: contents=${contents.size} [" +
-                    contents.joinToString(", ") { describe(it.component, 0) } + "]"
+            // 附上实际存在的 id，CodeBuddy 再换承载位置时可据此定位
+            val ids = try {
+                manager.toolWindowIds.take(30).joinToString(",")
+            } catch (_: Throwable) {
+                "读取失败"
             }
+            "${project.name}: ${parts.joinToString(" ")}; 现有 id=[$ids]"
         }
     } catch (e: Throwable) {
         "诊断失败: ${e.message}"

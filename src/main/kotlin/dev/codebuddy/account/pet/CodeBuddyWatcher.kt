@@ -73,6 +73,14 @@ class CodeBuddyWatcher : Disposable {
     private var task: ScheduledFuture<*>? = null
     private val running = AtomicBoolean(false)
 
+    /**
+     * 仅采集吞吐样本模式：状态栏的 tok/s 读数打开而桌宠关闭时使用。
+     *
+     * 该模式下 [tick] 不判权限确认、不做代点与自动继续，只解析 `Step execution metrics`，
+     * 避免「桌宠已关掉却仍在替主人点同意」。桌宠后续启动时 [start] 会把它切回全量模式。
+     */
+    private val metricsOnly = AtomicBoolean(false)
+
     /** 日志路径 -> 已读偏移 */
     private val states = HashMap<String, FileState>()
 
@@ -85,6 +93,9 @@ class CodeBuddyWatcher : Disposable {
     /** 项目 -> (危险命令原文, 时间)，用于补充提示正文 */
     private val dangerByProject = HashMap<String, Pair<String, Long>>()
 
+    /** 项目 -> (宿主自动放行判定时间, 判定行的业务标签)，用于把「默认放行」翻译成桌宠提示 */
+    private val autoAllowed = HashMap<String, Pair<Long, String>>()
+
     /** 项目 -> (最近一次实际调用的模型名, 时间)，用于补全限流与吞吐文案 */
     private val recentModel = HashMap<String, Pair<String, Long>>()
 
@@ -95,13 +106,31 @@ class CodeBuddyWatcher : Disposable {
     }
 
     /** 启动监控（幂等）；重新启动会重建基线，不补发启动前的历史事件 */
-    fun start() {
-        if (!running.compareAndSet(false, true)) return
+    fun start() = startInternal(onlyMetrics = false)
+
+    /** 只采集吞吐样本（状态栏读数用）：不判确认、不代点、不自动继续 */
+    fun startMetricsOnly() = startInternal(onlyMetrics = true)
+
+    /** 状态栏速度读数关闭时释放「仅统计」实例；桌宠的全量监控不受影响 */
+    fun stopMetricsOnly() {
+        if (!metricsOnly.get()) return
+        stop()
+    }
+
+    private fun startInternal(onlyMetrics: Boolean) {
+        if (!running.compareAndSet(false, true)) {
+            // 已在运行：只允许「仅统计 → 全量」的升级（桌宠接管），不允许反向降级，
+            // 否则状态栏的读数组件会把桌宠的确认 / 中断通道掐掉
+            if (!onlyMetrics) metricsOnly.set(false)
+            return
+        }
+        metricsOnly.set(onlyMetrics)
         synchronized(states) {
             states.clear()
             pending.clear()
             orphanAsks.clear()
             dangerByProject.clear()
+            autoAllowed.clear()
             recentModel.clear()
         }
         task = executor.scheduleWithFixedDelay(
@@ -115,6 +144,7 @@ class CodeBuddyWatcher : Disposable {
     /** 停止监控并清空中间状态 */
     fun stop() {
         running.set(false)
+        metricsOnly.set(false)
         task?.cancel(false)
         task = null
         synchronized(states) {
@@ -122,6 +152,7 @@ class CodeBuddyWatcher : Disposable {
             pending.clear()
             orphanAsks.clear()
             dangerByProject.clear()
+            autoAllowed.clear()
             recentModel.clear()
         }
     }
@@ -150,14 +181,26 @@ class CodeBuddyWatcher : Disposable {
         } catch (_: Exception) {
             return
         }
-        // 只要任一相关能力开启就继续收集事件，避免「关提醒」连带关掉代点 / 自动继续
-        val approvalActive = settings.cbApproveNoticeEnabled || settings.cbAutoApproveEnabled ||
-            settings.cbNoDisturbEnabled || settings.cbNoDisturbDangerEnabled
-        val interruptActive = settings.cbProgressNoticeEnabled || settings.cbAutoContinueEnabled
-        // 免打扰已接管时，超时补刀不再重复点同一个按钮
-        val noDisturbActive = settings.cbNoDisturbEnabled && CbWebObserver.isConnected()
-        val autoApproveOn = settings.cbAutoApproveEnabled && !noDisturbActive
+        // 只要任一相关能力开启就继续收集事件，避免「关提醒」连带关掉代点 / 自动继续；
+        // 「仅统计吞吐」模式（状态栏读数）一律不判事件，防止桌宠关掉后仍替主人点同意
+        val onlyMetrics = metricsOnly.get()
+        val approvalActive = !onlyMetrics &&
+            (settings.cbApproveNoticeEnabled || settings.cbApprovalMode != CbApprovalMode.NONE)
+        val interruptActive = !onlyMetrics &&
+            (settings.cbProgressNoticeEnabled || settings.cbAutoContinueEnabled)
+        // 三个通道互斥：桌宠弹窗接管时，页面代点与日志补刀一律让位，避免同一个确认被处理两次
+        val pageActive = settings.cbApprovalMode == CbApprovalMode.PAGE
+        // 页面「直接放行」已经接管时，超时补刀不再重复点同一个按钮
+        val noDisturbActive =
+            pageActive && settings.cbApprovalNormal == CbNormalPolicy.ALLOW && CbWebObserver.isConnected()
+        val autoApproveOn = pageActive && settings.cbApprovalNormal == CbNormalPolicy.ASK_THEN_ALLOW
+        // 页面已经直接点过时不再超时补刀，避免同一个确认被处理两次
+        val autoApproveDangerOn =
+            pageActive && settings.cbApprovalDanger == CbDangerPolicy.AUTO && !noDisturbActive
         val autoApproveMs = settings.cbAutoApproveMinutes * 60_000L
+        // 「默认放行」提示：只在实际生效的直接放行策略下播报，避免把宿主原生弹框也算成代点
+        val autoAllowNotice = !onlyMetrics && settings.cbApprovalMode != CbApprovalMode.NONE &&
+            settings.cbApprovalNormal == CbNormalPolicy.ALLOW
         val files = candidateFiles()
         // 不再出现在候选集里的旧文件（跨天轮转）及时释放读取进度
         if (files.isNotEmpty()) {
@@ -167,12 +210,16 @@ class CodeBuddyWatcher : Disposable {
         // 两个开关都关时仍然推进偏移量，重新打开后不会补发旧事件
         for ((project, path) in files) {
             try {
-                readNewLines(project, path, approvalActive, interruptActive)
+                readNewLines(project, path, approvalActive, interruptActive, autoAllowNotice)
             } catch (_: Exception) {
                 // 单文件读取失败不影响其它文件
             }
         }
-        if (approvalActive) processAsks(autoApproveOn, autoApproveMs) else clearAsks()
+        if (approvalActive) {
+            processAsks(autoApproveOn, autoApproveDangerOn, autoApproveMs)
+        } else {
+            clearAsks()
+        }
     }
 
     /** 今天与昨天的日志（跨零点轮转时仍能读到最后一段） */
@@ -192,7 +239,13 @@ class CodeBuddyWatcher : Disposable {
         return out
     }
 
-    private fun readNewLines(project: String, path: Path, approveOn: Boolean, progressOn: Boolean) {
+    private fun readNewLines(
+        project: String,
+        path: Path,
+        approveOn: Boolean,
+        progressOn: Boolean,
+        autoAllowNotice: Boolean,
+    ) {
         val key = path.toString()
         val size = try {
             Files.size(path)
@@ -244,7 +297,7 @@ class CodeBuddyWatcher : Disposable {
         for (line in text.lineSequence()) {
             if (line.isBlank()) continue
             try {
-                handleLine(project, line, approveOn, progressOn)
+                handleLine(project, line, approveOn, progressOn, autoAllowNotice)
             } catch (_: Exception) {
                 // 单行解析失败忽略
             }
@@ -255,7 +308,13 @@ class CodeBuddyWatcher : Disposable {
     // 行解析
     // ---------------------------------------------------------------
 
-    private fun handleLine(project: String, line: String, approveOn: Boolean, progressOn: Boolean) {
+    private fun handleLine(
+        project: String,
+        line: String,
+        approveOn: Boolean,
+        progressOn: Boolean,
+        autoAllowNotice: Boolean,
+    ) {
         val now = System.currentTimeMillis()
 
         // 最近使用的模型名：限流与吞吐文案都靠它补全，日志比页面文本更可靠
@@ -270,6 +329,35 @@ class CodeBuddyWatcher : Disposable {
             if (outputTokens != null && duration != null) {
                 CbEventCenter.onLogUsage(recentModelOf(project) ?: "当前模型", outputTokens, duration)
             }
+        }
+
+        // 宿主自己放行（needConfirm=false）：先记一拍，紧随其后的命令原文用来告诉主人刚跑过什么
+        if (AUTO_ALLOW_HINT.containsMatchIn(line)) {
+            if (autoAllowNotice) {
+                val tag = tagOf(line)
+                synchronized(states) { autoAllowed[project] = now to tag }
+            }
+            return
+        }
+
+        // 默认放行的终端命令原文：`命令: "<命令>", isWatchCommand: false`
+        // 同一行还会派生出「执行普通命令: ...」，只认前一条，避免一次调用提示两次
+        if (autoAllowNotice && line.contains("命令: \"") && !line.contains("执行普通命令")) {
+            val tag = tagOf(line)
+            val allowed = synchronized(states) {
+                val entry = autoAllowed[project]
+                if (entry != null && entry.second == tag && now - entry.first <= AUTO_ALLOW_BIND_MS) {
+                    autoAllowed.remove(project)
+                    true
+                } else {
+                    false
+                }
+            }
+            val command = COMMAND_TEXT.find(line)?.groupValues?.get(1)
+            if (allowed && !command.isNullOrBlank()) {
+                CbEventCenter.onLogAutoApproval("命令", oneLine(command, MAX_COMMAND_CHARS))
+            }
+            return
         }
 
         // 模型频率限制 / 用量限制：业务码与解封时间往往先出现在日志里
@@ -324,20 +412,26 @@ class CodeBuddyWatcher : Disposable {
             return
         }
 
-        // 主人确认 / 拒绝：撤销待提示（含危险命令兜底项）
+        // 主人确认 / 拒绝：撤销待提示（含危险命令 / 无 callId 的兜底项）
         if (CONFIRM_HINT.containsMatchIn(line)) {
             val id = callIdOf(line)
             synchronized(states) {
                 if (id != null) pending.remove(id)
-                pending.entries.removeIf { it.key.startsWith("danger:$project:") }
+                // 兜底项没有 callId，只能按项目前缀清，否则「已确认」行撤不掉刚入队的提示
+                pending.entries.removeIf {
+                    it.key.startsWith("danger:$project:") || it.key.startsWith("line:$project:")
+                }
                 orphanAsks.remove(project)
             }
             if (id != null) markHandled(id)
             return
         }
 
-        // 一轮结束（含异常标志位）；requestId 缺失时用时间窗口兜底，不能直接丢整行
-        if (line.contains("notifyAllStepsEnd")) {
+        // 一轮结束（含异常标志位）；requestId 缺失时用时间窗口兜底，不能直接丢整行。
+        // 只认主 agent 的整行结构：子 agent（code-explorer / web-fetch / summary）也会打
+        // notifyAllStepsEnd，工具回显（搜索结果 / 命令原文 / 终端输出）里同样会出现这个字样，
+        // 只按 contains 判定会在主对话仍在执行时误报「对话完成」。
+        if (ROUND_END.containsMatchIn(line)) {
             if (!progressOn) return
             val requestId = REQUEST_ID.find(line)?.groupValues?.get(1) ?: "auto:$project:${now / 2_000L}"
             val key = "req:$requestId"
@@ -388,10 +482,10 @@ class CodeBuddyWatcher : Disposable {
     /**
      * 处理等待中的确认事件：
      * - 超过宽限期提示一次（自动确认的行会在同一批日志里撤销，不会进入 pending）；
-     * - 开启「超时自动同意」时，危险命令除外，到点替主人点一次「允许」；
+     * - 页面代点通道下，策略含「超时放行」的普通 / 危险命令到点替主人点一次「允许」；
      * - 一小时仍未确认的事件直接丢弃，避免状态无限累积。
      */
-    private fun processAsks(autoApproveOn: Boolean, autoApproveMs: Long) {
+    private fun processAsks(autoApproveOn: Boolean, autoApproveDangerOn: Boolean, autoApproveMs: Long) {
         val now = System.currentTimeMillis()
         val callAsks = ArrayList<Pair<String, PendingAsk>>()
         val readyOrphans = ArrayList<PendingAsk>()
@@ -423,7 +517,8 @@ class CodeBuddyWatcher : Disposable {
                 ask.notified = true
                 showAsk(ask)
             }
-            if (autoApproveOn && !ask.dangerous && !ask.approveTried &&
+            val mayAutoApprove = if (ask.dangerous) autoApproveDangerOn else autoApproveOn
+            if (mayAutoApprove && !ask.approveTried &&
                 autoApproveMs in 60_000L..ASK_EXPIRE_MS && now - ask.at >= autoApproveMs
             ) {
                 ask.approveTried = true
@@ -454,6 +549,7 @@ class CodeBuddyWatcher : Disposable {
             false
         }
         if (injected) {
+            CbEventCenter.countAutoApproval()
             PetNotifier.notify(
                 PetNotifier.Level.INFO,
                 "我先替主人点了同意",
@@ -568,6 +664,9 @@ class CodeBuddyWatcher : Disposable {
         /** 危险命令原文的时效 */
         private const val DANGER_TTL_MS = 30_000L
 
+        /** 自动放行判定与实际命令行的最大间隔：两行通常同一拍写入，留几秒余量 */
+        private const val AUTO_ALLOW_BIND_MS = 10_000L
+
         /** 最近模型名的时效：半小时内出现的调用都算「当前模型」 */
         private const val MODEL_TTL_MS = 30 * 60_000L
 
@@ -580,6 +679,20 @@ class CodeBuddyWatcher : Disposable {
         private const val MAX_COMMAND_CHARS = 80
         private const val MAX_HANDLED_KEYS = 512
 
+        /**
+         * 主 agent 的一轮结束行，实测形如：
+         * `[2026-11-13 17:26:12.973] [Info] [BaseAgent:craft] [<32位requestId>]  notifyAllStepsEnd, totalSteps: 21, ...`
+         *
+         * 必须整行匹配（日志前缀 + `BaseAgent:craft` + requestId + 正文以 notifyAllStepsEnd 开头）：
+         * 实测子 agent（`BaseAgent:code-explorer` / `web-fetch` / `summary`）也会打同样的结束行，
+         * 而主 agent 此时仍在跑；用 `SearchContent` / `StreamParser` / `TerminalExecutor` /
+         * `StandaloneTerminalProcess` 回显的工具参数与输出里也会出现这个字样。两者都曾造成
+         * 「提示完成了，回到对话却还在执行」。
+         */
+        private val ROUND_END = Regex(
+            "^\\[\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\.\\d{3}] \\[(?:Info|Warn)] \\[BaseAgent:craft] " +
+                "\\[[0-9a-f]{32}]\\s+notifyAllStepsEnd,",
+        )
         private val CALL_ID = Regex("\\[((?:call_|chatcmpl-tool-)[0-9A-Za-z_\\-]+)]")
         private val REQUEST_ID = Regex("requestId: ([0-9A-Za-z_\\-]+)")
         private val STEPS = Regex("totalSteps: (\\d+)")
@@ -599,14 +712,24 @@ class CodeBuddyWatcher : Disposable {
             RegexOption.IGNORE_CASE,
         )
 
-        /** 等待确认文案：客户端换版本后不再只认固定的两句 */
+        /**
+         * 等待确认文案：客户端换版本后不再只认固定的两句。
+         *
+         * 新版（marscode 1.7.0.4）不再打印「转入等待确认状态」，改为结构化决策行：
+         * `[beforeExecute] Permission decision: source=xxx, allowed=true, needConfirm=true`
+         * 与 `requiredApprove: true, needUserConfirm: true`，因此按字段取值匹配，
+         * `needConfirm=false` 这类自动放行不会命中。
+         */
         private val ASK_HINT = Regex(
             "转入等待确认状态|User confirmation required|等待用户确认|需要用户确认|等待确认|" +
-                "waiting for confirmation|permission required|包含危险命令",
+                "waiting for confirmation|permission required|包含危险命令|" +
+                "needConfirm\\s*[:=]\\s*true|needUserConfirm\\s*[:=]\\s*true|requiredApprove\\s*[:=]\\s*true",
             RegexOption.IGNORE_CASE,
         )
         private val CONFIRM_HINT = Regex(
-            "收到用户确认|收到用户拒绝|用户拒绝执行|用户已确认|用户取消|user confirmed|user rejected|confirmed by user",
+            "收到用户确认|收到用户拒绝|用户拒绝执行|用户已确认|用户取消|user confirmed|user rejected|confirmed by user|" +
+                // 新版同一批日志里紧跟「第一阶段已确认」，说明这次并不会真的等主人点
+                "skipping second confirmation",
             RegexOption.IGNORE_CASE,
         )
         private val MODEL_ID = Regex(
@@ -620,6 +743,20 @@ class CodeBuddyWatcher : Disposable {
         /** `Step execution metrics: step=N, duration=Xms, usage={"outputTokens":N,...}` */
         private val OUTPUT_TOKENS = Regex("\"outputTokens\"\\s*:\\s*(\\d+)")
         private val STEP_DURATION = Regex("duration=(\\d+)ms")
+
+        /**
+         * 宿主自动放行：`[beforeExecute] Permission decision: source=..., allowed=true, needConfirm=false`。
+         *
+         * 这是「CodeBuddy 自己把命令放过去了」唯一可见的信号：hook 通道没接上时也能靠它提示主人。
+         * `needConfirm=true` 那一支属于等待确认，由 [ASK_HINT] 处理。
+         */
+        private val AUTO_ALLOW_HINT = Regex(
+            "Permission decision:.*allowed=true.*needConfirm=fals",
+            RegexOption.IGNORE_CASE,
+        )
+
+        /** `命令: "<命令原文>", isWatchCommand: false` */
+        private val COMMAND_TEXT = Regex("命令: \"(.*?)\", isWatchCommand")
         private val RESET_AT = Regex(
             "(?:Reset at|resetAt|预计解封|预计恢复|解封时间|恢复时间)[^0-9]{0,12}" +
                 "(\\d{4}-\\d{2}-\\d{2}[ T]\\d{2}:\\d{2}:\\d{2})",

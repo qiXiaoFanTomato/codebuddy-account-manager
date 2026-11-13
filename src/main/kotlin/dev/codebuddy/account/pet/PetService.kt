@@ -99,6 +99,12 @@ class PetService : Disposable {
     @Volatile private var window: PetWindow? = null
     @Volatile private var data: PetData = PetData.empty()
 
+    /** CodeBuddy hook 审批服务（仅持有者进程开启），null 表示未启用 */
+    @Volatile private var hookServer: HookApprovalServer? = null
+
+    /** 确认气泡；只在 EDT 上创建与释放 */
+    private var approvalBubble: PetApprovalBubble? = null
+
     private var pollTask: ScheduledFuture<*>? = null
     private var takeoverTask: ScheduledFuture<*>? = null
     private var connection: MessageBusConnection? = null
@@ -147,8 +153,10 @@ class PetService : Disposable {
             clearNotices()
             CodeBuddyWatcher.getInstance().stop()
             CbWebObserver.stop()
+            destroyBubble()
             destroyWindow()
         }
+        executor.execute { syncHookServer() }
         instance.release()
     }
 
@@ -169,6 +177,7 @@ class PetService : Disposable {
             scheduleRandomActions()
             scheduleWhisper()
             scheduleJoke()
+            executor.execute { syncHookServer() }
         }
     }
 
@@ -498,6 +507,8 @@ class PetService : Disposable {
             // 桌宠就绪后才开始盯 CodeBuddy 日志与聊天面板，避免提示无处可显示
             CodeBuddyWatcher.getInstance().start()
             CbWebObserver.start()
+            // hook 只由持有者进程提供，避免多开 IDE 时两个审批端口抢答
+            executor.execute { syncHookServer() }
         } catch (e: Exception) {
             log.warn("创建桌宠窗口失败，已释放所有权", e)
             instance.release()
@@ -512,6 +523,96 @@ class PetService : Disposable {
             w.dispose()
         } catch (_: Exception) {
         }
+    }
+
+    // ---------------------------------------------------------------
+    // CodeBuddy hook 审批通道
+    // ---------------------------------------------------------------
+
+    /**
+     * 按设置同步 hook 服务。
+     *
+     * - 开关关闭 → 停服务（`settings.json` 里的 hook 配置保留，再开不必重装）
+     * - 开启 → 释放脚本 + 写入 hook 配置 + 监听回环端口
+     *
+     * 任何一步失败都只是回到 CodeBuddy 原生确认框，不影响主流程。
+     */
+    private fun syncHookServer() {
+        val settings = PetSettings.getInstance()
+        if (!settings.enabled || settings.cbApprovalMode != CbApprovalMode.HOOK) {
+            stopHookServer()
+            SwingUtilities.invokeLater { destroyBubble() }
+            // 只在本人持有桌宠时动全局配置，避免多开 IDE 时误删另一个实例的 hook
+            if (instance.isOwner && CodeBuddyHookInstaller.isInstalled()) {
+                // 关掉就卸干净：否则 CodeBuddy 每次工具调用仍会起一个 node 进程空等
+                CodeBuddyHookInstaller.uninstall()
+            }
+            return
+        }
+        if (hookServer?.isRunning == true) return
+        if (!CodeBuddyHookInstaller.ensureInstalled()) {
+            log.info("CodeBuddy hook 未就绪（缺少 node 或配置不可写），确认请求继续走原生流程")
+            return
+        }
+        val server = HookApprovalServer { decideHookApproval(it) }
+        if (server.start()) hookServer = server
+    }
+
+    private fun stopHookServer() {
+        hookServer?.stop()
+        hookServer = null
+    }
+
+    /**
+     * hook 线程调用（不是 EDT）：阻塞等主人裁决。
+     *
+     * 所有返回 [ApprovalDecision.PASSTHROUGH] 的分支都是「不干预」：
+     * 功能关闭 / 危险命令 / 桌宠不在 / 主人没点。
+     */
+    private fun decideHookApproval(request: HookApprovalRequest): ApprovalDecision {
+        val settings = PetSettings.getInstance()
+        if (settings.cbApprovalMode != CbApprovalMode.HOOK) return ApprovalDecision.PASSTHROUGH
+        val w = window ?: return ApprovalDecision.PASSTHROUGH
+        // 危险 / 敏感调用照常弹气泡，但只有主人手动点「同意执行」才放行，普通命令的直接放行策略对它不生效
+        val manualOnly = HookApprovalRules.requiresManualConfirm(request)
+        if (!manualOnly && settings.cbApprovalNormal == CbNormalPolicy.ALLOW) {
+            // 默认放行同样是代点：桌宠提示 + 计入今日代点次数，主人要能感觉到它又替自己点了
+            CbEventCenter.onHookAutoApproval(request.toolName, request.detail)
+            return ApprovalDecision.ALLOW
+        }
+        val answer = approvalBubble().ask(
+            request,
+            { w.characterBounds() },
+            settings.cbApprovalTimeoutSeconds * 1_000,
+            manualOnly,
+        )
+        return when (answer) {
+            "allow" -> ApprovalDecision.ALLOW
+            "deny" -> ApprovalDecision.DENY
+            else -> ApprovalDecision.PASSTHROUGH
+        }
+    }
+
+    /** 气泡只能在 EDT 创建；重复调用返回同一个实例 */
+    private fun approvalBubble(): PetApprovalBubble {
+        approvalBubble?.let { return it }
+        var created: PetApprovalBubble? = null
+        try {
+            SwingUtilities.invokeAndWait {
+                created = approvalBubble ?: PetApprovalBubble().also { approvalBubble = it }
+            }
+        } catch (e: Exception) {
+            log.warn("创建确认气泡失败", e)
+        }
+        return created ?: PetApprovalBubble().also { approvalBubble = it }
+    }
+
+    private fun destroyBubble() {
+        try {
+            approvalBubble?.dispose()
+        } catch (_: Exception) {
+        }
+        approvalBubble = null
     }
 
     // ---------------------------------------------------------------
@@ -620,7 +721,15 @@ class PetService : Disposable {
         clearNotices()
         CodeBuddyWatcher.getInstance().stop()
         CbWebObserver.stop()
-        SwingUtilities.invokeLater { destroyWindow() }
+        SwingUtilities.invokeLater {
+            destroyBubble()
+            destroyWindow()
+        }
+        // 退出时卸掉 hook，配置里不留一条指向已停止服务的记录；非持有者不能动全局配置
+        if (instance.isOwner) {
+            stopHookServer()
+            CodeBuddyHookInstaller.uninstall()
+        }
         instance.release()
         executor.shutdownNow()
     }

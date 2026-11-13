@@ -11,6 +11,7 @@ import dev.codebuddy.account.checkin.CheckinTracker
 import dev.codebuddy.account.growth.GrowthActions
 import dev.codebuddy.account.growth.GrowthService
 import dev.codebuddy.account.growth.GrowthTracker
+import dev.codebuddy.account.pet.CbApprovalMode
 import dev.codebuddy.account.pet.CbEventCenter
 import dev.codebuddy.account.pet.PetSettings
 import dev.codebuddy.account.service.AccountLibrary
@@ -266,16 +267,17 @@ class GrowthCenterDialog(private val project: Project?) : DialogWrapper(project,
         return out
     }
 
-    /** 权限确认代点开关：主人最容易忘记开的一项，直接说清当前状态与后果 */
+    /** 确认处理策略：主人最容易忘记开的一项，直接说清当前状态与后果 */
     private fun petBrief(): String = try {
         val pet = PetSettings.getInstance()
-        when {
-            pet.cbNoDisturbEnabled -> "权限弹窗代点：已开启免打扰，出现「允许 / 拒绝」时自动点「允许」"
-            pet.cbAutoApproveEnabled -> "权限弹窗代点：已开启超时自动同意（等 ${pet.cbAutoApproveMinutes} 分钟）"
-            else -> "权限弹窗代点：未开启，需要主人手动点「允许」（可在桌宠设置里开启）"
+        when (pet.cbApprovalMode) {
+            CbApprovalMode.HOOK -> "确认处理：桌宠弹窗（危险命令只能人工点）"
+            CbApprovalMode.PAGE ->
+                "确认处理：页面代点 · 普通${pet.cbApprovalNormal.label} · 危险${pet.cbApprovalDanger.label}"
+            CbApprovalMode.NONE -> "确认处理：不干预，需要主人手动点「允许」（可在桌宠设置里开启）"
         }
     } catch (_: Throwable) {
-        "权限弹窗代点：状态未知（桌宠未启动）"
+        "确认处理：状态未知（桌宠未启动）"
     }
 
     // ---------------------------------------------------------------

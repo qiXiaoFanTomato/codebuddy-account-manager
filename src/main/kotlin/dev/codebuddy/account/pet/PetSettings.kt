@@ -58,16 +58,42 @@ class PetSettings : PersistentStateComponent<PetSettings.State> {
         var cbApproveNoticeEnabled: Boolean = true,
         /** CodeBuddy 一轮结束 / 没跑顺时提示 */
         var cbProgressNoticeEnabled: Boolean = true,
-        /** 超过设定分钟数仍未确认时，替主人点击「允许」（危险命令除外） */
+        /** 已废弃，仅用于迁移到 [cbApprovalNormal]；新代码不要再读 */
         var cbAutoApproveEnabled: Boolean = false,
-        /** 自动同意的等待分钟数 */
+        /** 超时放行的等待分钟数（页面代点通道用） */
         var cbAutoApproveMinutes: Int = 5,
-        /** 权限弹窗免打扰：页面里出现「允许 / 运行 + 拒绝」决策组时直接代点（危险命令除外） */
+        /** 已废弃，仅用于迁移到 [cbApprovalMode] / [cbApprovalNormal] */
         var cbNoDisturbEnabled: Boolean = false,
-        /** 高风险：连危险命令确认也代点；扣费 / 提权 / 凭证外发仍然永不代点 */
+        /** 已废弃，仅用于迁移到 [cbApprovalDanger] */
         var cbNoDisturbDangerEnabled: Boolean = false,
         /** 异常中断会话自动继续：页面 / 日志判定中断后点「继续 / 重试」 */
         var cbAutoContinueEnabled: Boolean = false,
+        /** 已废弃，仅用于迁移到 [cbApprovalMode]；新代码判断通道请用 [cbApprovalMode] */
+        var cbHookApproveEnabled: Boolean = false,
+        /**
+         * hook 免打扰：不弹窗直接允许（危险命令仍交回 CodeBuddy）。
+         *
+         * 已废弃，仅用于迁移到 [cbApprovalNormal]；新代码不要再读。
+         */
+        var cbHookNoDisturbEnabled: Boolean = false,
+        /**
+         * 桌宠气泡等待主人裁决的秒数。
+         *
+         * 已废弃，仅用于迁移到 [cbApprovalTimeoutSeconds]。
+         */
+        var cbHookApproveSeconds: Int = 45,
+        /**
+         * 确认处理方式（[CbApprovalMode] 名称），三选一，取代原来并行的两套开关。
+         */
+        var cbApprovalMode: String = CbApprovalMode.NONE.name,
+        /** 普通命令策略（[CbNormalPolicy] 名称） */
+        var cbApprovalNormal: String = CbNormalPolicy.ASK.name,
+        /** 危险命令策略（[CbDangerPolicy] 名称）；桌宠弹窗模式下恒为 ASK */
+        var cbApprovalDanger: String = CbDangerPolicy.ASK.name,
+        /** 桌宠弹窗等待秒数（仅桌宠弹窗模式使用） */
+        var cbApprovalTimeoutSeconds: Int = 45,
+        /** 设置迁移版本号：0 表示还没把旧开关折算成新的三组策略 */
+        var cbApprovalMigrated: Int = 0,
         /** 模型频率限制与预计解封时间提示 */
         var cbLimitNoticeEnabled: Boolean = true,
         /** 成长计划与活跃状态提示 */
@@ -84,6 +110,45 @@ class PetSettings : PersistentStateComponent<PetSettings.State> {
         myState = state
         myState.scalePercent = myState.scalePercent.coerceIn(MIN_SCALE, MAX_SCALE)
         myState.opacityPercent = myState.opacityPercent.coerceIn(MIN_OPACITY, 100)
+        myState.cbApprovalTimeoutSeconds =
+            myState.cbApprovalTimeoutSeconds.coerceIn(MIN_HOOK_SECONDS, MAX_HOOK_SECONDS)
+        migrateApprovalSettings()
+    }
+
+    /**
+     * 旧配置一次性折算成新的三组策略。
+     *
+     * 旧模型是「页面代点」与「桌宠 hook」两套开关并行、危险命令另有独立开关，
+     * 彼此会打架；新模型只留「处理方式 / 普通命令 / 危险命令」三项。
+     * 迁移只跑一次（[State.cbApprovalMigrated]），旧字段保留只为读到这里。
+     */
+    private fun migrateApprovalSettings() {
+        if (myState.cbApprovalMigrated >= MIGRATION_VERSION) return
+        myState.cbApprovalMigrated = MIGRATION_VERSION
+
+        myState.cbApprovalMode = when {
+            myState.cbHookApproveEnabled -> CbApprovalMode.HOOK.name
+            myState.cbNoDisturbEnabled || myState.cbAutoApproveEnabled ||
+                myState.cbNoDisturbDangerEnabled -> CbApprovalMode.PAGE.name
+            else -> CbApprovalMode.NONE.name
+        }
+        myState.cbApprovalNormal = when {
+            // 两个「免打扰」语义相同，任一开着都说明主人想直接放行
+            myState.cbHookNoDisturbEnabled || myState.cbNoDisturbEnabled -> CbNormalPolicy.ALLOW.name
+            myState.cbAutoApproveEnabled -> CbNormalPolicy.ASK_THEN_ALLOW.name
+            else -> CbNormalPolicy.ASK.name
+        }
+        // 桌宠弹窗模式不提供「危险自动放行」，迁移时直接收敛到永远人工
+        myState.cbApprovalDanger = if (
+            myState.cbApprovalMode != CbApprovalMode.HOOK.name && myState.cbNoDisturbDangerEnabled
+        ) {
+            CbDangerPolicy.AUTO.name
+        } else {
+            CbDangerPolicy.ASK.name
+        }
+        if (myState.cbHookApproveSeconds in MIN_HOOK_SECONDS..MAX_HOOK_SECONDS) {
+            myState.cbApprovalTimeoutSeconds = myState.cbHookApproveSeconds
+        }
     }
 
     var enabled: Boolean
@@ -200,34 +265,54 @@ class PetSettings : PersistentStateComponent<PetSettings.State> {
             myState.cbProgressNoticeEnabled = value
         }
 
-    /** 是否超时自动同意 */
-    var cbAutoApproveEnabled: Boolean
-        get() = myState.cbAutoApproveEnabled
-        set(value) {
-            myState.cbAutoApproveEnabled = value
-        }
-
-    /** 自动同意的等待分钟数，收敛到 1~30 */
+    /** 超时放行的等待分钟数（页面代点通道用），收敛到 1~30 */
     var cbAutoApproveMinutes: Int
         get() = myState.cbAutoApproveMinutes.coerceIn(MIN_AUTO_APPROVE_MINUTES, MAX_AUTO_APPROVE_MINUTES)
         set(value) {
             myState.cbAutoApproveMinutes = value.coerceIn(MIN_AUTO_APPROVE_MINUTES, MAX_AUTO_APPROVE_MINUTES)
         }
 
-    /** 权限弹窗免打扰 */
-    var cbNoDisturbEnabled: Boolean
-        get() = myState.cbNoDisturbEnabled
-        set(value) { myState.cbNoDisturbEnabled = value }
-
-    /** 危险命令是否也代点（高风险） */
-    var cbNoDisturbDangerEnabled: Boolean
-        get() = myState.cbNoDisturbDangerEnabled
-        set(value) { myState.cbNoDisturbDangerEnabled = value }
-
     /** 异常中断会话自动继续 */
     var cbAutoContinueEnabled: Boolean
         get() = myState.cbAutoContinueEnabled
         set(value) { myState.cbAutoContinueEnabled = value }
+
+    /** 确认处理方式：不干预 / 页面代点 / 桌宠弹窗（三者互斥） */
+    var cbApprovalMode: CbApprovalMode
+        get() = CbApprovalMode.of(myState.cbApprovalMode)
+        set(value) {
+            myState.cbApprovalMode = value.name
+        }
+
+    /** 普通命令策略：每次都问 / 问完超时放行 / 直接放行 */
+    var cbApprovalNormal: CbNormalPolicy
+        get() = CbNormalPolicy.of(myState.cbApprovalNormal)
+        set(value) {
+            myState.cbApprovalNormal = value.name
+        }
+
+    /**
+     * 危险命令策略。
+     *
+     * 桌宠弹窗模式下恒为「永远人工」：hook 超时只会交回宿主原生确认框，
+     * 不存在自动执行的路径，所以不给选项。
+     */
+    var cbApprovalDanger: CbDangerPolicy
+        get() = if (cbApprovalMode == CbApprovalMode.HOOK) {
+            CbDangerPolicy.ASK
+        } else {
+            CbDangerPolicy.of(myState.cbApprovalDanger)
+        }
+        set(value) {
+            myState.cbApprovalDanger = value.name
+        }
+
+    /** 桌宠弹窗等待秒数，收敛到 5~80（必须留出余量给 hook 自身的 55 秒上限） */
+    var cbApprovalTimeoutSeconds: Int
+        get() = myState.cbApprovalTimeoutSeconds.coerceIn(MIN_HOOK_SECONDS, MAX_HOOK_SECONDS)
+        set(value) {
+            myState.cbApprovalTimeoutSeconds = value.coerceIn(MIN_HOOK_SECONDS, MAX_HOOK_SECONDS)
+        }
 
     /** 模型频率限制与预计解封时间提示 */
     var cbLimitNoticeEnabled: Boolean
@@ -271,11 +356,58 @@ class PetSettings : PersistentStateComponent<PetSettings.State> {
         const val MIN_AUTO_APPROVE_MINUTES = 1
         const val MAX_AUTO_APPROVE_MINUTES = 30
 
+        /** 桌宠弹窗等待秒数范围 */
+        const val MIN_HOOK_SECONDS = 5
+        const val MAX_HOOK_SECONDS = 80
+
+        /** 确认策略迁移版本：加一档就说明旧开关已折算完成 */
+        private const val MIGRATION_VERSION = 1
+
         /** 未设置坐标的哨兵值 */
         private const val NO_POSITION = Int.MIN_VALUE
 
         fun getInstance(): PetSettings =
             ApplicationManager.getApplication().getService(PetSettings::class.java)
+    }
+}
+
+/**
+ * CodeBuddy 确认处理方式，三选一。
+ *
+ * 原来「页面代点」和「桌宠 hook」是两套并行开关，会同时生效、互相打架；
+ * 收敛成单选之后，任一时刻只有一个通道负责决策。
+ */
+enum class CbApprovalMode(val label: String, val hint: String) {
+    NONE("不干预", "只用桌宠提醒，确认仍由 CodeBuddy 原生弹框完成"),
+    PAGE("页面代点", "观察聊天面板的「允许 / 拒绝」决策组，自动点「允许」"),
+    HOOK("桌宠弹窗", "走 CodeBuddy hook 通道，由桌宠气泡给「同意 / 取消」"),
+    ;
+
+    companion object {
+        fun of(name: String?): CbApprovalMode = entries.firstOrNull { it.name == name } ?: NONE
+    }
+}
+
+/** 普通命令策略（两个通道共用同一套语义） */
+enum class CbNormalPolicy(val label: String) {
+    ASK("每次都问"),
+    ASK_THEN_ALLOW("问，超时没人管就放行"),
+    ALLOW("直接放行"),
+    ;
+
+    companion object {
+        fun of(name: String?): CbNormalPolicy = entries.firstOrNull { it.name == name } ?: ASK
+    }
+}
+
+/** 危险命令策略；桌宠弹窗模式下固定为 [ASK]，没有自动放行的路径 */
+enum class CbDangerPolicy(val label: String) {
+    ASK("永远人工"),
+    AUTO("允许自动放行"),
+    ;
+
+    companion object {
+        fun of(name: String?): CbDangerPolicy = entries.firstOrNull { it.name == name } ?: ASK
     }
 }
 

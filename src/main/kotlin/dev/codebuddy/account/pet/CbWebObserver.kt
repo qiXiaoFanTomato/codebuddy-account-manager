@@ -126,15 +126,20 @@ object CbWebObserver {
             return
         }
         // 「是否观察」「是否提示」「是否代点」三件事分开：
-        // 关掉提醒不应关掉免打扰代点，关掉跑完提醒也不应关掉自动继续。
-        val observeApproval = settings.cbApproveNoticeEnabled ||
-            settings.cbNoDisturbEnabled || settings.cbNoDisturbDangerEnabled
+        // 关掉提醒不应关掉页面代点，关掉跑完提醒也不应关掉自动继续。
+        // 处理方式不是「页面代点」时，页面只观察不点，避免和桌宠弹窗通道抢同一个确认。
+        val pageActive = settings.cbApprovalMode == CbApprovalMode.PAGE
+        val observeApproval = settings.cbApproveNoticeEnabled || pageActive
         val observeInterrupt = settings.cbProgressNoticeEnabled || settings.cbAutoContinueEnabled
+        val autoAllowNormal = pageActive && settings.cbApprovalNormal == CbNormalPolicy.ALLOW
         val cfg = JsonObject().apply {
             addProperty("observeApproval", observeApproval)
-            addProperty("noDisturb", settings.cbNoDisturbEnabled)
-            // 高风险项只是免打扰的附加档位，主开关关掉时不得单独生效
-            addProperty("noDisturbDanger", settings.cbNoDisturbEnabled && settings.cbNoDisturbDangerEnabled)
+            addProperty("noDisturb", autoAllowNormal)
+            // 危险档位只是普通档位的附加项，普通命令仍需确认时不得单独生效
+            addProperty(
+                "noDisturbDanger",
+                autoAllowNormal && settings.cbApprovalDanger == CbDangerPolicy.AUTO,
+            )
             addProperty("observeInterrupt", observeInterrupt)
             addProperty("autoContinue", settings.cbAutoContinueEnabled)
             addProperty("observeRateLimit", settings.cbLimitNoticeEnabled)
@@ -345,6 +350,15 @@ object CbWebObserver {
             }
             return fallback;
           }
+          // 只认「允许一次」这类单次授权；「始终允许」只能作为提示，绝不代点
+          function pickStrict(list) {
+            for (var i = 0; i < list.length; i++) {
+              var el = list[i];
+              if (!visible(el)) continue;
+              if (APPROVE_ONCE.test(norm(txt(el)))) return el;
+            }
+            return null;
+          }
           function describe(ctx) {
             var hit = /(包含危险命令[^。？?]*[。？?]?|是否[^。？?]{0,40}[。？?]?|检测到[^。？?]{0,40})/.exec(ctx);
             return (hit ? hit[1] : ctx).slice(0, 70) || '一个操作需要确认';
@@ -357,14 +371,17 @@ object CbWebObserver {
               if (SESSION.test(norm(txt(btn))) || !APPROVE_ONCE.test(norm(txt(btn)))) continue;
               var found = decisionBox(btn);
               if (!found || found.box.getAttribute('data-cb-pet-ask')) continue;
-              var once = pickOnce(found.list);
+              var strict = pickStrict(found.list);
+              var once = strict || pickOnce(found.list);
               if (!once) continue;
               found.box.setAttribute('data-cb-pet-ask', '1');
               var danger = DANGER.test(found.ctx);
               var blocked = BLOCK.test(found.ctx);
               var auto = false;
               var c = api.cfg || {};
-              if (c.noDisturb && !blocked && once === btn) {
+              // 决策看整张确认卡，不再要求「当前遍历到的按钮就是最终目标」：
+              // 同一张卡里同时出现「允许」和「允许一次」时，后者才是 pickOnce 的结果
+              if (c.noDisturb && !blocked && strict) {
                 if (!danger) auto = true;
                 if (c.noDisturbDanger && danger) auto = true;
               }
@@ -372,8 +389,8 @@ object CbWebObserver {
                 what: describe(found.ctx), danger: danger, blocked: blocked, auto: auto
               });
               if (auto) {
-                btn.setAttribute('data-cb-pet-auto', '1');
-                try { btn.click(); } catch (e) {}
+                strict.setAttribute('data-cb-pet-auto', '1');
+                try { strict.click(); } catch (e) {}
               }
             }
           }
@@ -569,9 +586,9 @@ object CbWebObserver {
           var baseEmit = emit;
           emit = function (t, key, payload) {
             var now = Date.now();
-            // 中断类只去重 20 秒：点完「继续」后再次中断必须还能再点；
-            // 其它事件保持 10 分钟，避免页面重渲染刷出重复提示
-            var ttl = t === 'interrupted' ? 20000 : 600000;
+            // 中断 / 权限弹窗只去重 20 秒：点完「继续」后再次中断必须还能再点，
+            // 同一张确认卡（文案相同）后续再出现也要能重新提示；其它事件保持 10 分钟防重渲染刷屏
+            var ttl = (t === 'interrupted' || t === 'approval') ? 20000 : 600000;
             if (seen[key] && now - seen[key] < ttl) return;
             seen[key] = now;
             baseEmit(t, key, payload);

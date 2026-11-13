@@ -9,6 +9,7 @@ import dev.codebuddy.account.growth.GrowthTracker
 import dev.codebuddy.account.history.ActivityFeed
 import dev.codebuddy.account.history.HistoryActivity
 import dev.codebuddy.account.model.CredentialSnapshot
+import dev.codebuddy.account.pet.CbApprovalMode
 import dev.codebuddy.account.pet.CbEventCenter
 import dev.codebuddy.account.pet.CbWebObserver
 import dev.codebuddy.account.pet.PetService
@@ -1033,7 +1034,8 @@ class DashboardPanel(
 
         val recent = CbEventCenter.recentEvents()
         val approvals = recent.count { it.type == "approval" }
-        val autoApprovals = recent.count { it.type == "approval" && it.auto }
+        // 代点次数按「今日」口径落盘统计：默认放行、脚本代点、日志兜底都算一次
+        val autoApprovals = CbEventCenter.autoApprovalsToday()
         val interrupts = recent.count { it.type == "interrupted" }
         val autoContinues = recent.count { it.type == "interrupted" && it.auto }
         val migration = recent.firstOrNull { it.type == "history" }
@@ -1044,13 +1046,13 @@ class DashboardPanel(
                 value = if (connected) "已连接" else "未连接",
                 unit = "页面观察通道",
                 tone = if (connected) AccountUiColors.success else AccountUiColors.warning,
-                trailing = AccountUiKit.statusTag("代点 $autoApprovals 次", AccountUiColors.textMuted),
+                trailing = AccountUiKit.statusTag("今日代点 $autoApprovals 次", AccountUiColors.textMuted),
             )
         )
         card.body.add(Box.createVerticalStrut(JBUI.scale(CardMetrics.rowGap)))
         card.body.add(
             CardNotice(
-                "权限弹窗 $approvals 次（代点 $autoApprovals）· 中断 $interrupts 次（续跑 $autoContinues）" +
+                "最近记录：权限弹窗 $approvals 次 · 今日代点 $autoApprovals 次 · 中断 $interrupts 次（续跑 $autoContinues）" +
                     (migration?.let { " · 最近迁移 ${it.timeText}" } ?: "")
             )
         )
@@ -1059,7 +1061,7 @@ class DashboardPanel(
             CardList(
                 rows = petSwitchRows(),
                 capacity = card.listRows,
-                overflowText = { "另有 $it 项开关未展示（切到 2×4 档可看全）" },
+                overflowText = { "另有 $it 项开关未展示" },
             )
         )
     }
@@ -1070,16 +1072,36 @@ class DashboardPanel(
         return listOf(
             switchRow("权限提醒", pet.cbApproveNoticeEnabled) { pet.cbApproveNoticeEnabled = it },
             switchRow("进度提醒", pet.cbProgressNoticeEnabled) { pet.cbProgressNoticeEnabled = it },
-            switchRow("超时代点（${pet.cbAutoApproveMinutes} 分钟）", pet.cbAutoApproveEnabled) {
-                pet.cbAutoApproveEnabled = it
-            },
-            switchRow("弹窗免打扰", pet.cbNoDisturbEnabled) { pet.cbNoDisturbEnabled = it },
-            switchRow("危险命令代点", pet.cbNoDisturbDangerEnabled) { pet.cbNoDisturbDangerEnabled = it },
+            approvalSummaryRow(pet),
             switchRow("中断自动继续", pet.cbAutoContinueEnabled) { pet.cbAutoContinueEnabled = it },
             switchRow("限流提醒", pet.cbLimitNoticeEnabled) { pet.cbLimitNoticeEnabled = it },
             switchRow("成长播报", pet.cbGrowthNoticeEnabled) { pet.cbGrowthNoticeEnabled = it },
             switchRow("迁移反馈", pet.cbHistoryNoticeEnabled) { pet.cbHistoryNoticeEnabled = it },
         )
+    }
+
+    /**
+     * 确认策略只读摘要。
+     *
+     * 「处理方式 / 普通命令 / 危险命令」三项只在桌宠设置里维护，
+     * 看板不再放开关，避免同一个字段两处 UI 各写各的。
+     */
+    private fun approvalSummaryRow(pet: PetSettings): JComponent {
+        val text = when (pet.cbApprovalMode) {
+            CbApprovalMode.NONE -> "确认处理：不干预（只提醒）"
+            CbApprovalMode.PAGE ->
+                "确认处理：页面代点 · 普通${pet.cbApprovalNormal.label} · 危险${pet.cbApprovalDanger.label}"
+            CbApprovalMode.HOOK ->
+                "确认处理：桌宠弹窗 · 普通${pet.cbApprovalNormal.label} · 危险永远人工"
+        }
+        return JLabel(text).apply {
+            font = baseLabelFont().deriveFont(Font.PLAIN, AccountUiType.label)
+            foreground = AccountUiColors.textMuted
+            alignmentX = Component.LEFT_ALIGNMENT
+            preferredSize = Dimension(0, JBUI.scale(CardMetrics.rowHeight))
+            maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(CardMetrics.rowHeight))
+            toolTipText = "在「桌宠设置 → CodeBuddy 确认」里修改"
+        }
     }
 
     private fun switchRow(label: String, checked: Boolean, toggle: (Boolean) -> Unit): JComponent {

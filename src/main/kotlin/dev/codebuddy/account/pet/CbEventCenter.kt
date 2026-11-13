@@ -9,6 +9,7 @@ import com.intellij.openapi.diagnostic.logger
 import dev.codebuddy.account.history.ActivityFeed
 import dev.codebuddy.account.service.AccountEvents
 import java.time.Instant
+import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -28,6 +29,18 @@ object CbEventCenter {
     private val log = logger<CbEventCenter>()
 
     private const val STORE_KEY = "codebuddy.pet.modelLimits"
+
+    /** 今日代点次数：日期 + 计数分开存，跨天靠日期判定归零 */
+    private const val AUTO_DAY_KEY = "codebuddy.pet.autoApproveDay"
+    private const val AUTO_COUNT_KEY = "codebuddy.pet.autoApproveCount"
+
+    /** 默认放行事件在列表里的合并窗口 */
+    private const val AUTO_EVENT_MERGE_MS = 60_000L
+
+    /** 默认放行提示的最小间隔：与桌宠气泡的停留时长一致，避免连续放行时刷屏 */
+    private const val AUTO_NOTICE_GAP_MS = 5_000L
+
+    private val WHITESPACE = Regex("\\s+")
     private const val CLAIM_WINDOW_MS = 60_000L
     private const val LIMIT_KEEP_MS = 30 * 60_000L
     private val TIME_FORMAT = DateTimeFormatter.ofPattern("MM-dd HH:mm")
@@ -126,10 +139,91 @@ object CbEventCenter {
     /** 最近事件（倒序，功能页直接读） */
     private val events = ArrayList<EventRecord>()
 
+    /** 今日代点次数的落盘状态；[autoDay] 为 yyyy-MM-dd，与当天不符即视为 0 */
+    @Volatile
+    private var autoDay: String = ""
+
+    @Volatile
+    private var autoCount: Int = 0
+
     fun recentEvents(): List<EventRecord> = synchronized(events) { events.asReversed().toList() }
 
     fun clearEvents() {
         synchronized(events) { events.clear() }
+    }
+
+    /** 今日代点次数；跨天读到旧日期直接返回 0，不改写落盘值 */
+    fun autoApprovalsToday(): Int {
+        if (autoDay != LocalDate.now().toString()) return 0
+        return autoCount
+    }
+
+    /**
+     * 记一次「代点」（脚本自动同意 / hook 默认放行 / 日志兜底点同意）。
+     *
+     * 只累计今日次数，不动事件列表也不弹提示（提示由各自通道负责）；
+     * hook 默认放行需要提示，走 [onHookAutoApproval]。
+     */
+    fun countAutoApproval() {
+        val today = LocalDate.now().toString()
+        synchronized(this) {
+            autoCount = if (autoDay == today) autoCount + 1 else 1
+            autoDay = today
+            saveAutoCount()
+        }
+    }
+
+    /**
+     * hook 通道的默认放行：桌宠必须提示，主人才知道它刚替自己点了。
+     *
+     * 计数与事件分开处理：
+     * - 今日代点次数每次都 +1，这是「今天一共执行了多少次」的口径；
+     * - 事件列表把 1 分钟内的连续放行合并成一条，否则每次工具调用都插一条，
+     *   60 条窗口会瞬间刷满，限流、中断这些真要看的事件全被挤掉。
+     */
+    fun onHookAutoApproval(tool: String, detail: String) {
+        val name = tool.ifBlank { "工具调用" }
+        val what = detail.replace(WHITESPACE, " ").trim().take(60)
+        val title = "我先替主人放行了「$name」"
+        val ordinal = autoApprovalsToday() + 1
+        val content = if (what.isBlank()) "今日第 $ordinal 次代点" else "$what · 今日第 $ordinal 次代点"
+        // hook 通道与日志兜底可能同时认出同一次放行：去重键只取命令原文
+        // （hook 报的是工具名 Bash，日志报的是「命令」），提示只播一次，次数照常累计
+        val duplicated = !claim("autoAllow", what)
+        val now = System.currentTimeMillis()
+        // 再加一个最小间隔：一轮对话里连续放行时不把提示刷成走马灯，只更新次数与事件
+        if (!duplicated && now - lastAutoNoticeAt >= AUTO_NOTICE_GAP_MS) {
+            lastAutoNoticeAt = now
+            // 默认放行是高频路径，用 INFO 的默认 5 秒时长，别让提示一直占着桌宠
+            PetNotifier.notify(PetNotifier.Level.INFO, title, content)
+        }
+        countAutoApproval()
+        mergeAutoEvent(title, content)
+    }
+
+    /**
+     * 日志通道认出的「默认放行」：宿主把命令直接放过去了（`needConfirm=false`）。
+     *
+     * 与 [onHookAutoApproval] 同一套文案与计数，去重键也一致，
+     * 因此 hook 真正接管时同一条命令不会被提示两次。
+     */
+    fun onLogAutoApproval(tool: String, detail: String) {
+        if (!PetSettings.getInstance().enabled) return
+        onHookAutoApproval(tool, detail)
+    }
+
+    /** 默认放行的紧凑记录：上一条也是放行就原地更新，保持事件列表不被放行记录淹没 */
+    private fun mergeAutoEvent(title: String, content: String) {
+        val now = System.currentTimeMillis()
+        synchronized(events) {
+            val last = events.lastOrNull()
+            if (last != null && last.type == "approval" && last.auto && now - last.at < AUTO_EVENT_MERGE_MS) {
+                events[events.size - 1] = EventRecord(now, "approval", title, content, true)
+                return
+            }
+            events.add(EventRecord(now, "approval", title, content, true))
+            if (events.size > MAX_EVENTS) events.removeAt(0)
+        }
     }
 
     private fun record(type: String, title: String, detail: String, auto: Boolean = false) {
@@ -137,6 +231,7 @@ object CbEventCenter {
             events.add(EventRecord(System.currentTimeMillis(), type, title, detail, auto))
             if (events.size > MAX_EVENTS) events.removeAt(0)
         }
+        if (auto && type == "approval") countAutoApproval()
     }
 
     /** 去重表：key = 事件类型|业务键 */
@@ -153,8 +248,13 @@ object CbEventCenter {
     @Volatile
     private var lastUsageFireAt = 0L
 
+    /** 上一条「默认放行」提示的播放时刻，用于最小间隔节流 */
+    @Volatile
+    private var lastAutoNoticeAt = 0L
+
     init {
         loadLimits()
+        loadAutoCount()
     }
 
     // ---------------------------------------------------------------
@@ -218,8 +318,9 @@ object CbEventCenter {
     // ---------------------------------------------------------------
 
     private fun onApproval(project: String, what: String, dangerous: Boolean, auto: Boolean) {
-        // 代点是替主人做决定，必须提示并留痕，不受「提醒」开关影响
-        if (!auto && !PetSettings.getInstance().cbApproveNoticeEnabled) return
+        // 代点是替主人做决定，必须提示并留痕，不受「提醒」开关影响；
+        // 危险命令即使不代点也要提示，否则关掉「权限提醒」后会静默卡在那里没人知道
+        if (!auto && !dangerous && !PetSettings.getInstance().cbApproveNoticeEnabled) return
         if (!claim(if (auto) "approvalAuto" else "approval", "$project|$what")) return
         val (level, title) = when {
             auto -> PetNotifier.Level.INFO to "我先替主人点了「运行」"
@@ -403,6 +504,26 @@ object CbEventCenter {
         if (prev != null && now - prev < CLAIM_WINDOW_MS) return false
         claims["$type|$key"] = now
         true
+    }
+
+    private fun saveAutoCount() {
+        try {
+            val props = PropertiesComponent.getInstance()
+            props.setValue(AUTO_DAY_KEY, autoDay)
+            props.setValue(AUTO_COUNT_KEY, autoCount.toString())
+        } catch (t: Throwable) {
+            log.warn("保存今日代点次数失败", t)
+        }
+    }
+
+    private fun loadAutoCount() {
+        try {
+            val props = PropertiesComponent.getInstance()
+            autoDay = props.getValue(AUTO_DAY_KEY) ?: ""
+            autoCount = props.getValue(AUTO_COUNT_KEY)?.toIntOrNull() ?: 0
+        } catch (t: Throwable) {
+            log.warn("读取今日代点次数失败", t)
+        }
     }
 
     private fun saveLimits() {
