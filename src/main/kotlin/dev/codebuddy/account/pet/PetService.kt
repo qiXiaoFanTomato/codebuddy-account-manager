@@ -598,6 +598,8 @@ class PetService : Disposable {
                     override fun quotaChanged() = refreshDataAsync()
 
                     override fun dashboardLayoutChanged(origin: Any) = Unit
+
+                    override fun runtimeChanged() = Unit
                 },
             )
             connection = c

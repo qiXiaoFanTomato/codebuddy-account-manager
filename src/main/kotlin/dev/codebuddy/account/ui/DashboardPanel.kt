@@ -1,12 +1,18 @@
 package dev.codebuddy.account.ui
 
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.util.ui.JBUI
 import dev.codebuddy.account.checkin.CheckinTracker
 import dev.codebuddy.account.growth.GrowthService
 import dev.codebuddy.account.growth.GrowthTracker
+import dev.codebuddy.account.history.ActivityFeed
 import dev.codebuddy.account.history.HistoryActivity
 import dev.codebuddy.account.model.CredentialSnapshot
+import dev.codebuddy.account.pet.CbEventCenter
+import dev.codebuddy.account.pet.CbWebObserver
+import dev.codebuddy.account.pet.PetService
+import dev.codebuddy.account.pet.PetSettings
 import dev.codebuddy.account.quota.QuotaPackage
 import dev.codebuddy.account.quota.QuotaSummary
 import dev.codebuddy.account.quota.QuotaTime
@@ -22,6 +28,7 @@ import dev.codebuddy.account.usage.UsageRecord
 import dev.codebuddy.account.usage.UsageTodayTracker
 import dev.codebuddy.account.usage.formatCredit
 import java.awt.*
+import java.awt.event.HierarchyEvent
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import java.time.Instant
@@ -31,7 +38,7 @@ import java.time.format.DateTimeFormatter
 import javax.swing.*
 
 /**
- * 看板：账号 / 额度 / 消耗的总览视图（只读，不改变任何数据）。
+ * 看板：账号 / 额度 / 消耗 / 运行态的总览视图。
  *
  * 全部功能都以卡片形式铺在网格里（[DashboardCardGridLayout]）。点「管理卡片」进入编辑模式后，
  * 卡片可拖拽排序、可移除，也能从「＋ 添加卡片」里恢复；增删与重排都带过渡动画。
@@ -39,6 +46,9 @@ import javax.swing.*
  * （2×1 / 2×2 / 2×4）——所有卡片始终同宽同高，内容按档位容量裁剪，不因数据条数高矮不齐。
  *
  * 卡片的可见性、顺序与统一尺寸记在 [AccountSettings]，重开工具窗仍是用户排过的样子。
+ *
+ * 除账号 / 额度数据外，这里也承载 CodeBuddy 运行态（限流、成长计划、观察代点、事件记录、
+ * 对话活跃）：原先的「CodeBuddy 增强助手」窗口已删除，同一功能点只在这套卡片里出现一次。
  */
 class DashboardPanel(
     private val onOpenList: () -> Unit,
@@ -55,7 +65,11 @@ class DashboardPanel(
     private val onGrowthActivity: () -> Unit,
     private val onGrowthKeepalive: () -> Unit,
     private val onOpenGrowthCenter: () -> Unit,
+    /** 「数据状态」卡入口：打开用量统计（聚合视图，与请求级消耗明细区分） */
+    private val onOpenUsageStats: () -> Unit,
     private val onOpenSettings: () -> Unit,
+    /** 「快捷短语」入口：管理常用短语并发送到 CodeBuddy 输入框 */
+    private val onOpenPhrases: () -> Unit,
 ) : JPanel(BorderLayout()) {
 
     private val library = AccountLibrary.getInstance()
@@ -97,6 +111,11 @@ class DashboardPanel(
     private var lastActive: CredentialSnapshot? = null
     private var lastQuotas: Map<String, QuotaSummary> = emptyMap()
     private var lastThreshold: Int = 0
+
+    // 对话活跃卡片的本地缓存：ActivityFeed 读盘较重，只在首次展示 / 手动刷新时后台读一次
+    private var activityItems: List<ActivityFeed.Item> = emptyList()
+    private var activityLoaded = false
+    private var activityLoading = false
 
     /**
      * 今日消耗 Hero：常驻实例。
@@ -185,6 +204,25 @@ class DashboardPanel(
         }
         if (settings.growthEnabled) {
             GrowthTracker.ensureFresh { update() }
+            // 成长计划详情（活跃 / 连登 / 旅行）独立缓存，不跟任务一起查
+            GrowthTracker.ensureFreshDetails { update() }
+        }
+        loadActivityIfNeeded()
+    }
+
+    /** 对话活跃：读盘重，后台线程读一次缓存，回来再重建卡片 */
+    private fun loadActivityIfNeeded(force: Boolean = false) {
+        if (activityLoading) return
+        if (!force && activityLoaded) return
+        activityLoading = true
+        ApplicationManager.getApplication().executeOnPooledThread {
+            val items = ActivityFeed.recent(limit = ACTIVITY_ROWS, force = force)
+            ApplicationManager.getApplication().invokeLater {
+                activityLoading = false
+                activityLoaded = true
+                activityItems = items
+                update()
+            }
         }
     }
 
@@ -213,10 +251,15 @@ class DashboardPanel(
             id,
             title = "模型限额 · ${ModelQuotaTracker.state().periodLabel}",
         ) { card -> fillModelQuotaCard(card) }
+        DashboardCardId.RATE_LIMIT -> newCard(id) { card -> fillRateLimitCard(card) }
         DashboardCardId.RANKING -> newCard(id) { card -> fillRankingCard(card, saved, active, quotas) }
         DashboardCardId.EXPIRING -> newCard(id) { card -> fillExpiringCard(card, saved, quotas) }
         DashboardCardId.CHECKIN -> newCard(id) { card -> fillCheckinCard(card) }
+        DashboardCardId.GROWTH_PLAN -> newCard(id) { card -> fillGrowthPlanCard(card) }
         DashboardCardId.GROWTH -> newCard(id) { card -> fillGrowthCard(card) }
+        DashboardCardId.ASSISTANT -> newCard(id) { card -> fillAssistantCard(card) }
+        DashboardCardId.EVENTS -> newCard(id) { card -> fillEventsCard(card) }
+        DashboardCardId.ACTIVITY -> newCard(id) { card -> fillActivityCard(card) }
         DashboardCardId.SCHEDULER -> newCard(id) { card -> fillSchedulerCard(card) }
         DashboardCardId.STATUS -> newCard(id) { card -> fillStatusCard(card, saved, active, quotas, threshold) }
         DashboardCardId.GUIDE -> newCard(id) { card -> fillGuideCard(card) }
@@ -778,6 +821,110 @@ class DashboardPanel(
     }
 
     // ---------------------------------------------------------------
+    // 2.5 成长计划与活跃状态
+    // ---------------------------------------------------------------
+
+    /**
+     * 成长计划与活跃状态：今日活跃、连登天数、Buddy 旅行状态。
+     *
+     * 数据来自 [GrowthTracker.details] 的独立缓存（10 分钟），与「成长中心」任务卡分开查，
+     * 避免三个接口的耗时被算进任务卡的刷新里。
+     */
+    private fun fillGrowthPlanCard(card: DashboardCard) {
+        card.actions.addAction("刷新", "重新查询今日活跃 / 连登 / 旅行状态", primary = true) {
+            GrowthTracker.ensureFreshDetails(force = true) { update() }
+        }
+
+        if (!settings.growthEnabled) {
+            card.body.add(CardNotice("成长中心任务已在设置中关闭（实验特性：接口非官方，可在设置页调整路径或关闭）。"))
+            return
+        }
+
+        val st = GrowthTracker.details()
+        if (!st.loaded) {
+            card.body.add(
+                CardNotice(
+                    if (st.loading) "正在查询今日活跃与连登状态…" else "尚未查询，点「刷新」读取成长计划与活跃状态。"
+                )
+            )
+            return
+        }
+        if (st.items.isEmpty()) {
+            card.body.add(CardNotice("账号库为空，请先导入账号。"))
+            return
+        }
+
+        card.body.add(
+            CardHeadline(
+                value = "${st.activeCount}/${st.total}",
+                unit = "个账号今日已活跃",
+                tone = if (st.activeCount == st.total) AccountUiColors.success else AccountUiColors.textPrimary,
+                trailing = if (st.maxStreakDays > 0) {
+                    AccountUiKit.fieldPill("最高连登 ${st.maxStreakDays} 天", AccountUiColors.brass)
+                } else {
+                    null
+                },
+            )
+        )
+        card.body.add(Box.createVerticalStrut(JBUI.scale(CardMetrics.blockGap)))
+        card.body.add(
+            CardList(
+                rows = st.items.map { growthPlanRow(it) },
+                capacity = card.listRows,
+                overflowText = { "另有 $it 个账号未展示" },
+            )
+        )
+        if (st.failedCount > 0) {
+            card.body.add(Box.createVerticalStrut(JBUI.scale(CardMetrics.rowGap)))
+            card.body.add(
+                CardNotice("${st.failedCount} 个账号查询失败：多为 token 失效或接口不可用", AccountUiColors.danger)
+            )
+        }
+    }
+
+    /** 一个账号一行：状态看今日活跃，数值优先给旅行的回来时间，没有旅行再给连登天数 */
+    private fun growthPlanRow(item: GrowthTracker.AccountDetail): JComponent {
+        val active = item.active
+        val (statusText, statusColor) = when {
+            item.error != null -> "查询失败" to AccountUiColors.danger
+            active?.ok != true -> "活跃未知" to AccountUiColors.textMuted
+            active.active -> "今日已活跃" to AccountUiColors.success
+            else -> "今日未活跃" to AccountUiColors.warning
+        }
+        val streak = item.streak?.takeIf { it.ok }
+        val travel = item.travel?.takeIf { it.ok }
+        val value = when {
+            travel != null -> travel.etaText() ?: travel.stateLabel
+            streak != null -> "连登 ${streak.days} 天"
+            else -> "—"
+        }
+        return CardRow(
+            name = item.displayName,
+            value = value,
+            tag = AccountUiKit.statusTag(statusText, statusColor),
+            valueTone = when {
+                item.error != null -> AccountUiColors.danger
+                travel?.state == "arrived" -> AccountUiColors.warning
+                else -> AccountUiColors.textMuted
+            },
+            valueWidthDp = 132,
+            tooltip = buildString {
+                append(item.displayName).append(" · ").append(statusText)
+                item.error?.let { append(" · ").append(it) }
+                streak?.let { s ->
+                    append(" · 连登 ").append(s.days).append(" 天，补登卡 ").append(s.makeupCards).append(" 张")
+                    if (s.nextTierRemaining > 0) append("，下一档还差 ").append(s.nextTierRemaining).append(" 天")
+                }
+                travel?.let { t ->
+                    append(" · Buddy ").append(t.stateLabel)
+                    t.etaText()?.let { append("（").append(it).append("）") }
+                    if (t.rewardCredit > 0) append("，奖励 ").append(num(t.rewardCredit)).append(" credits")
+                }
+            },
+        )
+    }
+
+    // ---------------------------------------------------------------
     // 2.55 成长中心任务
     // ---------------------------------------------------------------
 
@@ -786,7 +933,7 @@ class DashboardPanel(
         card.actions.addAction("旅行巡检", "执行旅行巡检任务", onClick = onGrowthTravel)
         card.actions.addAction("活跃上报", "上报客户端活跃事件", onClick = onGrowthActivity)
         card.actions.addAction("全部保活", "对所有账号做保活", onClick = onGrowthKeepalive)
-        card.actions.addAction("打开窗口", "打开成长中心窗口", ghost = true, onClick = onOpenGrowthCenter)
+        card.actions.addAction("打开窗口", "打开成长计划窗口", ghost = true, onClick = onOpenGrowthCenter)
         card.actions.addAction("刷新", "重新查询成长任务", ghost = true) {
             GrowthTracker.ensureFresh(force = true) { update() }
         }
@@ -867,6 +1014,188 @@ class DashboardPanel(
             },
         )
     }
+
+    // ---------------------------------------------------------------
+    // 2.57 增强助手：观察通道 / 代点统计 / 联动开关
+    // ---------------------------------------------------------------
+
+    /**
+     * 增强助手：页面观察通道、代点 / 续跑 / 迁移统计、提醒与代点开关。
+     *
+     * 原先独立的「CodeBuddy 增强助手」窗口已删除，功能和开关都收在这一张卡里；
+     * 开关直接写 [PetSettings] 并调 [PetService.applySettings] 立即生效，不再在桌宠设置页重复出现。
+     */
+    private fun fillAssistantCard(card: DashboardCard) {
+        card.actions.addAction("刷新", "重新读取观察通道与代点统计", primary = true) { update() }
+        card.actions.addAction("快捷短语", "管理常用短语并发送到 CodeBuddy 输入框", ghost = true) {
+            onOpenPhrases()
+        }
+
+        val recent = CbEventCenter.recentEvents()
+        val approvals = recent.count { it.type == "approval" }
+        val autoApprovals = recent.count { it.type == "approval" && it.auto }
+        val interrupts = recent.count { it.type == "interrupted" }
+        val autoContinues = recent.count { it.type == "interrupted" && it.auto }
+        val migration = recent.firstOrNull { it.type == "history" }
+        val connected = CbWebObserver.isConnected()
+
+        card.body.add(
+            CardHeadline(
+                value = if (connected) "已连接" else "未连接",
+                unit = "页面观察通道",
+                tone = if (connected) AccountUiColors.success else AccountUiColors.warning,
+                trailing = AccountUiKit.statusTag("代点 $autoApprovals 次", AccountUiColors.textMuted),
+            )
+        )
+        card.body.add(Box.createVerticalStrut(JBUI.scale(CardMetrics.rowGap)))
+        card.body.add(
+            CardNotice(
+                "权限弹窗 $approvals 次（代点 $autoApprovals）· 中断 $interrupts 次（续跑 $autoContinues）" +
+                    (migration?.let { " · 最近迁移 ${it.timeText}" } ?: "")
+            )
+        )
+        card.body.add(Box.createVerticalStrut(JBUI.scale(CardMetrics.blockGap)))
+        card.body.add(
+            CardList(
+                rows = petSwitchRows(),
+                capacity = card.listRows,
+                overflowText = { "另有 $it 项开关未展示（切到 2×4 档可看全）" },
+            )
+        )
+    }
+
+    /** 联动开关：每行一项，点击即写设置并立即生效 */
+    private fun petSwitchRows(): List<JComponent> {
+        val pet = PetSettings.getInstance()
+        return listOf(
+            switchRow("权限提醒", pet.cbApproveNoticeEnabled) { pet.cbApproveNoticeEnabled = it },
+            switchRow("进度提醒", pet.cbProgressNoticeEnabled) { pet.cbProgressNoticeEnabled = it },
+            switchRow("超时代点（${pet.cbAutoApproveMinutes} 分钟）", pet.cbAutoApproveEnabled) {
+                pet.cbAutoApproveEnabled = it
+            },
+            switchRow("弹窗免打扰", pet.cbNoDisturbEnabled) { pet.cbNoDisturbEnabled = it },
+            switchRow("危险命令代点", pet.cbNoDisturbDangerEnabled) { pet.cbNoDisturbDangerEnabled = it },
+            switchRow("中断自动继续", pet.cbAutoContinueEnabled) { pet.cbAutoContinueEnabled = it },
+            switchRow("限流提醒", pet.cbLimitNoticeEnabled) { pet.cbLimitNoticeEnabled = it },
+            switchRow("成长播报", pet.cbGrowthNoticeEnabled) { pet.cbGrowthNoticeEnabled = it },
+            switchRow("迁移反馈", pet.cbHistoryNoticeEnabled) { pet.cbHistoryNoticeEnabled = it },
+        )
+    }
+
+    private fun switchRow(label: String, checked: Boolean, toggle: (Boolean) -> Unit): JComponent {
+        val row = JPanel(BorderLayout(JBUI.scale(6), 0))
+        row.isOpaque = false
+        row.alignmentX = Component.LEFT_ALIGNMENT
+        row.preferredSize = Dimension(0, JBUI.scale(CardMetrics.rowHeight))
+        row.maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(CardMetrics.rowHeight))
+        row.cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+        row.toolTipText = "$label：点击切换（立即生效）"
+        row.addMouseListener(object : MouseAdapter() {
+            override fun mouseClicked(e: MouseEvent) {
+                if (!SwingUtilities.isLeftMouseButton(e)) return
+                toggle(!checked)
+                PetService.getInstance().applySettings()
+                update()
+            }
+        })
+        row.add(
+            JLabel(label).apply {
+                font = baseLabelFont().deriveFont(Font.PLAIN, AccountUiType.label)
+                foreground = AccountUiColors.textPrimary
+            },
+            BorderLayout.CENTER,
+        )
+        row.add(
+            if (checked) {
+                AccountUiKit.fieldPill("已开", AccountUiColors.success)
+            } else {
+                AccountUiKit.fieldPill("已关", AccountUiColors.textMuted)
+            },
+            BorderLayout.EAST,
+        )
+        return row
+    }
+
+    // ---------------------------------------------------------------
+    // 2.58 事件记录
+    // ---------------------------------------------------------------
+
+    /** 事件记录：观察通道与日志汇合后的最近事件，含「是否由桌宠代劳」 */
+    private fun fillEventsCard(card: DashboardCard) {
+        card.actions.addAction("刷新", "重新读取最近事件", primary = true) { update() }
+        card.actions.addAction("清空记录", "清空事件记录", ghost = true) {
+            CbEventCenter.clearEvents()
+            update()
+        }
+
+        val events = CbEventCenter.recentEvents()
+        card.body.add(
+            CardNotice(
+                if (events.isEmpty()) {
+                    "还没有观察到权限弹窗 / 限流 / 中断事件。"
+                } else {
+                    "最近 ${events.size} 条 · 时间 / 类型 / 标题"
+                }
+            )
+        )
+        card.body.add(Box.createVerticalStrut(JBUI.scale(CardMetrics.rowGap)))
+        card.body.add(
+            CardList(
+                rows = events.map { eventRow(it) },
+                capacity = card.listRows,
+                overflowText = { "另有 $it 条事件未展示" },
+            )
+        )
+    }
+
+    private fun eventRow(e: CbEventCenter.EventRecord): JComponent = CardRow(
+        name = "${e.timeText} ${e.title}",
+        value = "",
+        valueWidthDp = 0,
+        tag = AccountUiKit.statusTag(
+            if (e.auto) "${e.typeLabel} · 代劳" else e.typeLabel,
+            if (e.auto) AccountUiColors.brass else AccountUiColors.textMuted,
+        ),
+        tooltip = "${e.timeText} ${e.typeLabel} ${e.title}：${e.detail}",
+    )
+
+    // ---------------------------------------------------------------
+    // 2.59 对话活跃
+    // ---------------------------------------------------------------
+
+    /** 对话活跃：最近完成的对话（项目 + 标题 + 摘要），数据来自 [ActivityFeed] 的本地缓存 */
+    private fun fillActivityCard(card: DashboardCard) {
+        card.actions.addAction("刷新", "重新扫描最近的对话", primary = true) {
+            loadActivityIfNeeded(force = true)
+        }
+        card.actions.addAction("打开历史", "打开历史对话窗口", ghost = true) { onOpenHistory() }
+
+        if (activityItems.isEmpty()) {
+            card.body.add(
+                CardNotice(
+                    if (activityLoading) "正在扫描最近的对话…" else "暂无对话记录：完成一轮对话后会自动出现在这里。"
+                )
+            )
+            return
+        }
+        card.body.add(CardNotice("最近 ${activityItems.size} 个对话 · 摘要取「主人」之后的正文"))
+        card.body.add(Box.createVerticalStrut(JBUI.scale(CardMetrics.rowGap)))
+        card.body.add(
+            CardList(
+                rows = activityItems.map { activityRow(it) },
+                capacity = card.listRows,
+                overflowText = { "另有 $it 个对话未展示" },
+            )
+        )
+    }
+
+    private fun activityRow(item: ActivityFeed.Item): JComponent = CardRow(
+        name = item.excerpt.ifBlank { item.title },
+        value = "",
+        valueWidthDp = 0,
+        tag = AccountUiKit.fieldPill("${item.time.take(5)} ${item.project}", AccountUiColors.textMuted),
+        tooltip = "${item.time} ${item.project} · ${item.title}：${item.excerpt}",
+    )
 
     // ---------------------------------------------------------------
     // 2.6 智能调度
@@ -1111,6 +1440,106 @@ class DashboardPanel(
         return block
     }
 
+    // ---------------------------------------------------------------
+    // 3.6 模型频率限制与预计解封时间
+    // ---------------------------------------------------------------
+
+    /**
+     * 模型频率限制：只读 [CbEventCenter] 的本机限流记录，不发请求。
+     *
+     * 剩余时间是动态的，卡片挂一个 30 秒的 ticker 只改数值列，不重建卡片，
+     * 避免打断看板其它卡的动画与滚动位置；卡片离开层级时停表。
+     */
+    private fun fillRateLimitCard(card: DashboardCard) {
+        card.actions.addAction("刷新记录", "重新读取本机限流记录", primary = true) { update() }
+
+        // 最近一步的吞吐（日志通道按步写入）：与限流信息同卡展示，回答「当前模型有多快」
+        CbEventCenter.recentUsage()?.let { usage ->
+            if (System.currentTimeMillis() - usage.at <= USAGE_SAMPLE_TTL_MS) {
+                card.body.add(
+                    CardNotice(
+                        "最近一步输出：${usage.detail()}",
+                        AccountUiColors.textMuted,
+                    )
+                )
+                card.body.add(Box.createVerticalStrut(JBUI.scale(CardMetrics.blockGap)))
+            }
+        }
+
+        // 页面会话状态没接上时，限流只能靠日志推断：模型名与解封时间可能缺失，明确告知
+        if (PetSettings.getInstance().cbLimitNoticeEnabled && !CbWebObserver.storeConnected()) {
+            card.body.add(
+                CardNotice(
+                    "未接上 CodeBuddy 会话状态：限流信息只能从日志推断，模型名与解封时间可能缺失",
+                    AccountUiColors.warning,
+                )
+            )
+            card.body.add(Box.createVerticalStrut(JBUI.scale(CardMetrics.blockGap)))
+        }
+
+        val now = System.currentTimeMillis()
+        val limits = CbEventCenter.activeLimits()
+            .sortedBy { if (it.resetAt <= 0L) Long.MAX_VALUE else it.resetAt }
+        if (limits.isEmpty()) {
+            card.body.add(
+                CardNotice("暂无模型频率限制记录：命中限流时会在这里显示模型、限制类型与预计解封时间。")
+            )
+            return
+        }
+
+        val blocked = limits.count { it.resetAt <= 0L || it.resetAt > now }
+        val nearest = limits.map { it.resetAt }.filter { it > 0L }.minOrNull()
+        card.body.add(
+            CardHeadline(
+                value = blocked.toString(),
+                unit = if (blocked > 0) "个模型受限" else "个模型受限（已到解封时间）",
+                tone = if (blocked > 0) AccountUiColors.danger else AccountUiColors.success,
+                trailing = nearest?.let {
+                    AccountUiKit.fieldPill(
+                        "最近解封 ${hmFmt.format(Instant.ofEpochMilli(it))}",
+                        if (blocked > 0) AccountUiColors.warning else AccountUiColors.textMuted,
+                    )
+                },
+            )
+        )
+        card.body.add(Box.createVerticalStrut(JBUI.scale(CardMetrics.blockGap)))
+
+        val rows = limits.map { limit -> limit to rateLimitRow(limit) }
+        card.body.add(
+            CardList(
+                rows = rows.map { it.second },
+                capacity = card.listRows,
+                overflowText = { "另有 $it 条限制记录未展示" },
+            )
+        )
+
+        val ticker = Timer(30_000) tick@{
+            // 卡片已被刷新替换时停表，避免旧卡片上的定时器继续空转
+            if (!card.isShowing) {
+                (it.source as? Timer)?.stop()
+                return@tick
+            }
+            for ((limit, row) in rows) row.setValue(limit.remaining(), rateLimitTone(limit))
+        }.apply { isRepeats = true }
+        card.addHierarchyListener { e ->
+            if ((e.changeFlags and HierarchyEvent.SHOWING_CHANGED.toLong()) == 0L) return@addHierarchyListener
+            if (card.isShowing) ticker.start() else ticker.stop()
+        }
+    }
+
+    private fun rateLimitRow(limit: CbEventCenter.ModelLimit): CardRow = CardRow(
+        name = limit.model,
+        value = limit.remaining(),
+        tag = AccountUiKit.statusTag(limit.kind, AccountUiColors.danger),
+        valueTone = rateLimitTone(limit),
+        tooltip = limit.detail(),
+        valueWidthDp = 132,
+    )
+
+    /** 已过解封时间的记录转灰，仍在限制中的留朱红 */
+    private fun rateLimitTone(limit: CbEventCenter.ModelLimit): Color =
+        if (limit.resetAt in 1..System.currentTimeMillis()) AccountUiColors.textMuted else AccountUiColors.danger
+
     private fun usageRow(accountLabel: String, record: UsageRecord): JComponent {
         val time = clock(record.requestTime)
         val model = record.model.ifBlank { "-" }
@@ -1283,6 +1712,7 @@ class DashboardPanel(
         card.actions.addAction("刷新全部额度", "重新查询所有账号额度", primary = true, onClick = onRefreshAll)
         card.actions.addAction("额度明细", "打开额度明细窗口") { onOpenQuotaDetail() }
         card.actions.addAction("消耗明细", "打开消耗明细窗口", ghost = true) { onOpenUsageDetail() }
+        card.actions.addAction("用量统计", "打开用量统计（积分 / 调用趋势）", ghost = true) { onOpenUsageStats() }
         card.actions.addAction("历史对话", "打开历史对话窗口", ghost = true) { onOpenHistory() }
         card.actions.addAction("对话日报", "生成对话日报", ghost = true) { onOpenReport() }
 
@@ -1458,10 +1888,16 @@ class DashboardPanel(
         const val SEVEN_DAYS_MS = 7L * 86_400_000L
         const val THIRTY_DAYS_MS = 30L * 86_400_000L
 
+        /** 吞吐样本有效期：超过半小时不再展示，避免看到过期的旧速度 */
+        const val USAGE_SAMPLE_TTL_MS = 30L * 60_000L
+
         /** KPI 卡片最小列宽，低于此宽度不再分列（响应式折行依据） */
         const val KPI_MIN_WIDTH = 150
 
         /** 今日各模型消耗最多展示的模型数，超出部分折成提示 */
         const val MODEL_USAGE_ROWS = 4
+
+        /** 对话活跃一次读取的条数（渲染时再按卡片容量裁剪） */
+        const val ACTIVITY_ROWS = 16
     }
 }

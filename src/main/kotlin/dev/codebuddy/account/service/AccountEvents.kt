@@ -25,6 +25,9 @@ interface AccountEvents {
      */
     fun dashboardLayoutChanged(origin: Any)
 
+    /** 运行态变化（模型限流记录等），看板据此刷新对应卡片 */
+    fun runtimeChanged()
+
     companion object {
 
         val TOPIC: Topic<AccountEvents> =
@@ -51,6 +54,14 @@ interface AccountEvents {
         fun fireDashboardLayoutChanged(origin: Any) {
             try {
                 ApplicationManager.getApplication().messageBus.syncPublisher(TOPIC).dashboardLayoutChanged(origin)
+            } catch (_: Throwable) {
+            }
+        }
+
+        /** 运行态变化广播（限流记录等） */
+        fun fireRuntimeChanged() {
+            try {
+                ApplicationManager.getApplication().messageBus.syncPublisher(TOPIC).runtimeChanged()
             } catch (_: Throwable) {
             }
         }

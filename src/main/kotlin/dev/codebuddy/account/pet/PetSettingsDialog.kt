@@ -2,11 +2,15 @@ package dev.codebuddy.account.pet
 
 import com.intellij.openapi.ui.DialogWrapper
 import com.intellij.ui.components.JBLabel
+import com.intellij.ui.components.JBScrollPane
 import com.intellij.util.ui.FormBuilder
 import com.intellij.util.ui.JBUI
 import dev.codebuddy.account.ui.AccountUiColors
+import java.awt.BorderLayout
 import java.awt.Component
 import java.awt.Dimension
+import java.awt.FlowLayout
+import javax.swing.BorderFactory
 import javax.swing.DefaultListCellRenderer
 import javax.swing.JButton
 import javax.swing.JCheckBox
@@ -45,9 +49,6 @@ class PetSettingsDialog(private val onChange: () -> Unit) : DialogWrapper(true) 
         )
     )
     private val noticeCheck = JCheckBox("系统提示由桌宠承载（关闭后退回 IDE 气泡通知）")
-    private val cbApproveCheck = JCheckBox("CodeBuddy 需要我点头时，让我提醒（页面观察 + 运行日志双通道）")
-    private val cbProgressCheck = JCheckBox("CodeBuddy 一轮跑完 / 没跑顺时，让我说一声")
-    private val cbAutoApproveCheck = JCheckBox("等太久还没点头，就替主人点「允许」（危险命令永不代点）")
     private val cbAutoApproveSpinner = JSpinner(
         SpinnerNumberModel(
             5,
@@ -56,14 +57,6 @@ class PetSettingsDialog(private val onChange: () -> Unit) : DialogWrapper(true) 
             1,
         )
     )
-    private val cbNoDisturbCheck = JCheckBox("权限弹窗免打扰：出现「允许 / 运行 + 拒绝」时直接代点（危险命令除外）")
-    private val cbNoDisturbDangerCheck = JCheckBox("高风险：危险命令确认也代点（扣费 / 提权 / 凭证外发仍不代点）")
-    private val cbAutoContinueCheck = JCheckBox("异常中断会话自动继续：网络波动 / 超时后自动点「继续」")
-    private val cbLimitCheck = JCheckBox("模型频率限制与预计解封时间：限流时由桌宠提醒")
-    private val cbGrowthCheck = JCheckBox("成长计划与活跃状态：查询结果由桌宠播报")
-    private val cbHistoryCheck = JCheckBox("账号间会话迁移：切号同步历史后由桌宠反馈")
-    private val bridgeStateLabel = JBLabel("")
-    private val limitsLabel = JBLabel("")
     private val whisperCheck = JCheckBox("每隔几分钟冒一句碎碎念台词")
     private val whisperMinutesSpinner = JSpinner(
         SpinnerNumberModel(
@@ -127,38 +120,33 @@ class PetSettingsDialog(private val onChange: () -> Unit) : DialogWrapper(true) 
         }
 
         val panel = FormBuilder.createFormBuilder()
-            .addComponent(enabledCheck)
-            .addVerticalGap(JBUI.scale(6))
-            .addComponent(badgeCheck)
-            .addComponent(topCheck)
-            .addComponent(animCheck)
-            .addComponent(soundCheck)
-            .addComponent(physicsCheck)
-            .addComponent(randomCheck)
-            .addLabeledComponent("随机动作间隔（分钟）：", randomMinutesSpinner)
-            .addComponent(noticeCheck)
-            .addComponent(cbApproveCheck)
-            .addComponent(cbProgressCheck)
-            .addComponent(cbAutoApproveCheck)
-            .addLabeledComponent("自动同意等待（分钟）：", cbAutoApproveSpinner)
-            .addComponent(cbNoDisturbCheck)
-            .addComponent(cbNoDisturbDangerCheck)
-            .addComponent(cbAutoContinueCheck)
-            .addComponent(cbLimitCheck)
-            .addComponent(cbGrowthCheck)
-            .addComponent(cbHistoryCheck)
-            .addComponent(bridgeStateLabel)
-            .addComponent(limitsLabel)
-            .addComponent(whisperCheck)
-            .addLabeledComponent("碎碎念间隔（分钟）：", whisperMinutesSpinner)
-            .addComponent(jokeCheck)
-            .addLabeledComponent("主动讲笑话间隔（分钟）：", jokeMinutesSpinner)
-            .addVerticalGap(JBUI.scale(6))
-            .addLabeledComponent("尺寸（相对原版宽度 %）：", scaleSpinner)
-            .addLabeledComponent("不透明度（%）：", opacitySpinner)
-            .addLabeledComponent("停靠位置：", quadrantCombo)
+            .addComponent(section("显示与外观") {
+                addComponent(enabledCheck)
+                addComponent(badgeCheck)
+                addComponent(topCheck)
+                addComponent(animCheck)
+                addComponent(soundCheck)
+                addComponent(physicsCheck)
+                addLabeledComponent("尺寸（相对原版宽度 %）：", scaleSpinner)
+                addLabeledComponent("不透明度（%）：", opacitySpinner)
+                addLabeledComponent("停靠位置：", quadrantCombo)
+            })
             .addVerticalGap(JBUI.scale(8))
-            .addComponent(resetButton)
+            .addComponent(section("桌宠自身行为") {
+                addComponent(randomCheck)
+                addLabeledComponent("随机动作间隔（分钟）：", randomMinutesSpinner)
+                addComponent(whisperCheck)
+                addLabeledComponent("碎碎念间隔（分钟）：", whisperMinutesSpinner)
+                addComponent(jokeCheck)
+                addLabeledComponent("主动讲笑话间隔（分钟）：", jokeMinutesSpinner)
+            })
+            .addVerticalGap(JBUI.scale(8))
+            .addComponent(section("提示联动") {
+                addComponent(noticeCheck)
+                addLabeledComponent("超时代点等待（分钟）：", cbAutoApproveSpinner)
+            })
+            .addVerticalGap(JBUI.scale(8))
+            .addComponent(buttonRow(resetButton))
             .addVerticalGap(JBUI.scale(8))
             .addComponent(
                 JBLabel(
@@ -170,11 +158,30 @@ class PetSettingsDialog(private val onChange: () -> Unit) : DialogWrapper(true) 
             )
             .panel
 
-        panel.preferredSize = Dimension(JBUI.scale(460), panel.preferredSize.height)
+        panel.preferredSize = Dimension(JBUI.scale(470), panel.preferredSize.height)
         loadFromSettings()
         bindLiveApply()
-        return panel
+        return JBScrollPane(panel).apply {
+            preferredSize = Dimension(JBUI.scale(510), JBUI.scale(560))
+        }
     }
+
+    /** 带标题边框的设置分组；分组内维持原来的 FormBuilder 布局 */
+    private fun section(title: String, block: FormBuilder.() -> Unit): JPanel {
+        val form = FormBuilder.createFormBuilder()
+        form.block()
+        return JPanel(BorderLayout()).apply {
+            isOpaque = false
+            border = BorderFactory.createTitledBorder(title)
+            add(form.panel, BorderLayout.CENTER)
+        }
+    }
+
+    private fun buttonRow(vararg buttons: JComponent): JPanel =
+        JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(6), 0)).apply {
+            isOpaque = false
+            buttons.forEach { add(it) }
+        }
 
     override fun getPreferredFocusedComponent(): JComponent = scaleSpinner
 
@@ -193,16 +200,7 @@ class PetSettingsDialog(private val onChange: () -> Unit) : DialogWrapper(true) 
         randomCheck.addActionListener { apply() }
         randomMinutesSpinner.addChangeListener { apply() }
         noticeCheck.addActionListener { apply() }
-        cbApproveCheck.addActionListener { apply() }
-        cbProgressCheck.addActionListener { apply() }
-        cbAutoApproveCheck.addActionListener { apply() }
         cbAutoApproveSpinner.addChangeListener { apply() }
-        cbNoDisturbCheck.addActionListener { apply() }
-        cbNoDisturbDangerCheck.addActionListener { apply() }
-        cbAutoContinueCheck.addActionListener { apply() }
-        cbLimitCheck.addActionListener { apply() }
-        cbGrowthCheck.addActionListener { apply() }
-        cbHistoryCheck.addActionListener { apply() }
         whisperCheck.addActionListener { apply() }
         whisperMinutesSpinner.addChangeListener { apply() }
         jokeCheck.addActionListener { apply() }
@@ -224,17 +222,7 @@ class PetSettingsDialog(private val onChange: () -> Unit) : DialogWrapper(true) 
         randomCheck.isSelected = s.randomActionsEnabled
         randomMinutesSpinner.value = s.randomActionMinutes
         noticeCheck.isSelected = s.noticePetEnabled
-        cbApproveCheck.isSelected = s.cbApproveNoticeEnabled
-        cbProgressCheck.isSelected = s.cbProgressNoticeEnabled
-        cbAutoApproveCheck.isSelected = s.cbAutoApproveEnabled
         cbAutoApproveSpinner.value = s.cbAutoApproveMinutes
-        cbNoDisturbCheck.isSelected = s.cbNoDisturbEnabled
-        cbNoDisturbDangerCheck.isSelected = s.cbNoDisturbDangerEnabled
-        cbAutoContinueCheck.isSelected = s.cbAutoContinueEnabled
-        cbLimitCheck.isSelected = s.cbLimitNoticeEnabled
-        cbGrowthCheck.isSelected = s.cbGrowthNoticeEnabled
-        cbHistoryCheck.isSelected = s.cbHistoryNoticeEnabled
-        refreshBridgeState()
         whisperCheck.isSelected = s.whisperEnabled
         whisperMinutesSpinner.value = s.whisperMinutes
         jokeCheck.isSelected = s.jokeEnabled
@@ -243,21 +231,6 @@ class PetSettingsDialog(private val onChange: () -> Unit) : DialogWrapper(true) 
         opacitySpinner.value = s.opacityPercent
         quadrantCombo.selectedItem = s.quadrant
         loading = false
-    }
-
-    /** 观察通道不可用时明确告知主人：此时只有日志兜底，可能少认出一些弹窗 */
-    private fun refreshBridgeState() {
-        bridgeStateLabel.text = if (CbWebObserver.isConnected()) {
-            "页面观察通道：已连接（权限弹窗 / 限流 / 中断直接从页面感知）"
-        } else {
-            "页面观察通道：未连接（暂由 CodeBuddy 日志兜底，请打开对话面板）"
-        }
-        val limits = CbEventCenter.activeLimits()
-        limitsLabel.text = if (limits.isEmpty()) {
-            "当前没有模型限制记录"
-        } else {
-            "<html>当前模型限制：<br>" + limits.joinToString("<br>") { it.detail() } + "</html>"
-        }
     }
 
     private fun restoreDefaults() {
@@ -272,16 +245,7 @@ class PetSettingsDialog(private val onChange: () -> Unit) : DialogWrapper(true) 
         randomCheck.isSelected = true
         randomMinutesSpinner.value = 3
         noticeCheck.isSelected = true
-        cbApproveCheck.isSelected = true
-        cbProgressCheck.isSelected = true
-        cbAutoApproveCheck.isSelected = false
         cbAutoApproveSpinner.value = 5
-        cbNoDisturbCheck.isSelected = false
-        cbNoDisturbDangerCheck.isSelected = false
-        cbAutoContinueCheck.isSelected = false
-        cbLimitCheck.isSelected = true
-        cbGrowthCheck.isSelected = true
-        cbHistoryCheck.isSelected = true
         whisperCheck.isSelected = true
         whisperMinutesSpinner.value = 5
         jokeCheck.isSelected = true
@@ -303,18 +267,8 @@ class PetSettingsDialog(private val onChange: () -> Unit) : DialogWrapper(true) 
         s.randomActionsEnabled = randomCheck.isSelected
         s.randomActionMinutes = (randomMinutesSpinner.value as? Number)?.toInt() ?: s.randomActionMinutes
         s.noticePetEnabled = noticeCheck.isSelected
-        s.cbApproveNoticeEnabled = cbApproveCheck.isSelected
-        s.cbProgressNoticeEnabled = cbProgressCheck.isSelected
-        s.cbAutoApproveEnabled = cbAutoApproveCheck.isSelected
         s.cbAutoApproveMinutes =
             (cbAutoApproveSpinner.value as? Number)?.toInt() ?: s.cbAutoApproveMinutes
-        s.cbNoDisturbEnabled = cbNoDisturbCheck.isSelected
-        s.cbNoDisturbDangerEnabled = cbNoDisturbDangerCheck.isSelected
-        s.cbAutoContinueEnabled = cbAutoContinueCheck.isSelected
-        s.cbLimitNoticeEnabled = cbLimitCheck.isSelected
-        s.cbGrowthNoticeEnabled = cbGrowthCheck.isSelected
-        s.cbHistoryNoticeEnabled = cbHistoryCheck.isSelected
-        refreshBridgeState()
         s.whisperEnabled = whisperCheck.isSelected
         s.whisperMinutes = (whisperMinutesSpinner.value as? Number)?.toInt() ?: s.whisperMinutes
         s.jokeEnabled = jokeCheck.isSelected

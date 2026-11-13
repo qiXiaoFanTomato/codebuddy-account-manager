@@ -85,6 +85,9 @@ class CodeBuddyWatcher : Disposable {
     /** 项目 -> (危险命令原文, 时间)，用于补充提示正文 */
     private val dangerByProject = HashMap<String, Pair<String, Long>>()
 
+    /** 项目 -> (最近一次实际调用的模型名, 时间)，用于补全限流与吞吐文案 */
+    private val recentModel = HashMap<String, Pair<String, Long>>()
+
     /** 已处理过的事件键（callId / requestId），带容量上限的 LRU */
     private val handled = object : LinkedHashMap<String, Boolean>(256, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Boolean>?): Boolean =
@@ -99,6 +102,7 @@ class CodeBuddyWatcher : Disposable {
             pending.clear()
             orphanAsks.clear()
             dangerByProject.clear()
+            recentModel.clear()
         }
         task = executor.scheduleWithFixedDelay(
             { tickQuietly() },
@@ -118,6 +122,7 @@ class CodeBuddyWatcher : Disposable {
             pending.clear()
             orphanAsks.clear()
             dangerByProject.clear()
+            recentModel.clear()
         }
     }
 
@@ -145,9 +150,13 @@ class CodeBuddyWatcher : Disposable {
         } catch (_: Exception) {
             return
         }
-        val approveOn = settings.cbApproveNoticeEnabled
-        val progressOn = settings.cbProgressNoticeEnabled
-        val autoApproveOn = settings.cbAutoApproveEnabled
+        // 只要任一相关能力开启就继续收集事件，避免「关提醒」连带关掉代点 / 自动继续
+        val approvalActive = settings.cbApproveNoticeEnabled || settings.cbAutoApproveEnabled ||
+            settings.cbNoDisturbEnabled || settings.cbNoDisturbDangerEnabled
+        val interruptActive = settings.cbProgressNoticeEnabled || settings.cbAutoContinueEnabled
+        // 免打扰已接管时，超时补刀不再重复点同一个按钮
+        val noDisturbActive = settings.cbNoDisturbEnabled && CbWebObserver.isConnected()
+        val autoApproveOn = settings.cbAutoApproveEnabled && !noDisturbActive
         val autoApproveMs = settings.cbAutoApproveMinutes * 60_000L
         val files = candidateFiles()
         // 不再出现在候选集里的旧文件（跨天轮转）及时释放读取进度
@@ -158,12 +167,12 @@ class CodeBuddyWatcher : Disposable {
         // 两个开关都关时仍然推进偏移量，重新打开后不会补发旧事件
         for ((project, path) in files) {
             try {
-                readNewLines(project, path, approveOn, progressOn)
+                readNewLines(project, path, approvalActive, interruptActive)
             } catch (_: Exception) {
                 // 单文件读取失败不影响其它文件
             }
         }
-        if (approveOn) processAsks(autoApproveOn, autoApproveMs) else clearAsks()
+        if (approvalActive) processAsks(autoApproveOn, autoApproveMs) else clearAsks()
     }
 
     /** 今天与昨天的日志（跨零点轮转时仍能读到最后一段） */
@@ -249,6 +258,20 @@ class CodeBuddyWatcher : Disposable {
     private fun handleLine(project: String, line: String, approveOn: Boolean, progressOn: Boolean) {
         val now = System.currentTimeMillis()
 
+        // 最近使用的模型名：限流与吞吐文案都靠它补全，日志比页面文本更可靠
+        MODEL_NAME.find(line)?.groupValues?.get(1)?.let { model ->
+            synchronized(states) { recentModel[project] = model to now }
+        }
+
+        // 一步结束：输出 token 与步耗时 -> 最近一步的吞吐（看板展示，不弹提示）
+        if (line.contains("Step execution metrics")) {
+            val outputTokens = OUTPUT_TOKENS.find(line)?.groupValues?.get(1)?.toIntOrNull()
+            val duration = STEP_DURATION.find(line)?.groupValues?.get(1)?.toLongOrNull()
+            if (outputTokens != null && duration != null) {
+                CbEventCenter.onLogUsage(recentModelOf(project) ?: "当前模型", outputTokens, duration)
+            }
+        }
+
         // 模型频率限制 / 用量限制：业务码与解封时间往往先出现在日志里
         if (LIMIT_HINT.containsMatchIn(line)) {
             val code = when {
@@ -257,7 +280,9 @@ class CodeBuddyWatcher : Disposable {
                 line.contains("14018") || line.contains("额度不足") -> 14018
                 else -> 6004
             }
-            val model = MODEL_ID.find(line)?.groupValues?.get(1) ?: "当前模型"
+            // 限流行本身往往不带模型名，用最近一次实际调用的模型补全
+            val model = MODEL_ID.find(line)?.groupValues?.get(1)
+                ?: recentModelOf(project) ?: "当前模型"
             val resetAt = parseResetAt(line)
             if (CbEventCenter.claim("rateLimitLog", "$project|$code|$resetAt|${line.take(60)}")) {
                 CbEventCenter.onLogRateLimit(model, code, resetAt)
@@ -321,8 +346,8 @@ class CodeBuddyWatcher : Disposable {
             val steps = STEPS.find(line)?.groupValues?.get(1)?.toIntOrNull() ?: 0
             val reasons = abnormalReasons(line)
             if (reasons.isEmpty()) {
-                // 正常完成走强提醒：专用动画 + 弹跳 + 提示音 + 大气泡，避免右下角一闪而过
-                PetNotifier.roundFinished(project, steps)
+                // 强提醒里补上项目名、对话标题与内容摘要（桌宠专用动画由 PetNotifier 承载）
+                CbEventCenter.onConversationFinished(project, steps)
             } else {
                 CbEventCenter.onLogInterrupted(project, reasons)
                 if (PetSettings.getInstance().cbAutoContinueEnabled) CbWebObserver.clickContinue()
@@ -463,6 +488,12 @@ class CodeBuddyWatcher : Disposable {
         synchronized(states) { handled[key] = true }
     }
 
+    /** 该项目最近一次实际调用的模型名；超过时效视为未知 */
+    private fun recentModelOf(project: String): String? {
+        val entry = synchronized(states) { recentModel[project] } ?: return null
+        return if (System.currentTimeMillis() - entry.second <= MODEL_TTL_MS) entry.first else null
+    }
+
     /** 30 秒内该项目刚被判定的危险命令原文；没有则为 null */
     private fun dangerText(project: String): String? {
         val danger = synchronized(states) { dangerByProject[project] } ?: return null
@@ -537,6 +568,9 @@ class CodeBuddyWatcher : Disposable {
         /** 危险命令原文的时效 */
         private const val DANGER_TTL_MS = 30_000L
 
+        /** 最近模型名的时效：半小时内出现的调用都算「当前模型」 */
+        private const val MODEL_TTL_MS = 30 * 60_000L
+
         /** 等待确认事件的最长保留时间（超过即丢弃，避免状态累积） */
         private const val ASK_EXPIRE_MS = 60 * 60_000L
 
@@ -551,10 +585,17 @@ class CodeBuddyWatcher : Disposable {
         private val STEPS = Regex("totalSteps: (\\d+)")
         private val BRACKET = Regex("\\[([^\\]]+)]")
 
-        /** 模型限流文案（业务码 6004 频率 / 6000 用量 / 14018 额度，取自 WorkDaddy 同口径） */
+        /**
+         * 模型限流文案（业务码 6004 频率 / 6000 用量 / 14018 额度，取自 WorkDaddy 同口径）。
+         *
+         * 只认**结构化字段**或官方错误详情里的限流短语：早期的「限流 / 频率限制」泛词
+         * 会被聊天内容、工具输出与插件日志回显命中，曾造成「没被限流也提示限流」。
+         */
         private val LIMIT_HINT = Regex(
-            "(?:bizCode|code|errorCode|statusCode)\\s*[:=]\\s*(?:6004|6000|14018)|" +
-                "频率限制|限流|rate.?limit|请求过于频繁|用量限制|额度不足|Reset at",
+            "(?:\"?(?:bizCode|errorCode|statusCode)\"?\\s*[:=]\\s*\"?(?:6004|6000|14018|429)\\b)|" +
+                "(?:[^A-Za-z]code\"?\\s*[:=]\\s*\"?(?:6004|6000|14018)\\b)|" +
+                "(?:(?:details|reason)\\s*[:=]\\s*[^\\n]{0,40}?(?:频率限制|用量限制|额度不足))|" +
+                "(?:rate.?limit exceeded)",
             RegexOption.IGNORE_CASE,
         )
 
@@ -572,6 +613,13 @@ class CodeBuddyWatcher : Disposable {
             "\\b((?:claude|deepseek|gpt|gemini|hunyuan|kimi|qwen|glm|doubao)[-\\w.]*)",
             RegexOption.IGNORE_CASE,
         )
+
+        /** `Message completed: <messageId>, model: <name>, success: true`，实测字段名 */
+        private val MODEL_NAME = Regex("model: ([A-Za-z0-9][A-Za-z0-9._\\-]{1,60}), success")
+
+        /** `Step execution metrics: step=N, duration=Xms, usage={"outputTokens":N,...}` */
+        private val OUTPUT_TOKENS = Regex("\"outputTokens\"\\s*:\\s*(\\d+)")
+        private val STEP_DURATION = Regex("duration=(\\d+)ms")
         private val RESET_AT = Regex(
             "(?:Reset at|resetAt|预计解封|预计恢复|解封时间|恢复时间)[^0-9]{0,12}" +
                 "(\\d{4}-\\d{2}-\\d{2}[ T]\\d{2}:\\d{2}:\\d{2})",

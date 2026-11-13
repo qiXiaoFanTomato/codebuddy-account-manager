@@ -18,6 +18,7 @@ import dev.codebuddy.account.growth.GrowthTracker
 import dev.codebuddy.account.history.HistoryReader
 import dev.codebuddy.account.hotswap.CodeBuddyBridge
 import dev.codebuddy.account.model.CredentialSnapshot
+import dev.codebuddy.account.pet.QuickPhraseDialog
 import dev.codebuddy.account.quota.QuotaDisplayMode
 import dev.codebuddy.account.quota.QuotaSummary
 import dev.codebuddy.account.service.QuotaScheduler
@@ -91,7 +92,9 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
         onGrowthActivity = { doGrowthActivity() },
         onGrowthKeepalive = { doGrowthKeepalive() },
         onOpenGrowthCenter = { openGrowthCenter() },
+        onOpenUsageStats = { UsageStatsDialog.show(project) },
         onOpenSettings = { doOpenSettings() },
+        onOpenPhrases = { QuickPhraseDialog.show(project.name) },
     )
 
     private lateinit var viewTabs: SegmentedTabs
@@ -137,6 +140,9 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
                 override fun dashboardLayoutChanged(origin: Any) {
                     if (origin !== dashboard) scheduleRefresh()
                 }
+
+                // 限流记录变化：看板的「模型频率限制」卡片要跟着更新
+                override fun runtimeChanged() = scheduleRefresh()
             })
 
         // 色调切换：卡片底色在构造时固定，需要重建一次才能换色
@@ -380,7 +386,8 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
         menu.addSeparator()
         item("额度明细窗口") { QuotaDetailDialog.show(project) }
         item("消耗明细") { UsageDetailDialog.show(project) }
-        item("成长中心窗口") { openGrowthCenter() }
+        item("用量统计…") { UsageStatsDialog.show(project) }
+        item("成长计划") { openGrowthCenter() }
         menu.addSeparator()
         item("界面色调…") { showThemeMenu(btn) }
         item("回滚上一次切换") { doRollback() }

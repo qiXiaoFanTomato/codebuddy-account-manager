@@ -4,7 +4,10 @@ import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.intellij.ide.util.PropertiesComponent
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.logger
+import dev.codebuddy.account.history.ActivityFeed
+import dev.codebuddy.account.service.AccountEvents
 import java.time.Instant
 import java.time.LocalDateTime
 import java.time.ZoneId
@@ -36,18 +39,31 @@ object CbEventCenter {
         val resetAt: Long,
         val at: Long,
     ) {
-        val kind: String get() = if (code == 6000) "用量限制" else "频率限制"
+        val kind: String
+            get() = when (code) {
+                6000 -> "用量限制"
+                14018 -> "额度不足"
+                else -> "频率限制"
+            }
         val label: String get() = if (code == 6000) "预计恢复" else "预计解封"
 
-        /** 与 WorkDaddy 的账号页一致：类型 + 解封时刻 + 剩余时间 */
+        /** 类型 + 解封时刻 + 剩余时间；官方没给解封时间时给出可执行建议，不编造时间 */
         fun detail(now: Long = System.currentTimeMillis()): String {
             val base = "$model $kind"
-            if (resetAt <= 0L) return "$base，${label}时间未知"
+            if (resetAt <= 0L) return "$base，${advice()}"
             val clock = LocalDateTime.ofInstant(Instant.ofEpochMilli(resetAt), ZoneId.systemDefault())
             return "$base，${label} ${clock.format(TIME_FORMAT)}（${remaining(now)}）"
         }
 
+        private fun advice(): String = when (code) {
+            6000 -> "用量已达上限，等额度周期重置后再试"
+            14018 -> "套餐额度不足，建议切换账号或补充额度"
+            else -> "稍等片刻再试，或换一个模型"
+        }
+
         fun remaining(now: Long = System.currentTimeMillis()): String {
+            // 没有官方解封时间时不能按 0 计算，否则会显示成「已过解封时间」
+            if (resetAt <= 0L) return "时间未知"
             val millis = resetAt - now
             if (millis <= 0L) return "已过解封时间"
             val minutes = millis / 60_000L
@@ -59,11 +75,83 @@ object CbEventCenter {
         }
     }
 
+    /**
+     * 最近一步的输出吞吐。
+     *
+     * [durationMs] 取 CodeBuddy 日志 `Step execution metrics: duration=...` 的步耗时口径，
+     * 含工具执行与等待，因此速度是**下界估计**，不是纯生成速率。
+     */
+    data class UsageSample(
+        val model: String,
+        val outputTokens: Int,
+        val durationMs: Long,
+        val at: Long,
+    ) {
+        val tokensPerSecond: Double
+            get() = if (durationMs <= 0L || outputTokens <= 0) 0.0 else outputTokens * 1000.0 / durationMs
+
+        fun detail(): String {
+            val seconds = String.format(java.util.Locale.ROOT, "%.1f", durationMs / 1000.0)
+            val speed = String.format(java.util.Locale.ROOT, "%.0f", tokensPerSecond)
+            return "$model $outputTokens tok / ${seconds}s ≈ $speed tok/s"
+        }
+    }
+
+    /** 功能页展示用的最近事件 */
+    data class EventRecord(
+        val at: Long,
+        val type: String,
+        val title: String,
+        val detail: String,
+        val auto: Boolean,
+    ) {
+        val timeText: String
+            get() = LocalDateTime.ofInstant(Instant.ofEpochMilli(at), ZoneId.systemDefault())
+                .format(DateTimeFormatter.ofPattern("HH:mm:ss"))
+
+        val typeLabel: String
+            get() = when (type) {
+                "approval" -> "权限弹窗"
+                "rateLimit" -> "模型限制"
+                "interrupted" -> "会话中断"
+                "phrase" -> "快捷短语"
+                "growth" -> "成长活跃"
+                "history" -> "会话迁移"
+                else -> type
+            }
+    }
+
+    private const val MAX_EVENTS = 60
+
+    /** 最近事件（倒序，功能页直接读） */
+    private val events = ArrayList<EventRecord>()
+
+    fun recentEvents(): List<EventRecord> = synchronized(events) { events.asReversed().toList() }
+
+    fun clearEvents() {
+        synchronized(events) { events.clear() }
+    }
+
+    private fun record(type: String, title: String, detail: String, auto: Boolean = false) {
+        synchronized(events) {
+            events.add(EventRecord(System.currentTimeMillis(), type, title, detail, auto))
+            if (events.size > MAX_EVENTS) events.removeAt(0)
+        }
+    }
+
     /** 去重表：key = 事件类型|业务键 */
     private val claims = HashMap<String, Long>()
 
     /** 限流记录：key = model|code */
     private val limits = LinkedHashMap<String, ModelLimit>()
+
+    /** 最近一步的输出吞吐（日志通道按步写入） */
+    @Volatile
+    private var lastUsage: UsageSample? = null
+
+    /** 吞吐刷新的节流时刻：一轮对话可能有几十步，看板不必每步重建 */
+    @Volatile
+    private var lastUsageFireAt = 0L
 
     init {
         loadLimits()
@@ -90,7 +178,8 @@ object CbEventCenter {
                 )
 
                 "rateLimit" -> onRateLimit(
-                    model = e.str("model").ifBlank { "当前模型" },
+                    // 页面通道带结构化 modelName / modelId，缺省时才退回「当前模型」
+                    model = e.str("modelName", "model", "modelId").ifBlank { "当前模型" },
                     code = e.int("code") ?: 6004,
                     resetAt = e.long("resetAt") ?: 0L,
                 )
@@ -99,7 +188,10 @@ object CbEventCenter {
                     project = e.str("project").ifBlank { "当前项目" },
                     reason = e.str("what").ifBlank { "回复中断" },
                     auto = e.bool("auto"),
+                    blocked = e.bool("blocked"),
                 )
+
+                "phrase" -> onPhrase(e.str("status"))
             }
         } catch (t: Throwable) {
             log.warn("处理 CodeBuddy 页面事件失败", t)
@@ -126,16 +218,18 @@ object CbEventCenter {
     // ---------------------------------------------------------------
 
     private fun onApproval(project: String, what: String, dangerous: Boolean, auto: Boolean) {
-        val settings = PetSettings.getInstance()
-        if (!settings.cbApproveNoticeEnabled) return
-        if (!claim("approval", "$project|$what")) return
+        // 代点是替主人做决定，必须提示并留痕，不受「提醒」开关影响
+        if (!auto && !PetSettings.getInstance().cbApproveNoticeEnabled) return
+        if (!claim(if (auto) "approvalAuto" else "approval", "$project|$what")) return
         val (level, title) = when {
             auto -> PetNotifier.Level.INFO to "我先替主人点了「运行」"
             dangerous -> PetNotifier.Level.WARN to "有危险命令在等主人点头"
             else -> PetNotifier.Level.WARN to "CodeBuddy 在等主人点头"
         }
-        val tail = if (dangerous) "$what（危险命令，不代点）" else what
-        PetNotifier.notify(level, title, "「$project」$tail", durationMs = 12_000)
+        val tail = if (dangerous && !auto) "$what（危险命令，不代点）" else what
+        val content = "「$project」$tail"
+        PetNotifier.notify(level, title, content, durationMs = 12_000)
+        record("approval", title, content, auto)
     }
 
     private fun onRateLimit(model: String, code: Int, resetAt: Long) {
@@ -149,51 +243,143 @@ object CbEventCenter {
             }
             saveLimits()
         }
+        // 记录已落库，看板的「模型频率限制」卡片需要立刻看到新的解封时间
+        AccountEvents.fireRuntimeChanged()
         if (!settings.cbLimitNoticeEnabled) return
         if (!claim("rateLimit", "$key|$resetAt")) return
         val limit = ModelLimit(model, code, resetAt, now)
-        PetNotifier.notify(
-            PetNotifier.Level.WARN,
-            "模型被限流了",
-            limit.detail(now),
-            durationMs = 12_000,
-        )
+        val detail = limit.detail(now)
+        PetNotifier.notify(PetNotifier.Level.WARN, "模型被限流了", detail, durationMs = 12_000)
+        record("rateLimit", "模型被限流了", detail)
     }
 
-    private fun onInterrupted(project: String, reason: String, auto: Boolean) {
-        if (!PetSettings.getInstance().cbProgressNoticeEnabled) return
-        if (!claim("interrupted", "$project|$reason")) return
-        if (auto) {
+    /**
+     * 快捷短语投递回执（页面侧脚本回报）。
+     *
+     * 正常投递成功不额外弹提示——管理窗口在投递时已经反馈过一次；
+     * 只有页面里找不到输入框 / 脚本异常才补一条警告，避免主人以为已经发出去了。
+     */
+    private fun onPhrase(status: String) {
+        val (title, detail) = when (status) {
+            "sent" -> "快捷短语已发送" to "CodeBuddy 输入框已提交"
+            "filled" -> "快捷短语已填入" to "等主人确认后再发送"
+            "noinput" -> "没找到 CodeBuddy 输入框" to "面板可能还没加载完，稍后再试"
+            else -> "快捷短语投递失败" to "页面脚本执行异常，可重开 CodeBuddy 侧边栏再试"
+        }
+        record("phrase", title, detail)
+        if (status == "noinput" || status == "error" || status.isBlank()) {
+            PetNotifier.warn(title, detail)
+        }
+    }
+
+    private fun onInterrupted(project: String, reason: String, auto: Boolean, blocked: Boolean = false) {
+        // 自动继续同样是替主人动作，必须提示并留痕
+        if (!auto && !blocked && !PetSettings.getInstance().cbProgressNoticeEnabled) return
+        val claimType = when {
+            auto -> "interruptedAuto"
+            blocked -> "interruptedBlocked"
+            else -> "interrupted"
+        }
+        if (!claim(claimType, "$project|$reason")) return
+        if (blocked) {
+            val content = "「$project」$reason（10 分钟内已自动续跑 5 次，先停一下）"
             PetNotifier.notify(
+                PetNotifier.Level.WARN,
+                "连续中断，已停止自动继续",
+                content,
+                durationMs = 12_000,
+            )
+            record("interrupted", "连续中断，已停止自动继续", content)
+            return
+        }
+        val (level, title, content) = if (auto) {
+            Triple(
                 PetNotifier.Level.INFO,
                 "会话中断，已替主人继续",
                 "「$project」$reason，已自动点「继续」",
             )
         } else {
-            PetNotifier.notify(
+            Triple(
                 PetNotifier.Level.WARN,
                 "CodeBuddy 这轮没跑顺",
                 "「$project」$reason，可能需要手动点「继续」",
             )
         }
+        PetNotifier.notify(level, title, content)
+        record("interrupted", title, content, auto)
     }
 
     /** 账号间会话迁移完成：由切号 / 批量同步流程调用，走桌宠反馈 */
     fun onHistoryMigrated(target: String, added: Int, copied: Int, failed: Int = 0) {
-        if (!PetSettings.getInstance().cbHistoryNoticeEnabled) return
         val body = "已把其它账号的历史会话合并到 $target：新增 $added 个，复制消息目录 $copied 个" +
             (if (failed > 0) "，失败 $failed 个" else "") + "。重启 IDE 后侧边栏可见。"
+        val title = if (failed > 0) "会话迁移部分失败" else "会话已迁移"
+        record("history", title, body)
+        if (!PetSettings.getInstance().cbHistoryNoticeEnabled) return
         if (failed > 0) {
-            PetNotifier.warn("会话迁移部分失败", body)
+            PetNotifier.warn(title, body)
         } else {
-            PetNotifier.success("会话已迁移", body)
+            PetNotifier.success(title, body)
         }
     }
 
     /** 成长计划 / 活跃状态查询结果：由成长中心调用，走桌宠反馈 */
     fun onGrowthStatus(summary: String) {
+        record("growth", "成长计划活跃状态", summary)
         if (!PetSettings.getInstance().cbGrowthNoticeEnabled) return
         PetNotifier.notify(PetNotifier.Level.INFO, "成长计划活跃状态", summary)
+    }
+
+    /** 一轮对话正常完成：桌宠强提醒补上项目名、对话标题与「主人」后的正文摘要 */
+    fun onConversationFinished(project: String, steps: Int) {
+        record("growth", "对话完成", "「$project」共 $steps 步")
+        if (!PetSettings.getInstance().cbProgressNoticeEnabled) return
+        ActivityFeed.invalidate()
+        ApplicationManager.getApplication().executeOnPooledThread {
+            // 日志早于 index.json 落盘，稍等一拍才读得到刚结束的这轮
+            try {
+                Thread.sleep(800L)
+            } catch (_: InterruptedException) {
+                return@executeOnPooledThread
+            }
+            val item = ActivityFeed.recent(limit = 1, maxConversations = 4).firstOrNull()
+            val detail = if (item == null) {
+                "「$project」共 $steps 步，跑完了"
+            } else {
+                "「${item.project}」${item.title}：${item.excerpt}"
+            }
+            ApplicationManager.getApplication().invokeLater {
+                PetNotifier.notify(
+                    PetNotifier.Level.SUCCESS,
+                    "对话完成啦，回来看看",
+                    detail,
+                    durationMs = 12_000,
+                    highlight = true,
+                )
+            }
+        }
+    }
+
+    /** 最近一步的输出吞吐；没有样本时为 null */
+    fun recentUsage(): UsageSample? = lastUsage
+
+    /**
+     * 日志通道：一步结束时的 usage 与步耗时。
+     *
+     * 只看数量级，不弹桌宠提示；看板的吞吐行与工具提示读这里。
+     */
+    fun onLogUsage(model: String, outputTokens: Int, durationMs: Long) {
+        if (outputTokens <= 0 || durationMs <= 0L) return
+        val now = System.currentTimeMillis()
+        lastUsage = UsageSample(
+            model = model.trim().ifBlank { "当前模型" },
+            outputTokens = outputTokens,
+            durationMs = durationMs,
+            at = now,
+        )
+        if (now - lastUsageFireAt < 10_000L) return
+        lastUsageFireAt = now
+        AccountEvents.fireRuntimeChanged()
     }
 
     /** 当前仍然有效（未过解封时间太久）的模型限制记录 */

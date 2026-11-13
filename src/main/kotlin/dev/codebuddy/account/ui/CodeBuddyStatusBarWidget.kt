@@ -82,6 +82,9 @@ class CodeBuddyStatusBarWidget(private val project: Project) :
 
                 // 看板布局只影响工具窗内容，状态栏读数无需重算
                 override fun dashboardLayoutChanged(origin: Any) = Unit
+
+                // 限流记录只影响看板卡片，状态栏读数不变
+                override fun runtimeChanged() = Unit
             }
         )
 

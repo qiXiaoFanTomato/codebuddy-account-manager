@@ -139,6 +139,14 @@ class CardRow(
     /** hover 进度：只有可点击的行才给反馈，避免纯展示行出现假可点暗示 */
     private val hover = JellyValue(this, 0.0)
 
+    /** 右侧数值：倒计时类卡片只改这里，不重建整行 */
+    private val valueLabel = JLabel(value).apply {
+        font = AccountUiType.forText(value, AccountUiType.label)
+        foreground = valueTone
+        horizontalAlignment = SwingConstants.RIGHT
+        preferredSize = Dimension(JBUI.scale(valueWidthDp), preferredSize.height)
+    }
+
     init {
         isOpaque = false
         alignmentX = Component.LEFT_ALIGNMENT
@@ -154,12 +162,6 @@ class CardRow(
         }
 
         // 右侧固定：状态标签 + 等宽数值，多行扫读时数值右边缘对齐
-        val valueLabel = JLabel(value).apply {
-            font = AccountUiType.forText(value, AccountUiType.label)
-            foreground = valueTone
-            horizontalAlignment = SwingConstants.RIGHT
-            preferredSize = Dimension(JBUI.scale(valueWidthDp), preferredSize.height)
-        }
         val right = JPanel().apply {
             isOpaque = false
             layout = BoxLayout(this, BoxLayout.X_AXIS)
@@ -220,6 +222,15 @@ class CardRow(
     }
 
     override fun getMaximumSize(): Dimension = Dimension(Int.MAX_VALUE, preferredSize.height)
+
+    /** 局部刷新右侧数值（倒计时类卡片按秒 / 分钟更新，不重建整张卡） */
+    fun setValue(text: String, tone: Color? = null) {
+        if (valueLabel.text == text && tone == null) return
+        valueLabel.text = text
+        valueLabel.font = AccountUiType.forText(text, AccountUiType.label)
+        if (tone != null) valueLabel.foreground = tone
+        repaint()
+    }
 }
 
 /**
