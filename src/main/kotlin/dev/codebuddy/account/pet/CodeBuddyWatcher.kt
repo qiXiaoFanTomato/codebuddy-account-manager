@@ -324,10 +324,12 @@ class CodeBuddyWatcher : Disposable {
 
         // 一步结束：输出 token 与步耗时 -> 最近一步的吞吐（看板展示，不弹提示）
         if (line.contains("Step execution metrics")) {
+            // 有新的步完成说明这一轮还在跑：状态栏显示「思考中」而不是上一步的旧速度
+            CbEventCenter.noteRuntime(project, CbEventCenter.Phase.THINKING)
             val outputTokens = OUTPUT_TOKENS.find(line)?.groupValues?.get(1)?.toIntOrNull()
             val duration = STEP_DURATION.find(line)?.groupValues?.get(1)?.toLongOrNull()
             if (outputTokens != null && duration != null) {
-                CbEventCenter.onLogUsage(recentModelOf(project) ?: "当前模型", outputTokens, duration)
+                CbEventCenter.onLogUsage(project, recentModelOf(project) ?: "当前模型", outputTokens, duration)
             }
         }
 
@@ -399,6 +401,8 @@ class CodeBuddyWatcher : Disposable {
 
         // 等待主人确认：文案集合放宽，且不再强制要求 callId
         if (ASK_HINT.containsMatchIn(line)) {
+            // 运行态与开关无关：桌宠关掉时状态栏也要能显示「等确认」
+            CbEventCenter.noteRuntime(project, CbEventCenter.Phase.WAITING)
             if (!approveOn) return
             val id = callIdOf(line) ?: "line:$project:${line.hashCode()}:${now / 2_000L}"
             if (handled.containsKey(id)) return
@@ -414,6 +418,8 @@ class CodeBuddyWatcher : Disposable {
 
         // 主人确认 / 拒绝：撤销待提示（含危险命令 / 无 callId 的兜底项）
         if (CONFIRM_HINT.containsMatchIn(line)) {
+            // 确认后不管是执行还是中止，这一轮都回到了模型手里
+            CbEventCenter.noteRuntime(project, CbEventCenter.Phase.THINKING)
             val id = callIdOf(line)
             synchronized(states) {
                 if (id != null) pending.remove(id)
@@ -432,6 +438,8 @@ class CodeBuddyWatcher : Disposable {
         // notifyAllStepsEnd，工具回显（搜索结果 / 命令原文 / 终端输出）里同样会出现这个字样，
         // 只按 contains 判定会在主对话仍在执行时误报「对话完成」。
         if (ROUND_END.containsMatchIn(line)) {
+            // 整轮结束才清运行态；主 agent 的结束行已由整行正则限定
+            CbEventCenter.noteRuntime(project, CbEventCenter.Phase.IDLE)
             if (!progressOn) return
             val requestId = REQUEST_ID.find(line)?.groupValues?.get(1) ?: "auto:$project:${now / 2_000L}"
             val key = "req:$requestId"

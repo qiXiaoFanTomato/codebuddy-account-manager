@@ -2,12 +2,14 @@ package dev.codebuddy.account.ui
 
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.wm.StatusBar
 import com.intellij.openapi.wm.StatusBarWidget
 import com.intellij.openapi.wm.StatusBarWidgetFactory
 import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.util.Consumer
 import com.intellij.util.messages.MessageBusConnection
+import dev.codebuddy.account.history.ActivityFeed
 import dev.codebuddy.account.model.CredentialSnapshot
 import dev.codebuddy.account.pet.CbEventCenter
 import dev.codebuddy.account.pet.CodeBuddyWatcher
@@ -43,6 +45,14 @@ class CodeBuddyStatusBarWidgetFactory : StatusBarWidgetFactory {
 
     override fun createWidget(project: Project): StatusBarWidget =
         CodeBuddyStatusBarWidget(project)
+
+    // 2022.3 的 StatusBarWidgetFactory 里这两个方法还没有默认实现，必须显式提供；
+    // 行为与新版平台的默认实现保持一致。
+    override fun canBeEnabledOn(statusBar: StatusBar): Boolean = true
+
+    override fun disposeWidget(widget: StatusBarWidget) {
+        Disposer.dispose(widget)
+    }
 }
 
 /**
@@ -62,6 +72,15 @@ class CodeBuddyStatusBarWidget(private val project: Project) :
 
     /** 当前展示文本（EDT 读写） */
     private var renderedText: String = ""
+
+    /**
+     * 每个项目最近一条对话（标题 + 时间）。
+     *
+     * 数据来自本地会话索引，读盘较重，只在后台线程刷新并写这里；
+     * 渲染路径（含 EDT）只读缓存，绝不阻塞状态栏。
+     */
+    @Volatile
+    private var projectBriefs: List<ActivityFeed.ProjectBrief> = emptyList()
 
     /** 额度读数滚动：状态栏常驻，没有滚动视口，安装后按已可见处理 */
     private val rolling = RollingReadout(decreaseOnly = true) { text ->
@@ -108,6 +127,11 @@ class CodeBuddyStatusBarWidget(private val project: Project) :
         INSTANCES.add(this)
         ensureThroughputWatcher()
         ensurePoller()
+        // 首次对话列表在后台读，装好后 3 秒内由轮询补上，期间只显示项目名
+        ApplicationManager.getApplication().executeOnPooledThread {
+            refreshProjectBriefs()
+            requestRefresh()
+        }
     }
 
     override fun dispose() {
@@ -166,6 +190,14 @@ class CodeBuddyStatusBarWidget(private val project: Project) :
                 }
             }
         }
+        // 段数超过正文上限时把完整列表铺开，避免状态栏被挤爆后看不全
+        if (AccountSettings.getInstance().showStatusBarThroughput) {
+            val segments = collectProjectSegments()
+            if (segments.size > 1) {
+                sb.append("当前有活动的项目：\n")
+                segments.forEach { sb.append("· ${segmentText(it)}\n") }
+            }
+        }
         // 速度明细放 tooltip：状态栏正文只留一个读数，避免挤压账号与额度
         throughputSample()?.let { sb.append("输出速度：${it.detail()}\n") }
         sb.append("点击打开账号管理器")
@@ -214,14 +246,68 @@ class CodeBuddyStatusBarWidget(private val project: Project) :
         val b = NumberDisplayBuilder()
         // 账号与额度是可选段：主人只想要速度时，这两段整体不占位
         if (settings.showStatusBarWidget) appendAccountPart(b, settings)
-        // 模型输出速度：只在最近一步刚结束时出现，静置后自动隐去，避免挂着陈旧读数；
-        // 走 text 段而不是 num 段，不参与额度数值的缓动滚动
-        throughputSample()?.let { usage ->
-            if (b.isEmpty) b.text("CodeBuddy ") else b.text(" · ")
-            b.text(speedText(usage))
-        }
+        // 对话段（项目-标题-速度/状态）由速度开关控制，走 text 段不参与额度缓动滚动
+        if (settings.showStatusBarThroughput) appendThroughputPart(b)
         return b.build()
     }
+
+    /**
+     * 多项目段：`项目名称-对话标题-状态/速度`，按 ` · ` 并排。
+     *
+     * 排序：正在跑（思考中 / 等确认）的项目在前，其次是 2 分钟内有步样本的项目；
+     * 每个项目只取最近一条对话标题。超过 [MAX_PROJECT_SEGMENTS] 段折叠成 `(+N)`，
+     * 完整列表放 tooltip。日志只能判定「这个项目在忙」，
+     * 无法判定是哪条对话，因此状态词标在项目这一段上。
+     */
+    private fun appendThroughputPart(b: NumberDisplayBuilder) {
+        val segments = collectProjectSegments()
+        if (segments.isEmpty()) return
+        if (!b.isEmpty) b.text(" · ")
+        val shown = segments.take(MAX_PROJECT_SEGMENTS)
+        b.text(shown.joinToString(" · ") { segmentText(it) })
+        if (segments.size > shown.size) b.text(" (+${segments.size - shown.size})")
+    }
+
+    /** 一段项目读数：[tail] 为状态词或速度，为 null 时只显示项目名与对话标题 */
+    private class ProjectSegment(val project: String, val tail: String?)
+
+    /** 收集当前有活动的项目；一个都没有时退回本项目，保证状态栏不会只剩空白 */
+    private fun collectProjectSegments(): List<ProjectSegment> {
+        val now = System.currentTimeMillis()
+        val segments = LinkedHashMap<String, ProjectSegment>()
+        for (activity in CbEventCenter.activeProjects(now)) {
+            segments.putIfAbsent(activity.project, ProjectSegment(activity.project, phaseText(activity.phase)))
+        }
+        for (usage in CbEventCenter.projectUsages()) {
+            if (now - usage.at > THROUGHPUT_TTL_MS) continue
+            if (usage.tokensPerSecond <= 0.0) continue
+            segments.putIfAbsent(usage.project, ProjectSegment(usage.project, speedText(usage)))
+        }
+        if (segments.isEmpty()) {
+            val own = project.name.ifBlank { "未命名项目" }
+            segments[own] = ProjectSegment(own, phaseText(CbEventCenter.phaseOf(own)))
+        }
+        return segments.values.toList()
+    }
+
+    /** 一段的正文：项目名-对话标题-状态/速度；缺标题时只留项目名与状态 */
+    private fun segmentText(segment: ProjectSegment): String {
+        val sb = StringBuilder(truncate(segment.project, PROJECT_MAX_CHARS))
+        val title = projectBriefs.firstOrNull { it.project.equals(segment.project, ignoreCase = true) }?.title
+        if (!title.isNullOrBlank()) sb.append('-').append(truncate(title, TITLE_MAX_CHARS))
+        segment.tail?.let { sb.append('-').append(it) }
+        return sb.toString()
+    }
+
+    /** 运行态文案；空闲返回 null，由速度读数接替第三段 */
+    private fun phaseText(phase: CbEventCenter.Phase): String? = when (phase) {
+        CbEventCenter.Phase.THINKING -> "思考中"
+        CbEventCenter.Phase.WAITING -> "等确认"
+        CbEventCenter.Phase.IDLE -> null
+    }
+
+    private fun truncate(text: String, max: Int): String =
+        if (text.length <= max) text else text.take(max - 1) + "…"
 
     /** 账号名 + 按展示维度选择的额度读数；没有账号或额度数据时只留可用信息 */
     private fun appendAccountPart(b: NumberDisplayBuilder, settings: AccountSettings) {
@@ -331,6 +417,21 @@ class CodeBuddyStatusBarWidget(private val project: Project) :
         }
     }
 
+    /**
+     * 刷新各项目的最近对话标题（只能在后台线程调用）。
+     *
+     * 只读会话索引的标题与时间，不读消息正文；读不到就留空，
+     * 该项目的段只显示项目名与状态/速度。
+     */
+    private fun refreshProjectBriefs() {
+        if (!AccountSettings.getInstance().showStatusBarThroughput) return
+        try {
+            projectBriefs = ActivityFeed.latestPerProject(PROJECT_BRIEF_LIMIT)
+        } catch (_: Exception) {
+            // 读不到标题时只是少一段，不影响项目名与状态
+        }
+    }
+
     // ---------------------------------------------------------------
     // 数据（3 秒节流）
     // ---------------------------------------------------------------
@@ -372,6 +473,16 @@ class CodeBuddyStatusBarWidget(private val project: Project) :
         /** 吞吐样本有效期：超过 2 分钟没有新的一步，视为空闲，不再显示旧速度 */
         private const val THROUGHPUT_TTL_MS = 2 * 60_000L
 
+        /** 状态栏空间有限：多段并排时项目名与对话标题各自截断的字数 */
+        private const val PROJECT_MAX_CHARS = 12
+        private const val TITLE_MAX_CHARS = 14
+
+        /** 正文最多并排几段；超出的项目折叠成 (+N)，完整列表在 tooltip */
+        private const val MAX_PROJECT_SEGMENTS = 3
+
+        /** 取标题时最多覆盖几个项目（一个项目只取最近一条） */
+        private const val PROJECT_BRIEF_LIMIT = 8
+
         private val LOCK = Any()
 
         /** 后台轮询线程（守护线程，随 IDE 退出） */
@@ -392,6 +503,7 @@ class CodeBuddyStatusBarWidget(private val project: Project) :
                         try {
                             // 设置页重新打开速度开关后无需重启 IDE：轮询顺手把监控拉起（幂等）
                             widget.ensureThroughputWatcher()
+                            widget.refreshProjectBriefs()
                             widget.requestRefresh()
                         } catch (_: Exception) { }
                     }

@@ -29,10 +29,11 @@ class AccountSettings : PersistentStateComponent<AccountSettings.State> {
         /** 在状态栏显示当前账号与剩余额度 */
         var showStatusBarWidget: Boolean = true,
         /**
-         * 在状态栏显示模型输出速度（tok/s）。
+         * 在状态栏显示「项目名称-对话标题-模型输出速度」。
          *
-         * 数据来自 CodeBuddy 运行日志的 `Step execution metrics`，按「步」采样，
-         * 步耗时含工具执行与等待，因此是速度下界。
+         * 速度数据来自 CodeBuddy 运行日志的 `Step execution metrics`，按「步」采样，
+         * 步耗时含工具执行与等待，因此是速度下界；该轮还在跑时第三段换成「思考中」，
+         * 等主人点确认时换成「等确认」。
          */
         var showStatusBarThroughput: Boolean = true,
         /** 状态栏额度展示维度（QuotaDisplayMode.name） */

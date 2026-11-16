@@ -30,6 +30,12 @@ object ActivityFeed {
         val workspace: String,
     )
 
+    /** 一个项目当前的对话：项目名 + 该项目最近一条对话的标题与时间 */
+    data class ProjectBrief(val project: String, val title: String, val time: String)
+
+    /** 每条项目只取最近一条对话，最多解析多少条会话（不读消息正文，但仍要限量） */
+    private const val PROJECT_SCAN_LIMIT = 60
+
     private val lock = Any()
 
     @Volatile
@@ -38,8 +44,98 @@ object ActivityFeed {
     @Volatile
     private var cachedAt = 0L
 
+    /** 会话索引扫描结果；[recent] 与 [latestPerProject] 共用，避免两个入口各扫一遍盘 */
+    @Volatile
+    private var scanned: List<HistoryReader.Conversation> = emptyList()
+
+    @Volatile
+    private var scannedAt = 0L
+
+    @Volatile
+    private var briefsCached: List<ProjectBrief> = emptyList()
+
+    @Volatile
+    private var briefsLimit = 0
+
+    @Volatile
+    private var briefsAt = 0L
+
     fun invalidate() {
         cachedAt = 0L
+        scannedAt = 0L
+        briefsAt = 0L
+    }
+
+    /**
+     * 每个项目最近一条对话（状态栏按项目并排展示用）。
+     *
+     * 只读会话索引里的标题与时间，不读消息正文，因此比 [recent] 轻。
+     * 索引本身按最近消息倒序，所以按项目去重后第一次出现的就是该项目最新的一条。
+     */
+    fun latestPerProject(limit: Int = 8): List<ProjectBrief> {
+        val now = System.currentTimeMillis()
+        if (briefsLimit == limit && now - briefsAt < CACHE_MS) return briefsCached
+        return synchronized(lock) {
+            if (briefsLimit == limit && System.currentTimeMillis() - briefsAt < CACHE_MS) {
+                return@synchronized briefsCached
+            }
+            val result = try {
+                loadLatestPerProject(limit)
+            } catch (t: Throwable) {
+                log.warn("读取各项目最近对话失败", t)
+                emptyList()
+            }
+            briefsCached = result
+            briefsLimit = limit
+            briefsAt = System.currentTimeMillis()
+            result
+        }
+    }
+
+    private fun loadLatestPerProject(limit: Int): List<ProjectBrief> {
+        val all = conversations().take(PROJECT_SCAN_LIMIT)
+        if (all.isEmpty()) return emptyList()
+        val projects = try {
+            ProjectResolver.resolve(all)
+        } catch (_: Throwable) {
+            emptyMap()
+        }
+        val seen = HashSet<String>()
+        val out = ArrayList<ProjectBrief>(limit)
+        for (conv in all) {
+            val project = projects[conv.workspace]?.name ?: conv.workspace.take(8)
+            if (!seen.add(project)) continue
+            out.add(
+                ProjectBrief(
+                    project = project,
+                    title = conv.name.ifBlank { "（未命名对话）" },
+                    time = timeText(conv.lastMessageAt),
+                )
+            )
+            if (out.size >= limit) break
+        }
+        return out
+    }
+
+    /** 会话索引（已按最近消息时间倒序），[CACHE_MS] 内复用；不读消息正文 */
+    private fun conversations(): List<HistoryReader.Conversation> {
+        val now = System.currentTimeMillis()
+        if (scanned.isNotEmpty() && now - scannedAt < CACHE_MS) return scanned
+        return synchronized(lock) {
+            if (scanned.isNotEmpty() && System.currentTimeMillis() - scannedAt < CACHE_MS) {
+                return@synchronized scanned
+            }
+            val root = CredentialPaths.dataRoot() ?: return@synchronized emptyList()
+            val list = try {
+                HistoryReader.listAllConversations(root).conversations
+            } catch (t: Throwable) {
+                log.warn("扫描会话索引失败", t)
+                emptyList()
+            }
+            scanned = list
+            scannedAt = System.currentTimeMillis()
+            list
+        }
     }
 
     fun recent(limit: Int = 20, maxConversations: Int = 12, force: Boolean = false): List<Item> {
@@ -62,8 +158,7 @@ object ActivityFeed {
     }
 
     private fun load(maxConversations: Int): List<Item> {
-        val root = CredentialPaths.dataRoot() ?: return emptyList()
-        val all = HistoryReader.listAllConversations(root).conversations
+        val all = conversations()
         if (all.isEmpty()) return emptyList()
         val picked = all.take(maxConversations)
         val projects = try {

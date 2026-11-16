@@ -99,6 +99,8 @@ object CbEventCenter {
         val outputTokens: Int,
         val durationMs: Long,
         val at: Long,
+        /** 产生这一步的项目名（日志文件名口径）；状态栏按项目并排展示时用来分组 */
+        val project: String = "",
     ) {
         val tokensPerSecond: Double
             get() = if (durationMs <= 0L || outputTokens <= 0) 0.0 else outputTokens * 1000.0 / durationMs
@@ -109,6 +111,17 @@ object CbEventCenter {
             return "$model $outputTokens tok / ${seconds}s ≈ $speed tok/s"
         }
     }
+
+    /**
+     * 对话运行态（状态栏用）。
+     *
+     * 日志里没有「这一轮开始」的明确信号，只能靠步指标、确认、结束三类行推断：
+     * [THINKING] 覆盖思考与工具执行，[WAITING] 表示在等主人点确认。
+     */
+    enum class Phase { IDLE, THINKING, WAITING }
+
+    /** 项目 -> 运行态；[at] 是最近一次信号时刻，用于超时兜底 */
+    data class ProjectRuntime(val phase: Phase, val at: Long)
 
     /** 功能页展示用的最近事件 */
     data class EventRecord(
@@ -244,9 +257,21 @@ object CbEventCenter {
     @Volatile
     private var lastUsage: UsageSample? = null
 
+    /** 项目 -> 该项目最近一步的吞吐；状态栏按项目并排展示时各取各的读数 */
+    private val usages = HashMap<String, UsageSample>()
+
     /** 吞吐刷新的节流时刻：一轮对话可能有几十步，看板不必每步重建 */
     @Volatile
     private var lastUsageFireAt = 0L
+
+    /** 项目 -> 运行态；状态栏按项目名读取 */
+    private val runtimes = HashMap<String, ProjectRuntime>()
+
+    /** 进行中的有效期：一步到下一步之间可能夹着长工具执行，留足余量 */
+    private const val THINKING_TTL_MS = 60_000L
+
+    /** 等确认的有效期：主人可能放着不动很久，超时只是兜底 */
+    private const val WAITING_TTL_MS = 10 * 60_000L
 
     /** 上一条「默认放行」提示的播放时刻，用于最小间隔节流 */
     @Volatile
@@ -464,20 +489,78 @@ object CbEventCenter {
     /** 最近一步的输出吞吐；没有样本时为 null */
     fun recentUsage(): UsageSample? = lastUsage
 
+    /** 指定项目最近一步的吞吐；状态栏多项目展示用，时效由调用方判定 */
+    fun usageOf(project: String): UsageSample? = synchronized(usages) { usages[project.trim()] }
+
+    /** 所有项目的最近一步样本，按时间倒序 */
+    fun projectUsages(): List<UsageSample> =
+        synchronized(usages) { usages.values.sortedByDescending { it.at } }
+
+    // ---------------------------------------------------------------
+    // 运行态（状态栏的「思考中 / 等确认」）
+    // ---------------------------------------------------------------
+
+    /** 一个项目当前的活动：[phase] 为运行态，[at] 是最近一次信号时刻 */
+    data class ProjectActivity(val project: String, val phase: Phase, val at: Long)
+
+    /**
+     * 记录一条运行态变化，由日志通道调用。
+     *
+     * 与提醒开关无关：状态栏在「仅统计」模式下也要能显示思考中，
+     * 这里只写内存状态，不涉及代点与弹窗，没有副作用。
+     */
+    fun noteRuntime(project: String, phase: Phase) {
+        val name = project.trim()
+        if (name.isEmpty()) return
+        synchronized(runtimes) {
+            runtimes[name] = ProjectRuntime(phase, System.currentTimeMillis())
+        }
+    }
+
+    /** 项目当前的运行态；信号过期即视为空闲，避免异常退出后一直挂着「思考中」 */
+    fun phaseOf(project: String, now: Long = System.currentTimeMillis()): Phase {
+        val name = project.trim()
+        if (name.isEmpty()) return Phase.IDLE
+        val runtime = synchronized(runtimes) { runtimes[name] } ?: return Phase.IDLE
+        return if (isFresh(runtime, now)) runtime.phase else Phase.IDLE
+    }
+
+    /** 所有仍在活动中的项目（思考中 / 等确认），按最近信号倒序；状态栏多项目展示用 */
+    fun activeProjects(now: Long = System.currentTimeMillis()): List<ProjectActivity> =
+        synchronized(runtimes) { runtimes.map { (name, runtime) -> name to runtime } }
+            .filter { (_, runtime) -> isFresh(runtime, now) }
+            .map { (name, runtime) -> ProjectActivity(name, runtime.phase, runtime.at) }
+            .sortedByDescending { it.at }
+
+    /** 运行态是否还在有效期内；空闲态一律视为不新鲜 */
+    private fun isFresh(runtime: ProjectRuntime, now: Long): Boolean {
+        val ttl = when (runtime.phase) {
+            Phase.THINKING -> THINKING_TTL_MS
+            Phase.WAITING -> WAITING_TTL_MS
+            Phase.IDLE -> return false
+        }
+        return now - runtime.at <= ttl
+    }
+
     /**
      * 日志通道：一步结束时的 usage 与步耗时。
      *
-     * 只看数量级，不弹桌宠提示；看板的吞吐行与工具提示读这里。
+     * 只看数量级，不弹桌宠提示；看板读 [recentUsage]，状态栏按项目读 [usageOf]。
      */
-    fun onLogUsage(model: String, outputTokens: Int, durationMs: Long) {
+    fun onLogUsage(project: String, model: String, outputTokens: Int, durationMs: Long) {
         if (outputTokens <= 0 || durationMs <= 0L) return
         val now = System.currentTimeMillis()
-        lastUsage = UsageSample(
+        val sample = UsageSample(
             model = model.trim().ifBlank { "当前模型" },
             outputTokens = outputTokens,
             durationMs = durationMs,
             at = now,
+            project = project.trim(),
         )
+        lastUsage = sample
+        if (sample.project.isNotEmpty()) {
+            synchronized(usages) { usages[sample.project] = sample }
+        }
         if (now - lastUsageFireAt < 10_000L) return
         lastUsageFireAt = now
         AccountEvents.fireRuntimeChanged()

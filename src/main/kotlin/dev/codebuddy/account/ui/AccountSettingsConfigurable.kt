@@ -52,11 +52,11 @@ class AccountSettingsConfigurable : Configurable {
     private val autoSwitchCheck = JCheckBox("当前账号额度低于阈值时自动调度到其他账号")
     private val autoSwitchThresholdSpinner = JSpinner(SpinnerNumberModel(10, 1, 100, 1))
     private val statusBarCheck = JCheckBox("在状态栏显示当前账号与剩余额度（立即生效）")
-    private val throughputCheck = JCheckBox("在状态栏显示模型输出速度（tok/s，立即生效）")
+    private val throughputCheck = JCheckBox("在状态栏显示项目名称-对话标题-模型输出速度（立即生效）")
     private val tokenCheck = JCheckBox("启动时检查 token 过期并提醒")
     private val multiInstanceCheck = JCheckBox("多开 IDE 时仅由主实例自动刷新（其余实例复用共享配额结果）")
     private val leaderStateLabel = JBLabel()
-    private val modeCombo = JComboBox(QuotaDisplayMode.entries.toTypedArray()).apply {
+    private val modeCombo = JComboBox(QuotaDisplayMode.values()).apply {
         renderer = object : DefaultListCellRenderer() {
             override fun getListCellRendererComponent(
                 list: JList<*>?, value: Any?, index: Int, isSelected: Boolean, cellHasFocus: Boolean,
@@ -76,7 +76,7 @@ class AccountSettingsConfigurable : Configurable {
     private val growthAutoActionsCheck = JCheckBox("「一键完成」执行客户端行为上报类任务（事件上报，不消耗积分）")
     private val modelQuotaCheck = JCheckBox("监控模型积分限额（达标后提醒切号，如 DeepSeek）")
     private val modelQuotaRulesEditor = ModelQuotaRulesEditor()
-    private val modelQuotaPeriodCombo = JComboBox(ModelQuotaPeriod.entries.toTypedArray()).apply {
+    private val modelQuotaPeriodCombo = JComboBox(ModelQuotaPeriod.values()).apply {
         renderer = object : DefaultListCellRenderer() {
             override fun getListCellRendererComponent(
                 list: JList<*>?, value: Any?, index: Int, isSelected: Boolean, cellHasFocus: Boolean,
@@ -90,7 +90,7 @@ class AccountSettingsConfigurable : Configurable {
     private var usageRefreshTimer: javax.swing.Timer? = null
 
     /** 界面色调（立即生效，与工具窗右上角的调色盘按钮是同一份状态） */
-    private val themeCombo = JComboBox(AccentTheme.entries.toTypedArray()).apply {
+    private val themeCombo = JComboBox(AccentTheme.values()).apply {
         renderer = object : DefaultListCellRenderer() {
             override fun getListCellRendererComponent(
                 list: JList<*>?, value: Any?, index: Int, isSelected: Boolean, cellHasFocus: Boolean,
