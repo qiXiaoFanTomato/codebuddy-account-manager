@@ -44,6 +44,17 @@ class CodeBuddyWatcher : Disposable {
     /** 单个日志文件的读取进度；[carry] 保存尚未凑齐换行的尾部字节，避免半行被整行丢弃 */
     private class FileState(var offset: Long, var carry: ByteArray = ByteArray(0))
 
+    /**
+     * 日志文件对应的项目：文件名 `<项目名>__<workspaceHash>.log`。
+     *
+     * [workspace] 与 history 目录名（会话索引的 workspace 字段）同一口径，
+     * 状态栏用它把运行态、速度样本与对话标题精确对上；解析不出时降级用项目名。
+     */
+    private class ProjectRef(val name: String, val workspace: String) {
+        /** 运行态 / 速度样本的 key：优先 hash，缺失时退回项目名 */
+        val key: String get() = workspace.ifBlank { name }
+    }
+
     /** 一条等待确认事件（callId 缺失时用 orphan:<project> 作为临时键） */
     private class PendingAsk(
         val project: String,
@@ -194,9 +205,10 @@ class CodeBuddyWatcher : Disposable {
         val noDisturbActive =
             pageActive && settings.cbApprovalNormal == CbNormalPolicy.ALLOW && CbWebObserver.isConnected()
         val autoApproveOn = pageActive && settings.cbApprovalNormal == CbNormalPolicy.ASK_THEN_ALLOW
-        // 页面已经直接点过时不再超时补刀，避免同一个确认被处理两次
+        // 页面已经直接点过时不再超时补刀，避免同一个确认被处理两次；
+        // 危险命令「超时放行」与「自动放行」在页面通道都表现为到点代点，只有「一直等人工」不补刀
         val autoApproveDangerOn =
-            pageActive && settings.cbApprovalDanger == CbDangerPolicy.AUTO && !noDisturbActive
+            pageActive && settings.cbApprovalDanger != CbDangerPolicy.ASK && !noDisturbActive
         val autoApproveMs = settings.cbAutoApproveMinutes * 60_000L
         // 「默认放行」提示：只在实际生效的直接放行策略下播报，避免把宿主原生弹框也算成代点
         val autoAllowNotice = !onlyMetrics && settings.cbApprovalMode != CbApprovalMode.NONE &&
@@ -223,15 +235,15 @@ class CodeBuddyWatcher : Disposable {
     }
 
     /** 今天与昨天的日志（跨零点轮转时仍能读到最后一段） */
-    private fun candidateFiles(): List<Pair<String, Path>> {
+    private fun candidateFiles(): List<Pair<ProjectRef, Path>> {
         val root = logRoot() ?: return emptyList()
-        val out = ArrayList<Pair<String, Path>>()
+        val out = ArrayList<Pair<ProjectRef, Path>>()
         for (date in listOf(LocalDate.now(), LocalDate.now().minusDays(1))) {
             val dir = root.resolve(date.format(DATE_FORMAT))
             if (!Files.isDirectory(dir)) continue
             try {
                 Files.newDirectoryStream(dir, "*.log").use { stream ->
-                    for (p in stream) out.add(projectOf(p) to p)
+                    for (p in stream) out.add(projectRefOf(p) to p)
                 }
             } catch (_: Exception) {
             }
@@ -240,7 +252,7 @@ class CodeBuddyWatcher : Disposable {
     }
 
     private fun readNewLines(
-        project: String,
+        project: ProjectRef,
         path: Path,
         approveOn: Boolean,
         progressOn: Boolean,
@@ -309,27 +321,35 @@ class CodeBuddyWatcher : Disposable {
     // ---------------------------------------------------------------
 
     private fun handleLine(
-        project: String,
+        project: ProjectRef,
         line: String,
         approveOn: Boolean,
         progressOn: Boolean,
         autoAllowNotice: Boolean,
     ) {
         val now = System.currentTimeMillis()
+        val projectName = project.name
 
         // 最近使用的模型名：限流与吞吐文案都靠它补全，日志比页面文本更可靠
         MODEL_NAME.find(line)?.groupValues?.get(1)?.let { model ->
-            synchronized(states) { recentModel[project] = model to now }
+            synchronized(states) { recentModel[projectName] = model to now }
+        }
+
+        // 工具执行同样说明这一轮还在跑：刷新最后活动时间，长工具不会中途掉成「空闲」
+        if (TOOL_ACTIVITY.containsMatchIn(line)) {
+            CbEventCenter.touchRuntime(project.key, projectName)
         }
 
         // 一步结束：输出 token 与步耗时 -> 最近一步的吞吐（看板展示，不弹提示）
         if (line.contains("Step execution metrics")) {
             // 有新的步完成说明这一轮还在跑：状态栏显示「思考中」而不是上一步的旧速度
-            CbEventCenter.noteRuntime(project, CbEventCenter.Phase.THINKING)
+            CbEventCenter.noteRuntime(project.key, projectName, CbEventCenter.Phase.THINKING)
             val outputTokens = OUTPUT_TOKENS.find(line)?.groupValues?.get(1)?.toIntOrNull()
             val duration = STEP_DURATION.find(line)?.groupValues?.get(1)?.toLongOrNull()
             if (outputTokens != null && duration != null) {
-                CbEventCenter.onLogUsage(project, recentModelOf(project) ?: "当前模型", outputTokens, duration)
+                CbEventCenter.onLogUsage(
+                    project.key, projectName, recentModelOf(projectName) ?: "当前模型", outputTokens, duration,
+                )
             }
         }
 
@@ -337,7 +357,7 @@ class CodeBuddyWatcher : Disposable {
         if (AUTO_ALLOW_HINT.containsMatchIn(line)) {
             if (autoAllowNotice) {
                 val tag = tagOf(line)
-                synchronized(states) { autoAllowed[project] = now to tag }
+                synchronized(states) { autoAllowed[projectName] = now to tag }
             }
             return
         }
@@ -347,9 +367,9 @@ class CodeBuddyWatcher : Disposable {
         if (autoAllowNotice && line.contains("命令: \"") && !line.contains("执行普通命令")) {
             val tag = tagOf(line)
             val allowed = synchronized(states) {
-                val entry = autoAllowed[project]
+                val entry = autoAllowed[projectName]
                 if (entry != null && entry.second == tag && now - entry.first <= AUTO_ALLOW_BIND_MS) {
-                    autoAllowed.remove(project)
+                    autoAllowed.remove(projectName)
                     true
                 } else {
                     false
@@ -372,9 +392,9 @@ class CodeBuddyWatcher : Disposable {
             }
             // 限流行本身往往不带模型名，用最近一次实际调用的模型补全
             val model = MODEL_ID.find(line)?.groupValues?.get(1)
-                ?: recentModelOf(project) ?: "当前模型"
+                ?: recentModelOf(projectName) ?: "当前模型"
             val resetAt = parseResetAt(line)
-            if (CbEventCenter.claim("rateLimitLog", "$project|$code|$resetAt|${line.take(60)}")) {
+            if (CbEventCenter.claim("rateLimitLog", "$projectName|$code|$resetAt|${line.take(60)}")) {
                 CbEventCenter.onLogRateLimit(model, code, resetAt)
             }
             return
@@ -385,12 +405,12 @@ class CodeBuddyWatcher : Disposable {
             val cmd = line.substringAfter("Dangerous command detected:").trim()
             if (cmd.isNotBlank()) {
                 synchronized(states) {
-                    dangerByProject[project] = cmd to now
+                    dangerByProject[projectName] = cmd to now
                     if (approveOn) {
-                        val key = "danger:$project:${now / 2_000L}"
+                        val key = "danger:$projectName:${now / 2_000L}"
                         if (!pending.containsKey(key)) {
                             pending[key] = PendingAsk(
-                                project, "危险命令：" + oneLine(cmd, MAX_COMMAND_CHARS), now, dangerous = true,
+                                projectName, "危险命令：" + oneLine(cmd, MAX_COMMAND_CHARS), now, dangerous = true,
                             )
                         }
                     }
@@ -402,16 +422,16 @@ class CodeBuddyWatcher : Disposable {
         // 等待主人确认：文案集合放宽，且不再强制要求 callId
         if (ASK_HINT.containsMatchIn(line)) {
             // 运行态与开关无关：桌宠关掉时状态栏也要能显示「等确认」
-            CbEventCenter.noteRuntime(project, CbEventCenter.Phase.WAITING)
+            CbEventCenter.noteRuntime(project.key, projectName, CbEventCenter.Phase.WAITING)
             if (!approveOn) return
-            val id = callIdOf(line) ?: "line:$project:${line.hashCode()}:${now / 2_000L}"
+            val id = callIdOf(line) ?: "line:$projectName:${line.hashCode()}:${now / 2_000L}"
             if (handled.containsKey(id)) return
             markHandled(id)
-            val dangerous = dangerText(project) != null
+            val dangerous = dangerText(projectName) != null
             synchronized(states) {
-                orphanAsks.remove(project)
-                val duplicated = pending.values.any { it.project == project && now - it.at < 5_000L }
-                if (!duplicated) pending[id] = PendingAsk(project, describe(project, line), now, dangerous)
+                orphanAsks.remove(projectName)
+                val duplicated = pending.values.any { it.project == projectName && now - it.at < 5_000L }
+                if (!duplicated) pending[id] = PendingAsk(projectName, describe(projectName, line), now, dangerous)
             }
             return
         }
@@ -419,15 +439,15 @@ class CodeBuddyWatcher : Disposable {
         // 主人确认 / 拒绝：撤销待提示（含危险命令 / 无 callId 的兜底项）
         if (CONFIRM_HINT.containsMatchIn(line)) {
             // 确认后不管是执行还是中止，这一轮都回到了模型手里
-            CbEventCenter.noteRuntime(project, CbEventCenter.Phase.THINKING)
+            CbEventCenter.noteRuntime(project.key, projectName, CbEventCenter.Phase.THINKING)
             val id = callIdOf(line)
             synchronized(states) {
                 if (id != null) pending.remove(id)
                 // 兜底项没有 callId，只能按项目前缀清，否则「已确认」行撤不掉刚入队的提示
                 pending.entries.removeIf {
-                    it.key.startsWith("danger:$project:") || it.key.startsWith("line:$project:")
+                    it.key.startsWith("danger:$projectName:") || it.key.startsWith("line:$projectName:")
                 }
-                orphanAsks.remove(project)
+                orphanAsks.remove(projectName)
             }
             if (id != null) markHandled(id)
             return
@@ -439,9 +459,9 @@ class CodeBuddyWatcher : Disposable {
         // 只按 contains 判定会在主对话仍在执行时误报「对话完成」。
         if (ROUND_END.containsMatchIn(line)) {
             // 整轮结束才清运行态；主 agent 的结束行已由整行正则限定
-            CbEventCenter.noteRuntime(project, CbEventCenter.Phase.IDLE)
+            CbEventCenter.noteRuntime(project.key, projectName, CbEventCenter.Phase.IDLE)
             if (!progressOn) return
-            val requestId = REQUEST_ID.find(line)?.groupValues?.get(1) ?: "auto:$project:${now / 2_000L}"
+            val requestId = REQUEST_ID.find(line)?.groupValues?.get(1) ?: "auto:$projectName:${now / 2_000L}"
             val key = "req:$requestId"
             if (handled.containsKey(key)) return
             markHandled(key)
@@ -449,9 +469,9 @@ class CodeBuddyWatcher : Disposable {
             val reasons = abnormalReasons(line)
             if (reasons.isEmpty()) {
                 // 强提醒里补上项目名、对话标题与内容摘要（桌宠专用动画由 PetNotifier 承载）
-                CbEventCenter.onConversationFinished(project, steps)
+                CbEventCenter.onConversationFinished(projectName, steps)
             } else {
-                CbEventCenter.onLogInterrupted(project, reasons)
+                CbEventCenter.onLogInterrupted(projectName, reasons)
                 if (PetSettings.getInstance().cbAutoContinueEnabled) CbWebObserver.clickContinue()
             }
         }
@@ -558,11 +578,20 @@ class CodeBuddyWatcher : Disposable {
         }
         if (injected) {
             CbEventCenter.countAutoApproval()
-            PetNotifier.notify(
-                PetNotifier.Level.INFO,
-                "我先替主人点了同意",
-                "「${ask.project}」${ask.what}（等了 $minutes 分钟）",
-            )
+            if (ask.dangerous) {
+                // 危险命令代点必须比普通代点更显眼：WARN 级、标题直接说明是危险操作
+                PetNotifier.notify(
+                    PetNotifier.Level.WARN,
+                    "危险命令：我先替主人点了同意",
+                    "「${ask.project}」${ask.what}（等了 $minutes 分钟）",
+                )
+            } else {
+                PetNotifier.notify(
+                    PetNotifier.Level.INFO,
+                    "我先替主人点了同意",
+                    "「${ask.project}」${ask.what}（等了 $minutes 分钟）",
+                )
+            }
         } else {
             PetNotifier.notify(
                 PetNotifier.Level.WARN,
@@ -642,11 +671,19 @@ class CodeBuddyWatcher : Disposable {
         return if (Files.isDirectory(dir)) dir else null
     }
 
-    /** 日志文件名格式：<项目名>__<workspaceHash>.log */
-    private fun projectOf(path: Path): String {
-        val name = path.fileName?.toString()?.removeSuffix(".log") ?: return "当前项目"
-        val project = name.substringBefore("__").ifBlank { "当前项目" }
-        return project
+    /**
+     * 日志文件名格式：`<项目名>__<workspaceHash>.log`。
+     *
+     * 项目名本身可能带下划线，所以按**最后一个** `__` 切；
+     * hash 不符合 32 位十六进制时只保留项目名，运行态退回按名字分组。
+     */
+    private fun projectRefOf(path: Path): ProjectRef {
+        val fileName = path.fileName?.toString()?.removeSuffix(".log").orEmpty()
+        val sep = fileName.lastIndexOf("__")
+        if (sep <= 0) return ProjectRef(fileName.ifBlank { "当前项目" }, "")
+        val name = fileName.substring(0, sep).ifBlank { "当前项目" }
+        val hash = fileName.substring(sep + 2).trim()
+        return ProjectRef(name, if (WORKSPACE_HASH.matches(hash)) hash else "")
     }
 
     companion object {
@@ -686,6 +723,17 @@ class CodeBuddyWatcher : Disposable {
 
         private const val MAX_COMMAND_CHARS = 80
         private const val MAX_HANDLED_KEYS = 512
+
+        /** 日志文件名里的 workspace hash：32 位十六进制，与 history 目录名同口径 */
+        private val WORKSPACE_HASH = Regex("^[0-9a-fA-F]{32}$")
+
+        /**
+         * 工具执行类日志行：只用于刷新「最后活动时间」，不产生提示。
+         *
+         * 标签取自既有解析口径（`[Tool:` / `TerminalExecutor` / `执行普通命令`），
+         * 目的是长工具执行期间状态不掉回空闲。
+         */
+        private val TOOL_ACTIVITY = Regex("\\[Tool:|TerminalExecutor|执行普通命令", RegexOption.IGNORE_CASE)
 
         /**
          * 主 agent 的一轮结束行，实测形如：

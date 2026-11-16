@@ -99,7 +99,9 @@ object CbEventCenter {
         val outputTokens: Int,
         val durationMs: Long,
         val at: Long,
-        /** 产生这一步的项目名（日志文件名口径）；状态栏按项目并排展示时用来分组 */
+        /** 产生这一步的项目（history 目录口径的 workspace hash）；状态栏按它分组 */
+        val workspace: String = "",
+        /** 项目展示名（日志文件名口径） */
         val project: String = "",
     ) {
         val tokensPerSecond: Double
@@ -120,8 +122,19 @@ object CbEventCenter {
      */
     enum class Phase { IDLE, THINKING, WAITING }
 
-    /** 项目 -> 运行态；[at] 是最近一次信号时刻，用于超时兜底 */
-    data class ProjectRuntime(val phase: Phase, val at: Long)
+    /**
+     * 一个项目当前的活动状态。
+     *
+     * [workspace] 是 history 目录口径的 hash（日志文件名里的 hash 与它一致），
+     * 状态栏用它把「运行态 / 速度 / 对话标题」严格对齐，不靠项目名字符串匹配。
+     * [at] 是最近一次对话信号时刻，用于超时兜底与排序。
+     */
+    data class ProjectActivity(
+        val workspace: String,
+        val project: String,
+        val phase: Phase,
+        val at: Long,
+    )
 
     /** 功能页展示用的最近事件 */
     data class EventRecord(
@@ -194,10 +207,21 @@ object CbEventCenter {
      * - 事件列表把 1 分钟内的连续放行合并成一条，否则每次工具调用都插一条，
      *   60 条窗口会瞬间刷满，限流、中断这些真要看的事件全被挤掉。
      */
-    fun onHookAutoApproval(tool: String, detail: String) {
+    fun onHookAutoApproval(
+        tool: String,
+        detail: String,
+        source: String = "hook",
+        danger: Boolean = false,
+    ) {
         val name = tool.ifBlank { "工具调用" }
         val what = detail.replace(WHITESPACE, " ").trim().take(60)
-        val title = "我先替主人放行了「$name」"
+        // 逐次审计：谁放的行（hook 决策 / 日志兜底）、放的是什么工具与命令原文
+        PetAuditLog.approval(
+            source = source, auto = true, kind = "allow", via = source, label = name,
+            what = detail, project = "", sessionId = "", danger = danger,
+        )
+        // 危险命令的代放不能和普通放行共用文案，主人一眼要能看出这次是「危险」级别
+        val title = if (danger) "我先替主人放行了危险命令「$name」" else "我先替主人放行了「$name」"
         val ordinal = autoApprovalsToday() + 1
         val content = if (what.isBlank()) "今日第 $ordinal 次代点" else "$what · 今日第 $ordinal 次代点"
         // hook 通道与日志兜底可能同时认出同一次放行：去重键只取命令原文
@@ -207,8 +231,13 @@ object CbEventCenter {
         // 再加一个最小间隔：一轮对话里连续放行时不把提示刷成走马灯，只更新次数与事件
         if (!duplicated && now - lastAutoNoticeAt >= AUTO_NOTICE_GAP_MS) {
             lastAutoNoticeAt = now
-            // 默认放行是高频路径，用 INFO 的默认 5 秒时长，别让提示一直占着桌宠
-            PetNotifier.notify(PetNotifier.Level.INFO, title, content)
+            if (danger) {
+                // 危险命令代放必须让主人看见：WARN 级 + 12 秒，不吃默认的 5 秒
+                PetNotifier.notify(PetNotifier.Level.WARN, title, content, durationMs = 12_000)
+            } else {
+                // 默认放行是高频路径，用 INFO 的默认 5 秒时长，别让提示一直占着桌宠
+                PetNotifier.notify(PetNotifier.Level.INFO, title, content)
+            }
         }
         countAutoApproval()
         mergeAutoEvent(title, content)
@@ -222,7 +251,7 @@ object CbEventCenter {
      */
     fun onLogAutoApproval(tool: String, detail: String) {
         if (!PetSettings.getInstance().enabled) return
-        onHookAutoApproval(tool, detail)
+        onHookAutoApproval(tool, detail, source = "log")
     }
 
     /** 默认放行的紧凑记录：上一条也是放行就原地更新，保持事件列表不被放行记录淹没 */
@@ -257,15 +286,15 @@ object CbEventCenter {
     @Volatile
     private var lastUsage: UsageSample? = null
 
-    /** 项目 -> 该项目最近一步的吞吐；状态栏按项目并排展示时各取各的读数 */
+    /** workspace hash -> 该项目最近一步的吞吐；状态栏按项目并排展示时各取各的读数 */
     private val usages = HashMap<String, UsageSample>()
 
     /** 吞吐刷新的节流时刻：一轮对话可能有几十步，看板不必每步重建 */
     @Volatile
     private var lastUsageFireAt = 0L
 
-    /** 项目 -> 运行态；状态栏按项目名读取 */
-    private val runtimes = HashMap<String, ProjectRuntime>()
+    /** workspace hash -> 运行态；状态栏按 hash 读取，项目名只用于展示 */
+    private val runtimes = HashMap<String, ProjectActivity>()
 
     /** 进行中的有效期：一步到下一步之间可能夹着长工具执行，留足余量 */
     private const val THINKING_TTL_MS = 60_000L
@@ -300,6 +329,11 @@ object CbEventCenter {
                     what = e.str("what").ifBlank { "一个操作需要确认" },
                     dangerous = e.bool("danger"),
                     auto = e.bool("auto"),
+                    kind = e.str("kind").ifBlank { "once" },
+                    via = e.str("via").ifBlank { "keyword" },
+                    label = e.str("label"),
+                    sessionId = e.str("sessionId"),
+                    credit = e.bool("credit"),
                 )
 
                 "rateLimit" -> onRateLimit(
@@ -328,7 +362,12 @@ object CbEventCenter {
      * DOM 已经提示过的弹窗不会再从日志提示一次，反之亦然。
      */
     fun onLogApproval(project: String, what: String, dangerous: Boolean) =
-        onApproval(project, what, dangerous, auto = false)
+        onApproval(
+            project = project, what = what, dangerous = dangerous, auto = false,
+            // 日志通道只认得出「有人在等确认」，认不出卡片上的按钮，审计里如实标注
+            kind = "none", via = "log", label = "", sessionId = "", credit = false,
+            source = "log",
+        )
 
     /** 日志通道的异常结束事件 */
     fun onLogInterrupted(project: String, reasons: List<String>) =
@@ -342,17 +381,49 @@ object CbEventCenter {
     // 分类处理 + 桌宠联动
     // ---------------------------------------------------------------
 
-    private fun onApproval(project: String, what: String, dangerous: Boolean, auto: Boolean) {
+    private fun onApproval(
+        project: String,
+        what: String,
+        dangerous: Boolean,
+        auto: Boolean,
+        kind: String,
+        via: String,
+        label: String,
+        sessionId: String,
+        credit: Boolean,
+        source: String = "page",
+    ) {
+        // 逐次审计先写：扣费卡也要留痕——它不代点，但排查时要能确认确实被识别过
+        PetAuditLog.approval(
+            source = source, auto = auto, kind = kind, via = via, label = label,
+            what = what, project = project, sessionId = sessionId,
+            credit = credit, danger = dangerous,
+        )
+        val settings = PetSettings.getInstance()
+        // 扣费卡（积分 / 金额 / 余额）永远不代点；要不要提示由「扣费确认提示」开关决定，
+        // 并跟随「权限提醒」总开关——总开关关掉时一律静默
+        if (credit) {
+            if (!settings.cbCreditNoticeEnabled || !settings.cbApproveNoticeEnabled) return
+        }
         // 代点是替主人做决定，必须提示并留痕，不受「提醒」开关影响；
         // 危险命令即使不代点也要提示，否则关掉「权限提醒」后会静默卡在那里没人知道
-        if (!auto && !dangerous && !PetSettings.getInstance().cbApproveNoticeEnabled) return
+        if (!credit && !auto && !dangerous && !settings.cbApproveNoticeEnabled) return
         if (!claim(if (auto) "approvalAuto" else "approval", "$project|$what")) return
         val (level, title) = when {
+            // 扣费卡只提示不代点，标题要写明，别让主人以为已经替自己确认扣费了
+            credit -> PetNotifier.Level.WARN to "有扣费确认在等主人点头"
+            // 回落到「本次会话内始终允许」是放大权限的操作，标题必须点明，别让主人以为是普通允许
+            auto && kind == "session" -> PetNotifier.Level.INFO to "我先替主人点了「本次会话内始终允许」"
             auto -> PetNotifier.Level.INFO to "我先替主人点了「运行」"
             dangerous -> PetNotifier.Level.WARN to "有危险命令在等主人点头"
             else -> PetNotifier.Level.WARN to "CodeBuddy 在等主人点头"
         }
-        val tail = if (dangerous && !auto) "$what（危险命令，不代点）" else what
+        val tail = when {
+            credit -> "$what（会扣积分，不代点）"
+            dangerous && !auto -> "$what（危险命令，不代点）"
+            auto && kind == "session" -> "$what（本会话内同类操作不再询问）"
+            else -> what
+        }
         val content = "「$project」$tail"
         PetNotifier.notify(level, title, content, durationMs = 12_000)
         record("approval", title, content, auto)
@@ -490,7 +561,7 @@ object CbEventCenter {
     fun recentUsage(): UsageSample? = lastUsage
 
     /** 指定项目最近一步的吞吐；状态栏多项目展示用，时效由调用方判定 */
-    fun usageOf(project: String): UsageSample? = synchronized(usages) { usages[project.trim()] }
+    fun usageOf(workspace: String): UsageSample? = synchronized(usages) { usages[workspace] }
 
     /** 所有项目的最近一步样本，按时间倒序 */
     fun projectUsages(): List<UsageSample> =
@@ -500,40 +571,61 @@ object CbEventCenter {
     // 运行态（状态栏的「思考中 / 等确认」）
     // ---------------------------------------------------------------
 
-    /** 一个项目当前的活动：[phase] 为运行态，[at] 是最近一次信号时刻 */
-    data class ProjectActivity(val project: String, val phase: Phase, val at: Long)
-
     /**
      * 记录一条运行态变化，由日志通道调用。
      *
      * 与提醒开关无关：状态栏在「仅统计」模式下也要能显示思考中，
      * 这里只写内存状态，不涉及代点与弹窗，没有副作用。
      */
-    fun noteRuntime(project: String, phase: Phase) {
+    fun noteRuntime(workspace: String, project: String, phase: Phase) {
+        val key = workspace.trim()
+        if (key.isEmpty()) return
         val name = project.trim()
-        if (name.isEmpty()) return
         synchronized(runtimes) {
-            runtimes[name] = ProjectRuntime(phase, System.currentTimeMillis())
+            val prev = runtimes[key]
+            runtimes[key] = ProjectActivity(
+                workspace = key,
+                project = name.ifEmpty { prev?.project.orEmpty() },
+                phase = phase,
+                at = System.currentTimeMillis(),
+            )
+        }
+    }
+
+    /**
+     * 刷新项目的最后活动时间（对话相关的日志行都会调）。
+     *
+     * 只在项目已经处于思考中 / 等确认时生效：没有对话证据的心跳行不能把
+     * 空闲项目拉成「思考中」，但长工具执行期间能一直续上，不会中途掉状态。
+     */
+    fun touchRuntime(workspace: String, project: String) {
+        val key = workspace.trim()
+        if (key.isEmpty()) return
+        val name = project.trim()
+        synchronized(runtimes) {
+            val prev = runtimes[key] ?: return
+            if (prev.phase == Phase.IDLE) return
+            runtimes[key] = prev.copy(
+                project = name.ifEmpty { prev.project },
+                at = System.currentTimeMillis(),
+            )
         }
     }
 
     /** 项目当前的运行态；信号过期即视为空闲，避免异常退出后一直挂着「思考中」 */
-    fun phaseOf(project: String, now: Long = System.currentTimeMillis()): Phase {
-        val name = project.trim()
-        if (name.isEmpty()) return Phase.IDLE
-        val runtime = synchronized(runtimes) { runtimes[name] } ?: return Phase.IDLE
+    fun phaseOf(workspace: String, now: Long = System.currentTimeMillis()): Phase {
+        val runtime = synchronized(runtimes) { runtimes[workspace.trim()] } ?: return Phase.IDLE
         return if (isFresh(runtime, now)) runtime.phase else Phase.IDLE
     }
 
     /** 所有仍在活动中的项目（思考中 / 等确认），按最近信号倒序；状态栏多项目展示用 */
     fun activeProjects(now: Long = System.currentTimeMillis()): List<ProjectActivity> =
-        synchronized(runtimes) { runtimes.map { (name, runtime) -> name to runtime } }
-            .filter { (_, runtime) -> isFresh(runtime, now) }
-            .map { (name, runtime) -> ProjectActivity(name, runtime.phase, runtime.at) }
+        synchronized(runtimes) { runtimes.values.toList() }
+            .filter { isFresh(it, now) }
             .sortedByDescending { it.at }
 
     /** 运行态是否还在有效期内；空闲态一律视为不新鲜 */
-    private fun isFresh(runtime: ProjectRuntime, now: Long): Boolean {
+    private fun isFresh(runtime: ProjectActivity, now: Long): Boolean {
         val ttl = when (runtime.phase) {
             Phase.THINKING -> THINKING_TTL_MS
             Phase.WAITING -> WAITING_TTL_MS
@@ -547,19 +639,21 @@ object CbEventCenter {
      *
      * 只看数量级，不弹桌宠提示；看板读 [recentUsage]，状态栏按项目读 [usageOf]。
      */
-    fun onLogUsage(project: String, model: String, outputTokens: Int, durationMs: Long) {
+    fun onLogUsage(workspace: String, project: String, model: String, outputTokens: Int, durationMs: Long) {
         if (outputTokens <= 0 || durationMs <= 0L) return
         val now = System.currentTimeMillis()
+        val key = workspace.trim()
         val sample = UsageSample(
             model = model.trim().ifBlank { "当前模型" },
             outputTokens = outputTokens,
             durationMs = durationMs,
             at = now,
+            workspace = key,
             project = project.trim(),
         )
         lastUsage = sample
-        if (sample.project.isNotEmpty()) {
-            synchronized(usages) { usages[sample.project] = sample }
+        if (key.isNotEmpty()) {
+            synchronized(usages) { usages[key] = sample }
         }
         if (now - lastUsageFireAt < 10_000L) return
         lastUsageFireAt = now

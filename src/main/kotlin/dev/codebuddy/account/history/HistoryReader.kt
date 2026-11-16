@@ -88,6 +88,8 @@ object HistoryReader {
         val messageCount: Int,
         /** 会话类型（index.json 的 type 字段，如 craft），可能为空 */
         val type: String = "",
+        /** 是否 index.json 的 current 指向的会话：面板里当前打开的那条 */
+        val isCurrent: Boolean = false,
     ) {
         /** 列表渲染用的单行摘要（避免在渲染器里做类型推断）；checked 非空时前置勾选框 */
         fun summaryLine(accountLabel: String, checked: Boolean? = null): String {
@@ -229,6 +231,13 @@ object HistoryReader {
         val arr = root.get("conversations") ?: return emptyList()
         if (!arr.isJsonArray) return emptyList()
 
+        // current：面板里当前打开的会话 id；状态栏用它拿「当前对话」而不是猜最近一条
+        val currentId = try {
+            root.get("current")?.takeIf { it.isJsonPrimitive }?.asString?.trim().orEmpty()
+        } catch (_: Exception) {
+            ""
+        }
+
         val out = mutableListOf<Conversation>()
         for (el in arr.asJsonArray) {
             if (!el.isJsonObject) continue
@@ -249,6 +258,7 @@ object HistoryReader {
                     messageDir = if (Files.isDirectory(msgDir)) msgDir else null,
                     messageCount = -1,
                     type = o.str("type") ?: "",
+                    isCurrent = currentId.isNotEmpty() && currentId == id,
                 )
             )
         }

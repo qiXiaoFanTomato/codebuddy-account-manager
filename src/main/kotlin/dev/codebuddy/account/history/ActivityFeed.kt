@@ -30,11 +30,8 @@ object ActivityFeed {
         val workspace: String,
     )
 
-    /** 一个项目当前的对话：项目名 + 该项目最近一条对话的标题与时间 */
-    data class ProjectBrief(val project: String, val title: String, val time: String)
-
-    /** 每条项目只取最近一条对话，最多解析多少条会话（不读消息正文，但仍要限量） */
-    private const val PROJECT_SCAN_LIMIT = 60
+    /** 新对话还没生成标题时的占位文案（原会话 name 为空） */
+    const val NEW_CHAT_TITLE = "新对话"
 
     private val lock = Any()
 
@@ -44,7 +41,7 @@ object ActivityFeed {
     @Volatile
     private var cachedAt = 0L
 
-    /** 会话索引扫描结果；[recent] 与 [latestPerProject] 共用，避免两个入口各扫一遍盘 */
+    /** 会话索引扫描结果；[recent] 与 [currentTitles] 共用，避免两个入口各扫一遍盘 */
     @Volatile
     private var scanned: List<HistoryReader.Conversation> = emptyList()
 
@@ -52,69 +49,49 @@ object ActivityFeed {
     private var scannedAt = 0L
 
     @Volatile
-    private var briefsCached: List<ProjectBrief> = emptyList()
+    private var titlesCached: Map<String, String> = emptyMap()
 
     @Volatile
-    private var briefsLimit = 0
-
-    @Volatile
-    private var briefsAt = 0L
+    private var titlesAt = 0L
 
     fun invalidate() {
         cachedAt = 0L
         scannedAt = 0L
-        briefsAt = 0L
+        titlesAt = 0L
     }
 
     /**
-     * 每个项目最近一条对话（状态栏按项目并排展示用）。
+     * workspace hash -> 该项目的当前对话标题（状态栏按项目并排展示用）。
      *
-     * 只读会话索引里的标题与时间，不读消息正文，因此比 [recent] 轻。
-     * 索引本身按最近消息倒序，所以按项目去重后第一次出现的就是该项目最新的一条。
+     * 优先取 index.json 的 `current`（面板里当前打开的那条），
+     * 没有 current 时退回该项目最近一条；标题为空时统一显示 [NEW_CHAT_TITLE]。
+     * 只读会话索引，不读消息正文。
      */
-    fun latestPerProject(limit: Int = 8): List<ProjectBrief> {
+    fun currentTitles(): Map<String, String> {
         val now = System.currentTimeMillis()
-        if (briefsLimit == limit && now - briefsAt < CACHE_MS) return briefsCached
+        if (now - titlesAt < CACHE_MS) return titlesCached
         return synchronized(lock) {
-            if (briefsLimit == limit && System.currentTimeMillis() - briefsAt < CACHE_MS) {
-                return@synchronized briefsCached
-            }
+            if (System.currentTimeMillis() - titlesAt < CACHE_MS) return@synchronized titlesCached
             val result = try {
-                loadLatestPerProject(limit)
+                loadCurrentTitles()
             } catch (t: Throwable) {
-                log.warn("读取各项目最近对话失败", t)
-                emptyList()
+                log.warn("读取当前对话标题失败", t)
+                emptyMap()
             }
-            briefsCached = result
-            briefsLimit = limit
-            briefsAt = System.currentTimeMillis()
+            titlesCached = result
+            titlesAt = System.currentTimeMillis()
             result
         }
     }
 
-    private fun loadLatestPerProject(limit: Int): List<ProjectBrief> {
-        val all = conversations().take(PROJECT_SCAN_LIMIT)
-        if (all.isEmpty()) return emptyList()
-        val projects = try {
-            ProjectResolver.resolve(all)
-        } catch (_: Throwable) {
-            emptyMap()
+    private fun loadCurrentTitles(): Map<String, String> {
+        val titles = HashMap<String, String>()
+        // 索引按最近消息倒序：先 putIfAbsent 得到最近一条，遇到 current 再覆盖成当前打开的
+        for (conv in conversations()) {
+            val title = conv.name.ifBlank { NEW_CHAT_TITLE }
+            if (conv.isCurrent) titles[conv.workspace] = title else titles.putIfAbsent(conv.workspace, title)
         }
-        val seen = HashSet<String>()
-        val out = ArrayList<ProjectBrief>(limit)
-        for (conv in all) {
-            val project = projects[conv.workspace]?.name ?: conv.workspace.take(8)
-            if (!seen.add(project)) continue
-            out.add(
-                ProjectBrief(
-                    project = project,
-                    title = conv.name.ifBlank { "（未命名对话）" },
-                    time = timeText(conv.lastMessageAt),
-                )
-            )
-            if (out.size >= limit) break
-        }
-        return out
+        return titles
     }
 
     /** 会话索引（已按最近消息时间倒序），[CACHE_MS] 内复用；不读消息正文 */
