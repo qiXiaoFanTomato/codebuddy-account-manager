@@ -23,7 +23,7 @@ console.log('jar:', jars.join(', '));
 const jar = path.join(libDir, jars[0]);
 execSync(`powershell -NoProfile -Command "Expand-Archive -LiteralPath '${jar}' -DestinationPath '${tmp}\jar' -Force"`, { stdio: 'pipe' });
 
-const classes = ['AccountCard.class', 'AccountCardList.class', 'QuotaAlertSettings.class'];
+const classes = ['QuotaAlertSettings.class'];
 for (const c of classes) {
   const p = path.join(tmp, 'jar', 'dev', 'codebuddy', 'account', 'ui', c);
   const p2 = path.join(tmp, 'jar', 'dev', 'codebuddy', 'account', 'service', c);

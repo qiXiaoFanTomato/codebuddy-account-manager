@@ -23,7 +23,6 @@ console.log('版本: ' + (pluginXml.match(/<version>(.*?)<\/version>/) || [])[1]
 const checks = [
   ['dev/codebuddy/account/credential/SecretStorage.class', 'SecretStorage'],
   ['dev/codebuddy/account/service/PendingSwitch.class', 'PendingSwitch'],
-  ['dev/codebuddy/account/ui/AccountCard.class', 'AccountCard'],
 ];
 for (const [rel, label] of checks) {
   console.log(label + ': ' + fs.existsSync(path.join(tmp, 'inner', rel)));

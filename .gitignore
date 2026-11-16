@@ -30,3 +30,10 @@ gradle-*/
 # 插件运行期私有数据（含凭据快照，切勿提交）
 codebuddy-accounts/
 **/secret-storage.xml*
+
+# 临时调试产物（PowerShell 重定向 / 手工 dump）
+/$null
+/snap-now.yml
+/pkgnotfound.json
+/pkg-*.txt
+/compat-*.txt

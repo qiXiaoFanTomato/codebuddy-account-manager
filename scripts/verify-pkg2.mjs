@@ -24,6 +24,6 @@ console.log('版本: ' + (pluginXml.match(/<version>(.*?)<\/version>/) || [])[1]
 const classPath = path.join(tmp, 'inner', 'dev', 'codebuddy', 'account', 'ui', 'AccountPanel.class');
 const text = fs.readFileSync(classPath).toString('utf8');
 console.log('=== AccountPanel.class ===');
-for (const s of ['刷新额度', 'AccountCardList', 'JBTable']) {
+for (const s of ['刷新额度', 'JBTable']) {
   console.log((text.includes(s) ? '  包含: ' : '  不含: ') + s);
 }

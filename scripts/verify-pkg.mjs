@@ -30,7 +30,7 @@ if (!fs.existsSync(classPath)) {
 } else {
   const text = fs.readFileSync(classPath).toString('utf8');
   console.log('=== AccountPanel.class 字符串检查 ===');
-  for (const s of ['刷新额度', '切换到选中账号', 'AccountCardList', 'JBTable', '回滚', '导出']) {
+  for (const s of ['刷新额度', '切换到选中账号', 'JBTable', '回滚', '导出']) {
     console.log((text.includes(s) ? '  包含: ' : '  不含: ') + s);
   }
 }

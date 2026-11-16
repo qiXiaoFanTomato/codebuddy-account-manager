@@ -8,7 +8,7 @@ plugins {
 }
 
 group = "dev.codebuddy.account"
-version = "0.41"
+version = "0.45.1"
 
 repositories {
     maven { url = uri("https://maven.aliyun.com/repository/public") }
@@ -29,6 +29,8 @@ dependencies {
     }
     implementation("com.google.code.gson:gson:2.11.0")
     testImplementation("org.junit.jupiter:junit-jupiter:5.11.3")
+    // Gradle 9 不再隐式提供 JUnit Platform Launcher，未显式声明时 test 任务起不来
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher:1.11.3")
 }
 
 kotlin {
@@ -81,5 +83,12 @@ tasks {
 intellijPlatform {
     publishing {
         token = providers.environmentVariable("PUBLISH_TOKEN")
+    }
+    // 用「最低支持版本」实测市场那套 IntelliJ Plugin Verifier：
+    // 市场按 2022.3.3（223.8836.41）判过一次 Critical，本地要复现就验同一 build。
+    pluginVerification {
+        ides {
+            ide(IntelliJPlatformType.IntellijIdeaCommunity, "2022.3.3")
+        }
     }
 }
