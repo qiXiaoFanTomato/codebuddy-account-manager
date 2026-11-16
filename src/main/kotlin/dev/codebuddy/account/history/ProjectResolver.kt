@@ -186,6 +186,9 @@ object ProjectResolver {
         return out
     }
 
+    /** 项目绝对路径 -> history 目录名 hash（状态栏按项目精确匹配会话用） */
+    fun hashOf(projectPath: String): String = workspaceHash(projectPath)
+
     /** history 目录名口径：路径转正斜杠为反斜杠、盘符小写，再取 UTF-8 的 MD5 十六进制小写串 */
     private fun workspaceHash(rawPath: String): String {
         val normalized = rawPath.replace('/', '\\')
