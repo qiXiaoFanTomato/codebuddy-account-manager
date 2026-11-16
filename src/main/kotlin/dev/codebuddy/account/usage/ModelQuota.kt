@@ -1,5 +1,6 @@
 package dev.codebuddy.account.usage
 
+import dev.codebuddy.account.service.DayProvider
 import java.time.LocalDate
 import java.time.LocalDateTime
 
@@ -24,7 +25,7 @@ enum class ModelQuotaPeriod(val label: String) {
     ;
 
     /** 周期起止时间（"yyyy-MM-dd HH:mm:ss"） */
-    fun range(now: LocalDateTime = LocalDateTime.now()): Pair<String, String> {
+    fun range(now: LocalDateTime = DayProvider.now()): Pair<String, String> {
         val date: LocalDate = now.toLocalDate()
         return when (this) {
             TODAY -> "$date 00:00:00" to "$date 23:59:59"

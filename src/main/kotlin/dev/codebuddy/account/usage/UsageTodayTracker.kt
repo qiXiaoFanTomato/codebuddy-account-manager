@@ -4,6 +4,7 @@ import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.diagnostic.logger
 import dev.codebuddy.account.service.AccountLibrary
+import dev.codebuddy.account.service.DayProvider
 import java.time.LocalDate
 
 /**
@@ -27,7 +28,7 @@ object UsageTodayTracker {
     const val MAX_ROWS_SHOWN = UsageService.MAX_PAGE_SIZE
 
     data class State(
-        val date: LocalDate = LocalDate.now(),
+        val date: LocalDate = DayProvider.today(),
         /** accountKey -> 该账号今日的消耗结果（失败也保留，用于展示失败原因） */
         val pages: Map<String, UsagePage> = emptyMap(),
         val fetchedAt: Long = 0L,
@@ -83,7 +84,7 @@ object UsageTodayTracker {
      * 因此可以安全地在界面 update() 里调用而不会互相递归。
      */
     fun ensureFresh(force: Boolean = false, onLoaded: (() -> Unit)? = null) {
-        val today = LocalDate.now()
+        val today = DayProvider.today()
         synchronized(lock) {
             val fresh = !force && state.date == today && state.loaded &&
                 System.currentTimeMillis() - state.fetchedAt < STALE_MS

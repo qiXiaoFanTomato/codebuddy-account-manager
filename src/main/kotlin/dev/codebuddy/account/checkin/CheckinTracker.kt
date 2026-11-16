@@ -6,6 +6,7 @@ import com.intellij.openapi.diagnostic.logger
 import dev.codebuddy.account.model.CredentialSnapshot
 import dev.codebuddy.account.service.AccountLibrary
 import dev.codebuddy.account.service.AccountSettings
+import dev.codebuddy.account.service.DayProvider
 import dev.codebuddy.account.service.MultiInstanceCoordinator
 import java.time.LocalDate
 
@@ -35,7 +36,7 @@ object CheckinTracker {
     }
 
     data class State(
-        val date: LocalDate = LocalDate.now(),
+        val date: LocalDate = DayProvider.today(),
         val items: List<AccountCheckin> = emptyList(),
         val fetchedAt: Long = 0L,
         val running: Boolean = false,
@@ -56,7 +57,7 @@ object CheckinTracker {
 
     /** 从本地记录构造今日快照，不发网络请求；缓存有效时不重复重建 */
     fun ensureFresh(force: Boolean = false, onLoaded: (() -> Unit)? = null) {
-        val today = LocalDate.now()
+        val today = DayProvider.today()
         val fresh = synchronized(lock) {
             val f = !force && state.date == today && state.loaded
             if (!f && onLoaded != null && waiters.size < 8) waiters.add(onLoaded)
@@ -79,7 +80,7 @@ object CheckinTracker {
      * @param onDone 在 EDT 回调，参数为本次汇总文案
      */
     fun checkinAll(onDone: ((String) -> Unit)? = null) {
-        val today = LocalDate.now()
+        val today = DayProvider.today()
         val day = today.toString()
         // 跨进程按日去重：多开 IDE 时同一批账号当天只提交一次，避免重复签到请求
         val keys = try {
