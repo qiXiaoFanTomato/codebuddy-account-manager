@@ -129,7 +129,10 @@ object CbWebObserver {
         // 关掉提醒不应关掉页面代点，关掉跑完提醒也不应关掉自动继续。
         // 处理方式不是「页面代点」时，页面只观察不点，避免和桌宠弹窗通道抢同一个确认。
         val pageActive = settings.cbApprovalMode == CbApprovalMode.PAGE
-        val observeApproval = settings.cbApproveNoticeEnabled || pageActive
+        // 扣费确认提示是「权限提醒」之外的独立开关：单独开着时页面也要继续观察，
+        // 否则关掉权限提醒后这条提示永远不会出现（脚本只能扫到不扫就发不出事件）
+        val observeApproval =
+            settings.cbApproveNoticeEnabled || pageActive || settings.cbCreditNoticeEnabled
         val observeInterrupt = settings.cbProgressNoticeEnabled || settings.cbAutoContinueEnabled
         val autoAllowNormal = pageActive && settings.cbApprovalNormal == CbNormalPolicy.ALLOW
         val cfg = JsonObject().apply {
@@ -281,7 +284,12 @@ object CbWebObserver {
           var APPROVE_ONCE = /^(允许|允许一次|允许访问|运行|确认执行|批准|同意|确认允许|Allow|Allow once|Run|Yes)${'$'}/i;
           var SESSION = /始终允许|本次会话内始终允许|Always\s*allow/i;
           var DENY = /拒绝|跳过|取消|禁止|Deny|Skip|Cancel/i;
-          var BLOCK = /积分|信用|credit|消耗|付费|支付|费用|金额|余额|扣费|完全访问|全部允许|批量删除|凭证外发|发送到外部|确认开启/i;
+          // 判定闸门（对齐 WorkDaddy 的 ND_CREDIT_HINTS / ND_MAX_DECISION_BUTTONS）：
+          //  - CREDIT 命中整卡跳过：积分/扣费卡（图片、视频生成）不是待确认项，不代点也不提示
+          //  - BLOCK 命中不代点但必须提示：这类卡点了就等于放开权限
+          var BLOCK = /完全访问|全部允许|批量删除|凭证外发|发送到外部|确认开启/i;
+          var CREDIT = /积分|信用|credit|消耗|付费|支付|费用|金额|余额|扣费/i;
+          var MAX_DECISION_BUTTONS = 12;
           var DANGER = /危险命令|Dangerous command|受保护|敏感|越权|越界|沙箱|sandbox|提权|删除|密钥|凭据|凭证/i;
           var CONFIRM = /确认|允许|运行|是否|需要你|需要您的|permission|approval|sandbox|检测到|受保护|敏感/i;
           var RESET = /(?:Reset at|预计解封|预计恢复|解封时间|恢复时间|resetAt)[^0-9]{0,12}(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2})/i;
@@ -325,72 +333,137 @@ object CbWebObserver {
           function buttons(doc) {
             return doc.querySelectorAll('button,[role="button"],a[role="button"],div[role="button"]');
           }
+          function buttonsIn(box) {
+            // 与 buttons() 同口径：确认卡不一定用原生 button，role=button 的自绘按钮同样要能识别
+            return box && box.querySelectorAll
+              ? box.querySelectorAll('button,[role="button"],a[role="button"],div[role="button"]')
+              : [];
+          }
+          // 找「允许 + 拒绝」决策组。判定通道两类（与 WorkDaddy 的 keyword / structured 对应）：
+          //  keyword    —— 卡片文案命中确认 / 危险关键词；
+          //  structured —— 卡内既有拒绝选项、又有精确「允许一次」选项，不依赖文案也能认定是决策卡。
           function decisionBox(btn) {
             var box = btn;
             for (var depth = 0; depth < 6 && box && box.parentElement; depth++) {
               box = box.parentElement;
-              // 与 buttons() 同口径：确认卡不一定用原生 button，role=button 的自绘按钮同样要能识别
-              var list = box.querySelectorAll
-                ? box.querySelectorAll('button,[role="button"],a[role="button"],div[role="button"]')
-                : [];
-              if (list.length > 12) break;
+              var list = buttonsIn(box);
+              // 逃出卡片就停：祖先容器（消息列表 / BODY）按钮数量必然远超卡片量级
+              if (list.length > MAX_DECISION_BUTTONS) break;
+              if (list.length < 2) continue;
               var ctx = txt(box).slice(0, 700);
-              if (list.length >= 2 && (DENY.test(ctx) || CONFIRM.test(ctx))) return { box: box, ctx: ctx, list: list };
+              var hasDeny = DENY.test(ctx);
+              if (!hasDeny && !CONFIRM.test(ctx)) continue;
+              var hasOnce = false;
+              for (var i = 0; i < list.length; i++) {
+                if (visible(list[i]) && APPROVE_ONCE.test(norm(txt(list[i])))) { hasOnce = true; break; }
+              }
+              return {
+                box: box, ctx: ctx, list: list, hasDeny: hasDeny,
+                via: (hasDeny && hasOnce) ? 'structured' : 'keyword'
+              };
             }
             return null;
           }
-          function pickOnce(list) {
+          // 目标按钮：优先「允许一次」；没有才回落到「本次会话内始终允许」（跟随 WorkDaddy）。
+          // 回落只是候选，是否真的点由 scanApproval 结合「卡内有无拒绝选项」再判一次。
+          function pickTarget(list) {
             var fallback = null;
             for (var i = 0; i < list.length; i++) {
               var el = list[i];
               if (!visible(el)) continue;
               var t = norm(txt(el));
-              if (APPROVE_ONCE.test(t)) return el;
-              if (!fallback && SESSION.test(t)) fallback = el;
+              if (APPROVE_ONCE.test(t)) return { el: el, kind: 'once' };
+              if (!fallback && SESSION.test(t)) fallback = { el: el, kind: 'session' };
             }
             return fallback;
-          }
-          // 只认「允许一次」这类单次授权；「始终允许」只能作为提示，绝不代点
-          function pickStrict(list) {
-            for (var i = 0; i < list.length; i++) {
-              var el = list[i];
-              if (!visible(el)) continue;
-              if (APPROVE_ONCE.test(norm(txt(el)))) return el;
-            }
-            return null;
           }
           function describe(ctx) {
             var hit = /(包含危险命令[^。？?]*[。？?]?|是否[^。？?]{0,40}[。？?]?|检测到[^。？?]{0,40})/.exec(ctx);
             return (hit ? hit[1] : ctx).slice(0, 70) || '一个操作需要确认';
           }
+          // 扫描根收敛：MutationObserver 只把变化点所在的确认卡容器排队，
+          // 快路径不遍历整页；队列为空时（2 秒兜底扫描）才退回整文档。
+          var rootQueue = [];
+          function queueRoot(node) {
+            var el = node && node.nodeType === 1 ? node : (node && node.parentElement);
+            if (!el) return;
+            var root = null;
+            try {
+              root = el.closest && el.closest('[role="dialog"],[class*="_dialog_"],[class*="_modal_"],' +
+                '[class*="_permission_"],[class*="_approval_"],[class*="_confirm_"],[class*="_decision_"],' +
+                '[class*="_ask_"],[class*="permission-dialog"],[class*="confirm-dialog"],' +
+                '[class*="approval"],[class*="permission"]');
+            } catch (e) {}
+            if (!root) {
+              root = el;
+              for (var i = 0; i < 4 && root.parentElement; i++) root = root.parentElement;
+            }
+            for (var j = 0; j < rootQueue.length; j++) if (rootQueue[j] === root) return;
+            rootQueue.push(root);
+            if (rootQueue.length > 24) rootQueue.shift();
+          }
+          function sessionIdOf(el) {
+            try {
+              var owner = el && el.closest && el.closest('[data-conversation-id],[data-root-id]');
+              return owner
+                ? String(owner.getAttribute('data-conversation-id') || owner.getAttribute('data-root-id') || '')
+                : '';
+            } catch (e) { return ''; }
+          }
           function scanApproval(doc) {
-            var list = buttons(doc);
-            for (var i = 0; i < list.length; i++) {
-              var btn = list[i];
-              if (!visible(btn)) continue;
-              if (SESSION.test(norm(txt(btn))) || !APPROVE_ONCE.test(norm(txt(btn)))) continue;
-              var found = decisionBox(btn);
-              if (!found || found.box.getAttribute('data-cb-pet-ask')) continue;
-              var strict = pickStrict(found.list);
-              var once = strict || pickOnce(found.list);
-              if (!once) continue;
-              found.box.setAttribute('data-cb-pet-ask', '1');
-              var danger = DANGER.test(found.ctx);
-              var blocked = BLOCK.test(found.ctx);
-              var auto = false;
-              var c = api.cfg || {};
-              // 决策看整张确认卡，不再要求「当前遍历到的按钮就是最终目标」：
-              // 同一张卡里同时出现「允许」和「允许一次」时，后者才是 pickOnce 的结果
-              if (c.noDisturb && !blocked && strict) {
-                if (!danger) auto = true;
-                if (c.noDisturbDanger && danger) auto = true;
-              }
-              emit('approval', 'ask|' + found.ctx.slice(0, 90), {
-                what: describe(found.ctx), danger: danger, blocked: blocked, auto: auto
-              });
-              if (auto) {
-                strict.setAttribute('data-cb-pet-auto', '1');
-                try { strict.click(); } catch (e) {}
+            var roots = [], kept = [], i, j, r, od;
+            for (i = 0; i < rootQueue.length; i++) {
+              r = rootQueue[i];
+              od = null;
+              try { od = r.ownerDocument; } catch (e) {}
+              // 根可能来自另一个 iframe 文档，只在本轮对应文档里消费
+              if (!od || od === doc) roots.push(r); else kept.push(r);
+            }
+            rootQueue = kept;
+            if (!roots.length) roots = [doc.body];
+            for (i = 0; i < roots.length; i++) {
+              var list = buttonsIn(roots[i]);
+              for (j = 0; j < list.length; j++) {
+                var btn = list[j];
+                if (!visible(btn)) continue;
+                var label = norm(txt(btn));
+                if (!APPROVE_ONCE.test(label) && !SESSION.test(label)) continue;
+                var found = decisionBox(btn);
+                if (!found || found.box.getAttribute('data-cb-pet-ask')) continue;
+                var target = pickTarget(found.list);
+                if (!target) continue;
+                found.box.setAttribute('data-cb-pet-ask', '1');
+                var credit = CREDIT.test(found.ctx);
+                var danger = DANGER.test(found.ctx);
+                var blocked = BLOCK.test(found.ctx);
+                var base = {
+                  what: describe(found.ctx), danger: danger, kind: target.kind,
+                  via: found.via, label: txt(target.el).slice(0, 20),
+                  credit: credit, sessionId: sessionIdOf(found.box)
+                };
+                // 扣费卡整卡跳过：不代点也不提示，只留一条审计（auto 恒为 false）
+                if (credit) {
+                  base.auto = false;
+                  base.blocked = true;
+                  emit('approval', 'credit|' + found.ctx.slice(0, 90), base);
+                  continue;
+                }
+                var auto = false;
+                var c = api.cfg || {};
+                // 决策看整张确认卡：卡里同时有「允许」和「允许一次」时，后者才是 pickTarget 的结果
+                if (c.noDisturb && !blocked) {
+                  // 回落「本次会话内始终允许」= 放开整段会话权限：
+                  // 只对普通卡开放（且卡内必须有拒绝选项）；危险卡一律只点单次，不放大到整段会话
+                  var acceptable = target.kind === 'once' || (found.hasDeny && !danger);
+                  if (acceptable && (!danger || c.noDisturbDanger)) auto = true;
+                }
+                base.auto = auto;
+                base.blocked = blocked;
+                emit('approval', 'ask|' + found.ctx.slice(0, 90), base);
+                if (auto) {
+                  target.el.setAttribute('data-cb-pet-auto', '1');
+                  try { target.el.click(); } catch (e) {}
+                }
               }
             }
           }
@@ -617,19 +690,31 @@ object CbWebObserver {
           }
           try {
             var observer = new MutationObserver(function (records) {
+              // 只把变化点所在的确认卡容器排队，快路径不再整页遍历；
+              // 根队列为空时由 2 秒兜底扫描退回整文档。
               for (var i = 0; i < records.length; i++) {
                 var t = records[i].target;
                 if (t && t.getAttribute) {
                   var a = t.getAttribute('data-cb-pet-ask') || t.getAttribute('data-cb-pet-cont');
                   if (a) continue;
                 }
-                schedule();
-                return;
+                queueRoot(t);
               }
+              if (records.length) schedule();
             });
             observer.observe(document.body, {
               childList: true, subtree: true, attributes: true,
               attributeFilter: ['class', 'style', 'hidden', 'disabled', 'aria-disabled', 'data-state']
+            });
+          } catch (e) {}
+          // 后台（页面 hidden）时下面的 2 秒兜底扫描会被浏览器节流到分钟级：
+          // 恢复可见时立刻补扫一次并回传，避免 hidden 期间积压的确认卡 / 中断提示延迟处理
+          try {
+            document.addEventListener('visibilitychange', function () {
+              if (document.visibilityState !== 'visible') return;
+              if (pending) { clearTimeout(pending); pending = 0; }
+              scan();
+              flush();
             });
           } catch (e) {}
           setInterval(scan, 2000);

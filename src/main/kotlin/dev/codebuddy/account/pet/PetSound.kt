@@ -2,7 +2,10 @@ package dev.codebuddy.account.pet
 
 import com.intellij.openapi.diagnostic.logger
 import java.io.BufferedInputStream
-import java.util.concurrent.Executors
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.ThreadFactory
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 import javax.sound.sampled.AudioInputStream
 import javax.sound.sampled.AudioSystem
 import javax.sound.sampled.LineEvent
@@ -17,9 +20,14 @@ object PetSound {
 
     private val log = logger<PetSound>()
 
-    private val executor = Executors.newSingleThreadExecutor { r ->
-        Thread(r, "codebuddy-pet-sound").apply { isDaemon = true }
-    }
+    /**
+     * 音效专用单线程：音频解码与播放会阻塞，不能借平台 IO 池。
+     * 空闲 30 秒回收线程（allowCoreThreadTimeOut），避免一条线程从启动挂到退出。
+     */
+    private val executor = ThreadPoolExecutor(
+        1, 1, 30L, TimeUnit.SECONDS, LinkedBlockingQueue(),
+        ThreadFactory { r -> Thread(r, "codebuddy-pet-sound").apply { isDaemon = true } },
+    ).apply { allowCoreThreadTimeOut(true) }
 
     fun playClick() {
         if (!PetSettings.getInstance().clickSoundEnabled) return

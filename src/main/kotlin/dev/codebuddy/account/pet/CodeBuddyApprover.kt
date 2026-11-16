@@ -109,6 +109,8 @@ object CodeBuddyApprover {
               if (ok.test(t)) { hit = el; break; }
             }
             if (!hit) return 'NO_BUTTON';
+            // 与常驻脚本同一套防重标记：补刀点过的按钮，常驻扫描不会再点第二次
+            hit.setAttribute('data-cb-pet-auto', '1');
             hit.click();
             return 'CLICKED';
           } catch (e) {

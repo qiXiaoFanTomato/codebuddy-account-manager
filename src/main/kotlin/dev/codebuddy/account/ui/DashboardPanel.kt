@@ -623,7 +623,7 @@ class DashboardPanel(
     private fun heroStrip(saved: List<CredentialSnapshot>, quotas: Map<String, QuotaSummary>): JComponent {
         val usage = UsageTodayTracker.state()
         val history = HistoryActivity.state()
-        val today = LocalDate.now()
+        val today = dev.codebuddy.account.service.DayProvider.today()
         val todayConversations = history.conversations.filter { sameDay(it.lastMessageAt, today) }
         val conversationAccounts = todayConversations.map { it.sourceUid }.distinct().size
 
@@ -1036,6 +1036,8 @@ class DashboardPanel(
         val pet = PetSettings.getInstance()
         return listOf(
             switchRow("权限提醒", pet.cbApproveNoticeEnabled) { pet.cbApproveNoticeEnabled = it },
+            // 扣费卡永不代点，这里只决定要不要提示；受上面「权限提醒」总开关约束
+            switchRow("扣费提示", pet.cbCreditNoticeEnabled) { pet.cbCreditNoticeEnabled = it },
             switchRow("进度提醒", pet.cbProgressNoticeEnabled) { pet.cbProgressNoticeEnabled = it },
             approvalSummaryRow(pet),
             switchRow("中断自动继续", pet.cbAutoContinueEnabled) { pet.cbAutoContinueEnabled = it },
@@ -1057,7 +1059,7 @@ class DashboardPanel(
             CbApprovalMode.PAGE ->
                 "确认处理：页面代点 · 普通${pet.cbApprovalNormal.label} · 危险${pet.cbApprovalDanger.label}"
             CbApprovalMode.HOOK ->
-                "确认处理：桌宠弹窗 · 普通${pet.cbApprovalNormal.label} · 危险永远人工"
+                "确认处理：桌宠弹窗 · 普通${pet.cbApprovalNormal.label} · 危险${pet.cbApprovalDanger.label}"
         }
         return JLabel(text).apply {
             font = baseLabelFont().deriveFont(Font.PLAIN, AccountUiType.label)

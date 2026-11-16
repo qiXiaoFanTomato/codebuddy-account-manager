@@ -164,6 +164,22 @@ object PetAnimationLibrary {
     /** 额度减少时的反应动作（同样洗牌轮转，避免每次都同一个表情） */
     fun quotaDownReactionId(): String? = nextFromBag("quotaDown", QUOTA_DOWN_ACTIONS)
 
+    /** 讲代码规范 / 码字强调的动作：写代码 / 轻快记录 / 敲击桌面 */
+    private val CODE_TIP_ACTIONS = listOf("act16", "act15", "act03")
+
+    /** 注意事项（敲警钟）的动作：打瞌睡被惊醒 / 被吓一跳 / 尾巴拍地 */
+    private val CODE_WARN_ACTIONS = listOf("act12", "act08", "act11")
+
+    /** 停下来想一想的动作：深度思考碎碎念 / 照镜子 / 悠闲哼歌 */
+    private val CODE_THINK_ACTIONS = listOf("act80", "act13", "act01")
+
+    /** 代码规范 / 注意事项台词的三类配套动作（同组洗牌轮转，避免连续重复同一段） */
+    fun codeTipActionId(): String? = nextFromBag("codeTip", CODE_TIP_ACTIONS)
+
+    fun codeWarnActionId(): String? = nextFromBag("codeWarn", CODE_WARN_ACTIONS)
+
+    fun codeThinkActionId(): String? = nextFromBag("codeThink", CODE_THINK_ACTIONS)
+
     /** 笑话内容里的关键词 → 动作分类；在线英文笑话与内置中文笑话都能命中 */
     private val JOKE_CATEGORY_KEYWORDS = listOf(
         "吃什么" to listOf(

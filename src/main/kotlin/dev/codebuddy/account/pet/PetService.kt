@@ -566,29 +566,52 @@ class PetService : Disposable {
     /**
      * hook 线程调用（不是 EDT）：阻塞等主人裁决。
      *
-     * 所有返回 [ApprovalDecision.PASSTHROUGH] 的分支都是「不干预」：
-     * 功能关闭 / 危险命令 / 桌宠不在 / 主人没点。
+     * 返回 [ApprovalDecision.PASSTHROUGH] 的分支都是「不干预」：
+     * 通道未启用 / 敏感调用（凭证、扣费、对外分发、摘要截断）/ 桌宠不在 / 主人没点。
+     *
+     * 危险命令不再硬性人工：由 `cbApprovalDanger` 决定——
+     * 「自动放行」直接代办，「问，超时没人管就放行」等气泡超时后代办，
+     * 两者都由桌宠 WARN 提示留痕；敏感调用不受该策略影响。
      */
     private fun decideHookApproval(request: HookApprovalRequest): ApprovalDecision {
         val settings = PetSettings.getInstance()
         if (settings.cbApprovalMode != CbApprovalMode.HOOK) return ApprovalDecision.PASSTHROUGH
         val w = window ?: return ApprovalDecision.PASSTHROUGH
-        // 危险 / 敏感调用照常弹气泡，但只有主人手动点「同意执行」才放行，普通命令的直接放行策略对它不生效
-        val manualOnly = HookApprovalRules.requiresManualConfirm(request)
-        if (!manualOnly && settings.cbApprovalNormal == CbNormalPolicy.ALLOW) {
-            // 默认放行同样是代点：桌宠提示 + 计入今日代点次数，主人要能感觉到它又替自己点了
-            CbEventCenter.onHookAutoApproval(request.toolName, request.detail)
-            return ApprovalDecision.ALLOW
+        // 敏感类（凭证 / 扣费 / 对外分发 / 摘要截断）永远人工，连策略都不看
+        val manualOnly = HookApprovalRules.isSensitive(request)
+        val destructive = !manualOnly && HookApprovalRules.isDestructive(request)
+        if (!manualOnly) {
+            if (destructive && settings.cbApprovalDanger == CbDangerPolicy.AUTO) {
+                // 危险命令代放：WARN 提示 + 计入今日代点，主人必须能察觉
+                CbEventCenter.onHookAutoApproval(request.toolName, request.detail, danger = true)
+                return ApprovalDecision.ALLOW
+            }
+            if (!destructive && settings.cbApprovalNormal == CbNormalPolicy.ALLOW) {
+                // 默认放行同样是代点：桌宠提示 + 计入今日代点次数，主人要能感觉到它又替自己点了
+                CbEventCenter.onHookAutoApproval(request.toolName, request.detail)
+                return ApprovalDecision.ALLOW
+            }
         }
+        // 危险命令「问，超时没人管就放行」：气泡超时视为同意；敏感类永远不适用
+        val dangerTimeoutAllow =
+            destructive && settings.cbApprovalDanger == CbDangerPolicy.ASK_THEN_ALLOW
         val answer = approvalBubble().ask(
             request,
             { w.characterBounds() },
             settings.cbApprovalTimeoutSeconds * 1_000,
-            manualOnly,
+            // 视觉强调只给「一直人工」的敏感类；危险但策略为 ASK 时仍按朱红卡展示，
+            // 所以这里把危险也算进 risky，避免主人以为危险卡是普通确认
+            manualOnly || destructive,
+            dangerTimeoutAllow,
         )
         return when (answer) {
             "allow" -> ApprovalDecision.ALLOW
             "deny" -> ApprovalDecision.DENY
+            APPROVAL_ANSWER_TIMEOUT -> {
+                // 超时代办同样按危险级留痕
+                CbEventCenter.onHookAutoApproval(request.toolName, request.detail, danger = true)
+                ApprovalDecision.ALLOW
+            }
             else -> ApprovalDecision.PASSTHROUGH
         }
     }

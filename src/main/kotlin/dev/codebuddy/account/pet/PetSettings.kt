@@ -56,6 +56,12 @@ class PetSettings : PersistentStateComponent<PetSettings.State> {
         var noticePetEnabled: Boolean = true,
         /** CodeBuddy 需要主人确认操作时提示（读 CodeBuddy 运行日志） */
         var cbApproveNoticeEnabled: Boolean = true,
+        /**
+         * 扣费确认（积分 / 金额 / 余额）也提示「在等主人点头」。
+         *
+         * 这类卡在页面代点里一律不代点（防扣费），只决定要不要提示。
+         */
+        var cbCreditNoticeEnabled: Boolean = true,
         /** CodeBuddy 一轮结束 / 没跑顺时提示 */
         var cbProgressNoticeEnabled: Boolean = true,
         /** 已废弃，仅用于迁移到 [cbApprovalNormal]；新代码不要再读 */
@@ -88,7 +94,7 @@ class PetSettings : PersistentStateComponent<PetSettings.State> {
         var cbApprovalMode: String = CbApprovalMode.NONE.name,
         /** 普通命令策略（[CbNormalPolicy] 名称） */
         var cbApprovalNormal: String = CbNormalPolicy.ASK.name,
-        /** 危险命令策略（[CbDangerPolicy] 名称）；桌宠弹窗模式下恒为 ASK */
+        /** 危险命令策略（[CbDangerPolicy] 名称），两个通道共用 */
         var cbApprovalDanger: String = CbDangerPolicy.ASK.name,
         /** 桌宠弹窗等待秒数（仅桌宠弹窗模式使用） */
         var cbApprovalTimeoutSeconds: Int = 45,
@@ -138,10 +144,8 @@ class PetSettings : PersistentStateComponent<PetSettings.State> {
             myState.cbAutoApproveEnabled -> CbNormalPolicy.ASK_THEN_ALLOW.name
             else -> CbNormalPolicy.ASK.name
         }
-        // 桌宠弹窗模式不提供「危险自动放行」，迁移时直接收敛到永远人工
-        myState.cbApprovalDanger = if (
-            myState.cbApprovalMode != CbApprovalMode.HOOK.name && myState.cbNoDisturbDangerEnabled
-        ) {
+        // 危险策略两个通道都可选，迁移时照搬旧开关；旧开关没开的仍收敛到永远人工
+        myState.cbApprovalDanger = if (myState.cbNoDisturbDangerEnabled) {
             CbDangerPolicy.AUTO.name
         } else {
             CbDangerPolicy.ASK.name
@@ -258,6 +262,13 @@ class PetSettings : PersistentStateComponent<PetSettings.State> {
             myState.cbApproveNoticeEnabled = value
         }
 
+    /** 扣费确认（积分 / 金额 / 余额）是否也提示；这类卡永远不代点 */
+    var cbCreditNoticeEnabled: Boolean
+        get() = myState.cbCreditNoticeEnabled
+        set(value) {
+            myState.cbCreditNoticeEnabled = value
+        }
+
     /** CodeBuddy 轮次结束 / 异常时是否提示 */
     var cbProgressNoticeEnabled: Boolean
         get() = myState.cbProgressNoticeEnabled
@@ -292,17 +303,14 @@ class PetSettings : PersistentStateComponent<PetSettings.State> {
         }
 
     /**
-     * 危险命令策略。
+     * 危险命令策略：一直等人工 / 超时放行 / 自动放行，两个通道共用。
      *
-     * 桌宠弹窗模式下恒为「永远人工」：hook 超时只会交回宿主原生确认框，
-     * 不存在自动执行的路径，所以不给选项。
+     * 曾经在桌宠弹窗模式下强制 [CbDangerPolicy.ASK]，理由是 hook 超时只会交回原生确认框；
+     * 现在放开由主人自己选：选超时放行或自动放行时由桌宠代办并显式提示，
+     * 凭证 / 扣费 / 对外分发类调用仍然永远人工（见 [HookApprovalRules.isSensitive]）。
      */
     var cbApprovalDanger: CbDangerPolicy
-        get() = if (cbApprovalMode == CbApprovalMode.HOOK) {
-            CbDangerPolicy.ASK
-        } else {
-            CbDangerPolicy.of(myState.cbApprovalDanger)
-        }
+        get() = CbDangerPolicy.of(myState.cbApprovalDanger)
         set(value) {
             myState.cbApprovalDanger = value.name
         }
@@ -400,10 +408,17 @@ enum class CbNormalPolicy(val label: String) {
     }
 }
 
-/** 危险命令策略；桌宠弹窗模式下固定为 [ASK]，没有自动放行的路径 */
+/**
+ * 危险命令策略，两个通道共用。
+ *
+ * 三档语义与 [CbNormalPolicy] 对齐：[ASK] 一直等主人点，[ASK_THEN_ALLOW] 等超时就放行，
+ * [AUTO] 直接放行。[AUTO] / [ASK_THEN_ALLOW] 只放开「破坏性 / 提权」一类；
+ * 凭证、扣费、对外分发不在此列，永远人工。
+ */
 enum class CbDangerPolicy(val label: String) {
-    ASK("永远人工"),
-    AUTO("允许自动放行"),
+    ASK("问，一直等待主人确认"),
+    ASK_THEN_ALLOW("问，超时没人管就放行"),
+    AUTO("自动放行（含危险命令）"),
     ;
 
     companion object {

@@ -5,7 +5,7 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManager
 import com.intellij.util.ui.JBUI
 import dev.codebuddy.account.service.AccountLibrary
-import dev.codebuddy.account.pet.PetWhisper.TapMotion
+import dev.codebuddy.account.pet.PetWhisper.Motion
 import dev.codebuddy.account.ui.AccountUiColors
 import dev.codebuddy.account.ui.HistoryDialog
 import dev.codebuddy.account.usage.UsageTodayTracker
@@ -313,13 +313,7 @@ class PetWindow(
         // 系统提示展示期间让路，避免提示气泡被覆盖后又被提示收尾关掉
         if (noticeActive) return
         val reaction = PetWhisper.quotaTapLine(canvas.data, UsageTodayTracker.state())
-        when (reaction.motion) {
-            TapMotion.CHEER -> animator.playNotice(PetNotifier.Level.SUCCESS)
-            TapMotion.WHISPER -> if (!animator.playWhisper()) animator.onClick()
-            TapMotion.GUILTY -> animator.playQuotaDownReaction()
-            TapMotion.RANDOM -> if (!animator.playRandomAction()) animator.onClick()
-            TapMotion.BALANCE -> animator.replayBalance(canvas.data.balanceTier)
-        }
+        playReaction(reaction.motion)
         speech.show(reaction.text, characterBounds(), reaction.meme)
         // 统计文案依赖今日消耗缓存：补一次拉取（缓存有效或正在加载时不会重复请求）
         UsageTodayTracker.ensureFresh()
@@ -338,14 +332,26 @@ class PetWindow(
         return animator.playRandomAction()
     }
 
-    /** 说一句话：播碎碎念动画 + 上方冒气泡（含配图）；返回是否真的说了 */
+    /** 说一句话：按台词配置的动作演一段 + 上方冒气泡（含配图）；返回是否真的说了 */
     fun whisper(line: PetWhisper.Line): Boolean {
         if (line.text.isBlank()) return false
         // 提示或讲笑话期间不插话，避免两个气泡叠在一起
         if (noticeActive || jokeActive) return false
-        animator.playWhisper()
+        playReaction(line.motion)
         speech.show(line.text, characterBounds(), line.meme)
         return true
+    }
+
+    /**
+     * 台词配套动作：余额档位类需要当前档位，走 [PetAnimator.replayBalance]；
+     * 其余交给 [PetAnimator.playMotion]，都播不出来就退回单击反馈，保证「说话」总有反应。
+     */
+    private fun playReaction(motion: Motion) {
+        if (motion == Motion.BALANCE) {
+            animator.replayBalance(canvas.data.balanceTier)
+            return
+        }
+        if (!animator.playMotion(motion)) animator.onClick()
     }
 
     /** 提示是否正在由桌宠承载（碎碎念 / 随机动作据此让路） */

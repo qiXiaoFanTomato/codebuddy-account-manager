@@ -28,9 +28,13 @@ import javax.swing.JWindow
 import javax.swing.SwingUtilities
 import javax.swing.Timer
 
+/** 气泡超时无人裁决的返回标记：只有调用方允许「超时放行」时才会出现 */
+internal const val APPROVAL_ANSWER_TIMEOUT = "timeout"
+
 /**
  * 桌宠确认气泡：CodeBuddy 通过 hook 把「要不要执行」抛过来时，在角色上方弹一张卡片，
- * 主人点「允许 / 拒绝」即完成裁决；超时自动收起，把决定权交回 CodeBuddy 原生确认框。
+ * 主人点「允许 / 拒绝」即完成裁决；超时自动收起，默认把决定权交回 CodeBuddy 原生确认框
+ * （危险命令选「问，超时没人管就放行」时改为超时按同意处理）。
  *
  * 与 [PetSpeechBubble] 的区别：这里必须能接收点击，所以窗口可获焦、置顶、不自动消失
  * （只在倒计时结束时收起），并且**同一时刻只处理一个请求**。
@@ -77,6 +81,9 @@ class PetApprovalBubble {
     /** 当前这张气泡是不是危险操作确认 */
     private var riskyMode = false
 
+    /** 超时无人裁决时是否按「同意执行」处理（危险命令「问，超时没人管就放行」） */
+    private var autoAllowOnTimeout = false
+
     /** 只允许一张气泡存在：串行化所有裁决请求 */
     private val lock = Any()
 
@@ -112,14 +119,18 @@ class PetApprovalBubble {
     /**
      * 阻塞等待裁决。调用方是 hook 服务线程，不能是 EDT。
      *
-     * @param risky 危险 / 敏感调用：样式加重，且**永远不会自动放行**，只能由主人点按钮
-     * @return "allow" / "deny"；超时或异常返回 null（调用方应转为 passthrough）
+     * @param risky 危险 / 敏感调用：样式加重
+     * @param timeoutAllows 超时无人裁决时是否算「同意执行」；只能给危险策略「问，超时没人管就放行」用，
+     *        敏感类（凭证 / 扣费 / 对外分发）永远传 false
+     * @return "allow" / "deny"；超时返回 [APPROVAL_ANSWER_TIMEOUT]（仅 [timeoutAllows] 时），
+     *         其余无裁决（含异常、气泡没弹出来）返回 null，调用方应转为 passthrough
      */
     fun ask(
         request: HookApprovalRequest,
         anchor: () -> Rectangle?,
         timeoutMs: Int,
         risky: Boolean = false,
+        timeoutAllows: Boolean = false,
     ): String? =
         synchronized(lock) {
             val waitMs = timeoutMs.coerceAtLeast(MIN_TIMEOUT_MS)
@@ -133,14 +144,16 @@ class PetApprovalBubble {
                 }
             }
             try {
-                SwingUtilities.invokeAndWait { present(request, anchor(), waitMs, risky, finish) }
+                SwingUtilities.invokeAndWait {
+                    present(request, anchor(), waitMs, risky, timeoutAllows, finish)
+                }
             } catch (_: Exception) {
                 return null
             }
-            latch.await(waitMs + 1_000L, TimeUnit.MILLISECONDS)
+            val settledInTime = latch.await(waitMs + 1_000L, TimeUnit.MILLISECONDS)
             // 兜底：无论正常点击还是超时，都让气泡收起
             SwingUtilities.invokeLater { hide() }
-            answer.get()
+            answer.get() ?: if (timeoutAllows && settledInTime) APPROVAL_ANSWER_TIMEOUT else null
         }
 
     private fun present(
@@ -148,10 +161,12 @@ class PetApprovalBubble {
         anchor: Rectangle?,
         timeoutMs: Int,
         risky: Boolean,
+        timeoutAllows: Boolean,
         finish: (String?) -> Unit,
     ) {
         countdownTimer?.stop()
         riskyMode = risky
+        autoAllowOnTimeout = timeoutAllows
         panel.warning = risky
 
         chipLabel.text = if (risky) "CodeBuddy · 危险操作" else "CodeBuddy · 请求确认"
@@ -216,10 +231,10 @@ class PetApprovalBubble {
 
     private fun updateHint() {
         val seconds = ((remainingMs + 999) / 1000).coerceAtLeast(0)
-        hintLabel.text = if (riskyMode) {
-            "${seconds} 秒后交回 CodeBuddy 原生确认（不会自动执行）"
-        } else {
-            "${seconds} 秒后自动收起，交回 CodeBuddy 原生确认"
+        hintLabel.text = when {
+            autoAllowOnTimeout -> "${seconds} 秒后没人管就自动同意执行（记一次代点）"
+            riskyMode -> "${seconds} 秒后交回 CodeBuddy 原生确认（不会自动执行）"
+            else -> "${seconds} 秒后自动收起，交回 CodeBuddy 原生确认"
         }
     }
 

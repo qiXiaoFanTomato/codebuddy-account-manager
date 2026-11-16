@@ -46,11 +46,6 @@ import javax.swing.ScrollPaneConstants
 import javax.swing.SwingConstants
 import javax.swing.SwingUtilities
 
-/** 复刻页面的绿色主色（按钮描边 / 文字） */
-private val PLAN_GREEN: Color = Color(0x3F9E5F)
-private val PLAN_GREEN_SOFT: Color = Color(0xEAF6EE)
-private val PLAN_CARD_BORDER: Color = Color(0xE5E8EA)
-
 /**
  * 成长计划窗口：1:1 复刻 WorkDaddy 成长中心「成长计划」页。
  *
@@ -271,7 +266,8 @@ class GrowthCenterDialog(private val project: Project?) : DialogWrapper(project,
     private fun petBrief(): String = try {
         val pet = PetSettings.getInstance()
         when (pet.cbApprovalMode) {
-            CbApprovalMode.HOOK -> "确认处理：桌宠弹窗（危险命令只能人工点）"
+            CbApprovalMode.HOOK ->
+                "确认处理：桌宠弹窗 · 普通${pet.cbApprovalNormal.label} · 危险${pet.cbApprovalDanger.label}"
             CbApprovalMode.PAGE ->
                 "确认处理：页面代点 · 普通${pet.cbApprovalNormal.label} · 危险${pet.cbApprovalDanger.label}"
             CbApprovalMode.NONE -> "确认处理：不干预，需要主人手动点「允许」（可在桌宠设置里开启）"
@@ -895,7 +891,7 @@ class GrowthCenterDialog(private val project: Project?) : DialogWrapper(project,
                 )
                 g2.color = AccountUiColors.cardBg
                 g2.fill(shape)
-                g2.color = PLAN_CARD_BORDER
+                g2.color = AccountUiColors.chartBorder
                 g2.draw(shape)
             } finally {
                 g2.dispose()
@@ -920,11 +916,11 @@ class GrowthCenterDialog(private val project: Project?) : DialogWrapper(project,
             val g2 = g.create() as Graphics2D
             try {
                 g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-                g2.color = Color(0xEEF0F1)
+                g2.color = AccountUiColors.chipBg
                 g2.fill(Jelly.round(0f, 0f, width.toFloat(), height.toFloat(), height / 2f))
                 val filled = (width * percent.coerceIn(0.0, 100.0) / 100.0).toFloat()
                 if (filled > 0f) {
-                    g2.color = PLAN_GREEN
+                    g2.color = AccountUiColors.planGreen
                     g2.fill(Jelly.round(0f, 0f, filled, height.toFloat(), height / 2f))
                 }
             } finally {
@@ -994,13 +990,13 @@ class GrowthCenterDialog(private val project: Project?) : DialogWrapper(project,
             try {
                 g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
                 val shape = Jelly.round(0.5f, 0.5f, (width - 1).toFloat(), (height - 1).toFloat(), JBUI.scale(6).toFloat())
-                g2.color = if (hovering) PLAN_GREEN_SOFT else AccountUiColors.cardBg
+                g2.color = if (hovering) AccountUiColors.planGreenSoft else AccountUiColors.cardBg
                 g2.fill(shape)
-                g2.color = PLAN_GREEN
+                g2.color = AccountUiColors.planGreen
                 g2.stroke = BasicStroke(1f)
                 g2.draw(shape)
                 g2.font = font
-                g2.color = PLAN_GREEN
+                g2.color = AccountUiColors.planGreen
                 val fm = g2.fontMetrics
                 g2.drawString(label, (width - fm.stringWidth(label)) / 2, (height - fm.height) / 2 + fm.ascent)
             } finally {

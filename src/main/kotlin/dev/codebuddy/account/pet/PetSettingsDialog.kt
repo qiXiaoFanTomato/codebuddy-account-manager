@@ -231,21 +231,41 @@ class PetSettingsDialog(private val onChange: () -> Unit) : DialogWrapper(true) 
     /**
      * 按处理方式联动：只有当前通道真正用得到的项才可编辑。
      *
-     * 桌宠弹窗通道没有「危险命令自动放行」这条路径，所以危险策略锁定为「永远人工」；
+     * 危险策略两个通道都可选（三档：一直等人工 / 超时放行 / 自动放行）；
      * 「不干预」时三个策略项全部置灰，避免主人以为它们在生效。
      */
     private fun refreshApprovalState() {
         val mode = approvalModeCombo.selectedItem as? CbApprovalMode ?: CbApprovalMode.NONE
+        val danger = approvalDangerCombo.selectedItem as? CbDangerPolicy ?: CbDangerPolicy.ASK
         approvalNormalCombo.isEnabled = mode != CbApprovalMode.NONE
-        approvalDangerCombo.isEnabled = mode == CbApprovalMode.PAGE
-        if (!approvalDangerCombo.isEnabled) approvalDangerCombo.selectedItem = CbDangerPolicy.ASK
+        // 危险策略两个通道都可选：以前 hook 模式禁用并强制归 ASK，等于连选项都没有
+        approvalDangerCombo.isEnabled = mode != CbApprovalMode.NONE
         hookSecondsSpinner.isEnabled = mode == CbApprovalMode.HOOK
         cbAutoApproveSpinner.isEnabled = mode == CbApprovalMode.PAGE
-        approvalHint.text = when (mode) {
+        val main = when (mode) {
             CbApprovalMode.NONE -> "只提醒，不自作决定"
             CbApprovalMode.PAGE -> "页面自动点「允许」（旧通道），桌宠 hook 不启用"
-            CbApprovalMode.HOOK -> "桌宠气泡给同意 / 取消，危险命令只能人工点"
+            CbApprovalMode.HOOK -> "桌宠气泡给同意 / 取消，危险命令按下面的策略处理"
         }
+        val active = mode != CbApprovalMode.NONE
+        val auto = danger == CbDangerPolicy.AUTO && active
+        val timeoutAllow = danger == CbDangerPolicy.ASK_THEN_ALLOW && active
+        val lines = ArrayList<String>()
+        lines.add(main)
+        if (auto) lines.add("危险命令会自动放行；凭证 / 扣费 / 对外分发仍要人工")
+        if (timeoutAllow) {
+            val wait = if (mode == CbApprovalMode.HOOK) {
+                "${(hookSecondsSpinner.value as? Number)?.toInt() ?: PetSettings.getInstance().cbApprovalTimeoutSeconds} 秒"
+            } else {
+                "${(cbAutoApproveSpinner.value as? Number)?.toInt() ?: PetSettings.getInstance().cbAutoApproveMinutes} 分钟"
+            }
+            lines.add("危险命令等 $wait 没人管就自动放行；凭证 / 扣费 / 对外分发仍要人工")
+        }
+        // hook 通道在本机宿主不执行时是空操作，选中自动放行时提示一句，避免「开了没反应」
+        if ((auto || timeoutAllow) && mode == CbApprovalMode.HOOK) {
+            lines.add("宿主不执行 hook 时此项不生效，建议改用页面代点")
+        }
+        approvalHint.text = "<html>" + lines.joinToString("<br>") + "</html>"
     }
 
     override fun getPreferredFocusedComponent(): JComponent = scaleSpinner
@@ -273,9 +293,19 @@ class PetSettingsDialog(private val onChange: () -> Unit) : DialogWrapper(true) 
             refreshApprovalState()
             apply()
         }
-        approvalDangerCombo.addActionListener { apply() }
-        hookSecondsSpinner.addChangeListener { apply() }
-        cbAutoApproveSpinner.addChangeListener { apply() }
+        approvalDangerCombo.addActionListener {
+            refreshApprovalState()
+            apply()
+        }
+        // 等待秒数 / 分钟数变化要同步刷新提示文案里的具体数值
+        hookSecondsSpinner.addChangeListener {
+            refreshApprovalState()
+            apply()
+        }
+        cbAutoApproveSpinner.addChangeListener {
+            refreshApprovalState()
+            apply()
+        }
         whisperCheck.addActionListener { apply() }
         whisperMinutesSpinner.addChangeListener { apply() }
         jokeCheck.addActionListener { apply() }

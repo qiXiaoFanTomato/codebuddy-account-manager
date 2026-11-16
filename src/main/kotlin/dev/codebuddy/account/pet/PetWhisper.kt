@@ -14,52 +14,132 @@ import kotlin.math.roundToInt
  * 配图取原项目 `assets/memes` 的 27 张表情包（编号 m01–m27，见 [MemeNames]）。
  *
  * 双击积分读数的彩蛋单独走轻松活泼口径：统计 / 鼓励 / 调侃随机切换，见 [quotaTapLine]。
+ *
+ * ## 新增台词的规范（照着做，别省）
+ *
+ * 1. 每条台词必须同时给出 [Line.meme] 与 [Line.motion]：配图决定「表情」、动作决定「反应」，
+ *    缺一个就会出现「面无表情地念白」的割裂感。两者都不允许写 null。
+ * 2. [Line.meme] 只能取 `m01`–`m27`。编号写错不会抛异常，只会静默不显示配图，
+ *    所以新增前先查 [MemeNames] 里对应梗的语义，别随手编。
+ * 3. 文案控制在 24 个汉字以内、一句一个意思，不写换行与颜文字：
+ *    气泡宽度按约 300dp 设计，超长会被折成三行并盖住角色头顶。
+ * 4. 称呼固定「主人」，自称「我」；不催充值、不承诺插件做不到的事（本地没有 LLM 通道）。
+ * 5. 同池内不允许近似重复句。一轮不重复靠的是「条目足够多 + 洗牌袋」，
+ *    而不是靠随机重试，凑数句只会让主人更快看腻。
+ * 6. 只在 [SCRIPT]（闲聊）与 [CODE_TIPS]（代码规范 / 注意事项）两个池里加句，
+ *    事件类台词（额度变化、双击反馈）各自独立成池，混用会串口径。
  */
 object PetWhisper {
 
-    /** 一句台词 + 配图 id */
-    data class Line(val text: String, val meme: String?)
+    /** 一句台词 + 配图 id + 配套动作 */
+    data class Line(
+        val text: String,
+        val meme: String?,
+        val motion: Motion = Motion.WHISPER,
+    )
 
-    /** 双击反馈的配套动作，由窗口层映射到具体动画 */
-    enum class TapMotion { CHEER, WHISPER, GUILTY, RANDOM, BALANCE }
+    /**
+     * 台词配套动作，由窗口层映射到具体动画池（见 `PetAnimator.playMotion`）。
+     *
+     * [BALANCE] 依赖当前余额档位，需窗口层单独处理，不能只靠枚举本身。
+     */
+    enum class Motion {
+        /** 鼓励 / 成功：成功提示动作组 */
+        CHEER,
+
+        /** 碎碎念：`whisper` 素材池 */
+        WHISPER,
+
+        /** 心虚 / 心疼：额度减少时的反应组 */
+        GUILTY,
+
+        /** 完全随机的小动作：按分类权重抽取 */
+        RANDOM,
+
+        /** 余额档位动画：按当前档位重播 */
+        BALANCE,
+
+        /** 讲规范 / 码字强调：写代码、轻快记录、敲桌面 */
+        CODE,
+
+        /** 敲警钟的注意事项：被吓一跳、打瞌睡被惊醒、尾巴拍地 */
+        WARN,
+
+        /** 停下来想：深度思考碎碎念、照镜子、悠闲哼歌 */
+        THINK,
+    }
 
     /** 双击反馈：一句文案 + 配图 + 配套动作 */
-    data class TapLine(val text: String, val meme: String?, val motion: TapMotion)
+    data class TapLine(val text: String, val meme: String?, val motion: Motion)
 
     /** 台词里代表变化量的占位符 */
     private const val DELTA_TOKEN = "{delta}"
 
     private val SCRIPT = listOf(
-        Line("主人，额度我看过了，还够用。", "m05"),
-        Line("写代码记得先跑一遍再提交。", "m24"),
-        Line("这个报错我见过，八成是空引用。", "m12"),
-        Line("歇一会儿吧，肩膀别硬撑。", "m09"),
-        Line("刚算了一下，剩余额度掉了一点。", "m06"),
-        Line("要不要我把上次的对话翻出来？", "m04"),
-        Line("测试没过就先别急着合并。", "m15"),
-        Line("桌面有点乱，我帮你盯着。", "m11"),
-        Line("SQL 记得加 WHERE，别手滑。", "m23"),
-        Line("这段逻辑可以再拆小一点。", "m25"),
-        Line("我在这儿当值，有事敲我一下。", "m01"),
-        Line("别把 token 贴进聊天里。", "m02"),
-        Line("咖啡续一杯，代码还要跑一会儿。", "m17"),
-        Line("这个 PR 我建议单独提。", "m03"),
-        Line("深夜改代码容易出错，先提交一版吧。", "m21"),
-        Line("主人，进度推到哪了？", "m14"),
-        Line("别死磕，先跑起来再说。", "m20"),
-        Line("我没偷懒，我在盯构建。", "m13"),
-        Line("日志里那条 warn 值得看一眼。", "m10"),
-        Line("双击我，随机说点积分小八卦。", "m07"),
-        Line("拖我一下试试，我会弹回来的。", "m18"),
-        Line("主人，记得喝水。", "m08"),
-        Line("这套配色是我挑的，冷蓝灰耐看。", "m05"),
-        Line("需求先写清楚，省得返工。", "m16"),
-        Line("先复现，再谈修复。", "m27"),
-        Line("提交信息写清楚，方便以后翻。", "m24"),
-        Line("别慌，一步一步来。", "m10"),
-        Line("接口字段对齐了吗？前后端别打架。", "m11"),
-        Line("我把素材全下载好了，动起来还挺像样。", "m19"),
-        Line("今天也要顺顺利利地跑通。", "m26"),
+        Line("主人，额度我看过了，还够用。", "m05", Motion.BALANCE),
+        Line("写代码记得先跑一遍再提交。", "m24", Motion.CODE),
+        Line("这个报错我见过，八成是空引用。", "m12", Motion.WARN),
+        Line("歇一会儿吧，肩膀别硬撑。", "m09", Motion.RANDOM),
+        Line("刚算了一下，剩余额度掉了一点。", "m06", Motion.GUILTY),
+        Line("要不要我把上次的对话翻出来？", "m04", Motion.WHISPER),
+        Line("测试没过就先别急着合并。", "m15", Motion.WARN),
+        Line("桌面有点乱，我帮你盯着。", "m11", Motion.WHISPER),
+        Line("SQL 记得加 WHERE，别手滑。", "m23", Motion.WARN),
+        Line("这段逻辑可以再拆小一点。", "m25", Motion.THINK),
+        Line("我在这儿当值，有事敲我一下。", "m01", Motion.WHISPER),
+        Line("别把 token 贴进聊天里。", "m02", Motion.WARN),
+        Line("咖啡续一杯，代码还要跑一会儿。", "m17", Motion.RANDOM),
+        Line("这个 PR 我建议单独提。", "m03", Motion.CODE),
+        Line("深夜改代码容易出错，先提交一版吧。", "m21", Motion.WARN),
+        Line("主人，进度推到哪了？", "m14", Motion.WHISPER),
+        Line("别死磕，先跑起来再说。", "m20", Motion.CODE),
+        Line("我没偷懒，我在盯构建。", "m13", Motion.GUILTY),
+        Line("日志里那条 warn 值得看一眼。", "m10", Motion.THINK),
+        Line("双击我，随机说点积分小八卦。", "m07", Motion.CHEER),
+        Line("拖我一下试试，我会弹回来的。", "m18", Motion.RANDOM),
+        Line("主人，记得喝水。", "m08", Motion.RANDOM),
+        Line("这套配色是我挑的，冷蓝灰耐看。", "m05", Motion.CHEER),
+        Line("需求先写清楚，省得返工。", "m16", Motion.CODE),
+        Line("先复现，再谈修复。", "m27", Motion.THINK),
+        Line("提交信息写清楚，方便以后翻。", "m24", Motion.CODE),
+        Line("别慌，一步一步来。", "m10", Motion.CHEER),
+        Line("接口字段对齐了吗？前后端别打架。", "m11", Motion.WARN),
+        Line("我把素材全下载好了，动起来还挺像样。", "m19", Motion.CHEER),
+        Line("今天也要顺顺利利地跑通。", "m26", Motion.CHEER),
+    )
+
+    /**
+     * 代码规范 / 注意事项：短、能直接照做，不说教。
+     *
+     * 与 [SCRIPT] 分开维护，方便按主题扩充；抽取概率见 [CODE_TIP_RATIO]。
+     * 动作分三档：[Motion.CODE] 码字强调、[Motion.WARN] 敲警钟、[Motion.THINK] 停下来想，
+     * 语义要与台词一致，别让「提醒别吞异常」配个跳舞动作。
+     */
+    private val CODE_TIPS = listOf(
+        Line("提交前先跑一遍测试，别让 CI 替主人发现。", "m24", Motion.CODE),
+        Line("异常别吞掉，catch 完要么处理要么往上抛。", "m20", Motion.WARN),
+        Line("UPDATE / DELETE 一定带 WHERE，手滑就是事故。", "m22", Motion.WARN),
+        Line("密钥和 token 不进仓库，.gitignore 先写。", "m02", Motion.WARN),
+        Line("变量名要能直接读出用途，a1 / tmp 这种别留。", "m12", Motion.THINK),
+        Line("提交信息写清楚为什么改，不只是改了什么。", "m24", Motion.CODE),
+        Line("日志别打手机号、身份证和完整 token。", "m02", Motion.WARN),
+        Line("先判空再取属性，空指针九成是这么来的。", "m20", Motion.WARN),
+        Line("一个函数别超过一屏，超了就拆。", "m25", Motion.THINK),
+        Line("先复现问题，再动手修，别靠猜。", "m27", Motion.THINK),
+        Line("复制粘贴出来的代码，早晚要改两遍。", "m19", Motion.CODE),
+        Line("加依赖前先问一句：标准库真做不了？", "m04", Motion.WARN),
+        Line("事务边界要短，别把网络请求塞进去。", "m06", Motion.THINK),
+        Line("接口入参必须校验，前端校验不算数。", "m08", Motion.WARN),
+        Line("接口字段前后端先对齐，别各写一套。", "m11", Motion.WARN),
+        Line("流和连接记得关，try-with-resources 不丢人。", "m16", Motion.WARN),
+        Line("时间统一存 UTC，展示的时候再转时区。", "m09", Motion.THINK),
+        Line("循环里别查库，攒一批再查。", "m06", Motion.CODE),
+        Line("配置不要硬编码，换环境就得改代码最要命。", "m18", Motion.CODE),
+        Line("本地别直连线上库改数据，动手前先备份。", "m22", Motion.WARN),
+        Line("缓存一定设过期时间，不然迟早读到脏数据。", "m17", Motion.CODE),
+        Line("改完先看一遍自己的 diff，别带进无关文件。", "m03", Motion.CODE),
+        Line("日志级别别乱用，warn 不是调试用的。", "m10", Motion.THINK),
+        Line("幂等没做，重试一次就是两笔脏数据。", "m15", Motion.WARN),
     )
 
     /**
@@ -110,40 +190,50 @@ object PetWhisper {
     fun quotaLine(deltaText: String, increase: Boolean): Line {
         val pool = if (increase) QUOTA_UP else QUOTA_DOWN
         if (pool.isEmpty()) return Line("", null)
-        val line = draw(if (increase) upBag else downBag, pool, increase)
+        val line = if (increase) {
+            draw(upBag, pool, lastUp).also { lastUp = it }
+        } else {
+            draw(downBag, pool, lastDown).also { lastDown = it }
+        }
         return Line(line.text.replace(DELTA_TOKEN, deltaText), line.meme)
     }
 
-    private fun draw(bag: ArrayDeque<Line>, pool: List<Line>, increase: Boolean): Line {
+    /**
+     * 洗牌袋抽取：一轮内不重复，换轮时首个也不与上一句相同。
+     *
+     * 比「随机 + 重试」均匀：闲聊、规范、额度三类池共用这一套，避免每池各写一份。
+     */
+    private fun <T> draw(bag: ArrayDeque<T>, pool: List<T>, last: T?): T {
         if (bag.isEmpty()) {
             val shuffled = pool.shuffled().toMutableList()
-            val last = if (increase) lastUp else lastDown
-            if (shuffled.size > 1 && shuffled[0] === last) {
+            if (shuffled.size > 1 && shuffled[0] == last) {
                 val head = shuffled[0]
                 shuffled[0] = shuffled[1]
                 shuffled[1] = head
             }
             bag.addAll(shuffled)
         }
-        val line = bag.removeFirst()
-        if (increase) lastUp = line else lastDown = line
-        return line
+        return bag.removeFirst()
     }
 
-    private var lastIndex = -1
+    /** 「让我说句话」命中代码规范 / 注意事项池的概率，其余走闲聊池 */
+    private const val CODE_TIP_RATIO = 0.45
 
-    /** 随机取一句（连续两次不会重复），配图随台词固定映射 */
+    private val scriptBag = ArrayDeque<Line>()
+    private var lastScript: Line? = null
+    private val codeBag = ArrayDeque<Line>()
+    private var lastCode: Line? = null
+
+    /**
+     * 随机取一句（一轮内不重复）：按 [CODE_TIP_RATIO] 的概率偏到「代码规范 / 注意事项」池，
+     * 其余走闲聊池，两池各有独立洗牌袋，切换池时也不会连着撞同一句。
+     */
     fun nextLine(): Line {
-        if (SCRIPT.isEmpty()) return Line("", null)
-        if (SCRIPT.size == 1) return SCRIPT.first()
-        var index = SCRIPT.indices.random()
-        var guard = 0
-        while (index == lastIndex && guard < 5) {
-            index = SCRIPT.indices.random()
-            guard++
+        if (CODE_TIPS.isNotEmpty() && (SCRIPT.isEmpty() || Math.random() < CODE_TIP_RATIO)) {
+            return draw(codeBag, CODE_TIPS, lastCode).also { lastCode = it }
         }
-        lastIndex = index
-        return SCRIPT[index]
+        if (SCRIPT.isEmpty()) return Line("", null)
+        return draw(scriptBag, SCRIPT, lastScript).also { lastScript = it }
     }
 
     // ---------------------------------------------------------------
@@ -156,53 +246,53 @@ object PetWhisper {
     /** 占位符由 [quotaTapLine] 按真实数据替换；每条只用本风格可用的变量 */
     private val TAP_LINES: Map<TapKind, List<TapLine>> = mapOf(
         TapKind.RECENT to listOf(
-            TapLine("刚那一下花掉 {recent} 积分，主人手速挺快呀。", "m12", TapMotion.GUILTY),
-            TapLine("最近一次请求 {recent} 积分，我记在小本本上了。", "m19", TapMotion.WHISPER),
-            TapLine("上一轮 {recent} 积分，钱花得挺利落。", "m06", TapMotion.GUILTY),
-            TapLine("喏，最近这笔 {recent} 积分，账目清清楚楚。", "m24", TapMotion.WHISPER),
-            TapLine("{recent} 积分刚出门，我替它挥了挥小手。", "m17", TapMotion.RANDOM),
-            TapLine("就这一下 {recent} 积分，别慌，还扛得住。", "m05", TapMotion.GUILTY),
+            TapLine("刚那一下花掉 {recent} 积分，主人手速挺快呀。", "m12", Motion.GUILTY),
+            TapLine("最近一次请求 {recent} 积分，我记在小本本上了。", "m19", Motion.WHISPER),
+            TapLine("上一轮 {recent} 积分，钱花得挺利落。", "m06", Motion.GUILTY),
+            TapLine("喏，最近这笔 {recent} 积分，账目清清楚楚。", "m24", Motion.WHISPER),
+            TapLine("{recent} 积分刚出门，我替它挥了挥小手。", "m17", Motion.RANDOM),
+            TapLine("就这一下 {recent} 积分，别慌，还扛得住。", "m05", Motion.GUILTY),
         ),
         TapKind.EATEN to listOf(
-            TapLine("报告主人，这个周期我已经吃掉 {eaten} 积分啦。", "m09", TapMotion.GUILTY),
-            TapLine("{eaten} 积分进我肚子了？冤枉，是模型吃的！", "m17", TapMotion.RANDOM),
-            TapLine("我吃了 {eaten} 积分，摸摸肚子，还能再来一口。", "m09", TapMotion.RANDOM),
-            TapLine("本周期战绩：吃掉 {eaten} 积分，嗝～", "m08", TapMotion.GUILTY),
-            TapLine("别瞪我，{eaten} 积分里没几分是我的零食。", "m18", TapMotion.RANDOM),
-            TapLine("我承认，{eaten} 积分有一半是我看着它没的。", "m06", TapMotion.GUILTY),
+            TapLine("报告主人，这个周期我已经吃掉 {eaten} 积分啦。", "m09", Motion.GUILTY),
+            TapLine("{eaten} 积分进我肚子了？冤枉，是模型吃的！", "m17", Motion.RANDOM),
+            TapLine("我吃了 {eaten} 积分，摸摸肚子，还能再来一口。", "m09", Motion.RANDOM),
+            TapLine("本周期战绩：吃掉 {eaten} 积分，嗝～", "m08", Motion.GUILTY),
+            TapLine("别瞪我，{eaten} 积分里没几分是我的零食。", "m18", Motion.RANDOM),
+            TapLine("我承认，{eaten} 积分有一半是我看着它没的。", "m06", Motion.GUILTY),
         ),
         TapKind.TODAY to listOf(
-            TapLine("今天一共消耗 {today} 积分、{count} 次请求，账本摊开给主人看。", "m19", TapMotion.WHISPER),
-            TapLine("今日战报：{today} 积分 / {count} 次，节奏稳得很。", "m24", TapMotion.WHISPER),
-            TapLine("从零点算到现在，{count} 次请求花掉 {today} 积分。", "m05", TapMotion.WHISPER),
-            TapLine("今天 {today} 积分、{count} 次请求，主打一个高效。", "m26", TapMotion.CHEER),
-            TapLine("日报速览：{today} 积分已经飞走，共 {count} 次。", "m14", TapMotion.WHISPER),
-            TapLine("主人今天用掉 {today} 积分，跑了 {count} 次，辛苦啦。", "m08", TapMotion.CHEER),
+            TapLine("今天一共消耗 {today} 积分、{count} 次请求，账本摊开给主人看。", "m19", Motion.WHISPER),
+            TapLine("今日战报：{today} 积分 / {count} 次，节奏稳得很。", "m24", Motion.WHISPER),
+            TapLine("从零点算到现在，{count} 次请求花掉 {today} 积分。", "m05", Motion.WHISPER),
+            TapLine("今天 {today} 积分、{count} 次请求，主打一个高效。", "m26", Motion.CHEER),
+            TapLine("日报速览：{today} 积分已经飞走，共 {count} 次。", "m14", Motion.WHISPER),
+            TapLine("主人今天用掉 {today} 积分，跑了 {count} 次，辛苦啦。", "m08", Motion.CHEER),
         ),
         TapKind.BALANCE to listOf(
-            TapLine("还剩 {remain} 积分（{percent}%），稳得住，继续冲。", "m05", TapMotion.BALANCE),
-            TapLine("血条读数 {percent}%，剩 {remain} 积分，暂时不用慌。", "m14", TapMotion.BALANCE),
-            TapLine("主人还有 {remain} 积分，我替主人盯着呢。", "m01", TapMotion.BALANCE),
-            TapLine("余额 {remain} 积分、{percent}%，够再跑几轮。", "m26", TapMotion.BALANCE),
-            TapLine("这份家底：{remain} 积分（{percent}%），省着点更香。", "m06", TapMotion.BALANCE),
+            TapLine("还剩 {remain} 积分（{percent}%），稳得住，继续冲。", "m05", Motion.BALANCE),
+            TapLine("血条读数 {percent}%，剩 {remain} 积分，暂时不用慌。", "m14", Motion.BALANCE),
+            TapLine("主人还有 {remain} 积分，我替主人盯着呢。", "m01", Motion.BALANCE),
+            TapLine("余额 {remain} 积分、{percent}%，够再跑几轮。", "m26", Motion.BALANCE),
+            TapLine("这份家底：{remain} 积分（{percent}%），省着点更香。", "m06", Motion.BALANCE),
         ),
         TapKind.CHEER to listOf(
-            TapLine("你好棒！这波代码一次就跑通了。", "m05", TapMotion.CHEER),
-            TapLine("主人今天状态在线，掌声奉上。", "m26", TapMotion.CHEER),
-            TapLine("节奏拿捏得刚刚好，继续保持呀。", "m14", TapMotion.CHEER),
-            TapLine("这么稳的操作，我得记一笔表扬。", "m19", TapMotion.CHEER),
-            TapLine("主人厉害，连 bug 都绕着走。", "m03", TapMotion.CHEER),
-            TapLine("又推进了一步，真不赖。", "m24", TapMotion.CHEER),
-            TapLine("双击有奖：一句夸奖，请主人查收～", "m07", TapMotion.CHEER),
+            TapLine("你好棒！这波代码一次就跑通了。", "m05", Motion.CHEER),
+            TapLine("主人今天状态在线，掌声奉上。", "m26", Motion.CHEER),
+            TapLine("节奏拿捏得刚刚好，继续保持呀。", "m14", Motion.CHEER),
+            TapLine("这么稳的操作，我得记一笔表扬。", "m19", Motion.CHEER),
+            TapLine("主人厉害，连 bug 都绕着走。", "m03", Motion.CHEER),
+            TapLine("又推进了一步，真不赖。", "m24", Motion.CHEER),
+            TapLine("双击有奖：一句夸奖，请主人查收～", "m07", Motion.CHEER),
         ),
         TapKind.TEASE to listOf(
-            TapLine("别双击啦，积分不会自己长回来的。", "m20", TapMotion.RANDOM),
-            TapLine("再点我可要收咨询费了，收积分那种。", "m18", TapMotion.RANDOM),
-            TapLine("摸鱼被我抓到了？没事，我也在摸。", "m13", TapMotion.RANDOM),
-            TapLine("积分不是我吃的，我只是负责背锅的。", "m06", TapMotion.GUILTY),
-            TapLine("主人这双击频率，是在测我反应速度吗？", "m12", TapMotion.RANDOM),
-            TapLine("要不要来点更狠的？比如……再写个需求。", "m23", TapMotion.RANDOM),
-            TapLine("我在这儿当值，顺便替积分默哀一秒。", "m21", TapMotion.RANDOM),
+            TapLine("别双击啦，积分不会自己长回来的。", "m20", Motion.RANDOM),
+            TapLine("再点我可要收咨询费了，收积分那种。", "m18", Motion.RANDOM),
+            TapLine("摸鱼被我抓到了？没事，我也在摸。", "m13", Motion.RANDOM),
+            TapLine("积分不是我吃的，我只是负责背锅的。", "m06", Motion.GUILTY),
+            TapLine("主人这双击频率，是在测我反应速度吗？", "m12", Motion.RANDOM),
+            TapLine("要不要来点更狠的？比如……再写个需求。", "m23", Motion.RANDOM),
+            TapLine("我在这儿当值，顺便替积分默哀一秒。", "m21", Motion.RANDOM),
         ),
     )
 

@@ -117,6 +117,29 @@ class PetAnimator(private val onFrame: () -> Unit) {
         return true
     }
 
+    /**
+     * 台词配套动作：把 [PetWhisper.Motion] 映射到对应动画池，播一次后回待机。
+     *
+     * [PetWhisper.Motion.BALANCE] 依赖当前余额档位，由窗口层单独走 [replayBalance]，这里返回 false。
+     *
+     * @return false 表示没播（睡觉 / 被抓起 / 素材缺失），调用方可退回单击反馈
+     */
+    fun playMotion(motion: PetWhisper.Motion): Boolean {
+        if (isSleeping || isDragging) return false
+        val id = when (motion) {
+            PetWhisper.Motion.CHEER -> PetAnimationLibrary.noticeAnimation(PetNotifier.Level.SUCCESS)
+            PetWhisper.Motion.WHISPER -> PetAnimationLibrary.whisperIds.randomOrNull()
+            PetWhisper.Motion.GUILTY -> PetAnimationLibrary.quotaDownReactionId()
+            PetWhisper.Motion.RANDOM -> PetAnimationLibrary.randomActionId()
+            PetWhisper.Motion.CODE -> PetAnimationLibrary.codeTipActionId()
+            PetWhisper.Motion.WARN -> PetAnimationLibrary.codeWarnActionId()
+            PetWhisper.Motion.THINK -> PetAnimationLibrary.codeThinkActionId()
+            PetWhisper.Motion.BALANCE -> null
+        } ?: return false
+        play(listOf(Step(id, false), Step(PetAnimationLibrary.IDLE, true)))
+        return true
+    }
+
     /** 讲笑话抖包袱：播一段按笑话内容挑好的动作，播完回待机 */
     fun playJokePunchline(id: String): Boolean {
         if (isSleeping || isDragging) return false
@@ -290,9 +313,13 @@ class PetAnimator(private val onFrame: () -> Unit) {
     }
 
     private companion object {
-        /** 预解码线程：与动画状态机解耦，随插件进程退出 */
-        val DECODER = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
-            Thread(r, "codebuddy-pet-decode").apply { isDaemon = true }
-        }
+        /** 预解码线程：与动画状态机解耦，随插件进程退出；空闲 30 秒回收线程 */
+        val DECODER = java.util.concurrent.ThreadPoolExecutor(
+            1, 1, 30L, java.util.concurrent.TimeUnit.SECONDS,
+            java.util.concurrent.LinkedBlockingQueue(),
+            java.util.concurrent.ThreadFactory { r ->
+                Thread(r, "codebuddy-pet-decode").apply { isDaemon = true }
+            },
+        ).apply { allowCoreThreadTimeOut(true) }
     }
 }
