@@ -39,12 +39,6 @@ import javax.swing.ScrollPaneConstants
 import javax.swing.SwingConstants
 import javax.swing.SwingUtilities
 
-/** 复刻页面的绿色主色（折线 / 选中态） */
-private val STATS_GREEN: Color = Color(0x5FAF73)
-private val STATS_CARD_BORDER: Color = Color(0xE5E8EA)
-private val STATS_PLOT_BG: Color = Color(0xF7F8F8)
-private val STATS_CHIP_BG: Color = Color(0xEEF0F1)
-
 /**
  * 用量统计窗口：1:1 复刻 WorkDaddy「用量统计」页。
  *
@@ -457,7 +451,7 @@ class UsageStatsDialog(private val project: Project) : DialogWrapper(project) {
                 )
                 g2.color = AccountUiColors.cardBg
                 g2.fill(shape)
-                g2.color = STATS_CARD_BORDER
+                g2.color = AccountUiColors.chartBorder
                 g2.draw(shape)
             } finally {
                 g2.dispose()
@@ -517,7 +511,7 @@ class UsageStatsDialog(private val project: Project) : DialogWrapper(project) {
                 val ty = JBUI.scale(2) + fm.ascent
                 g2.drawString(label, tx, ty)
                 if (isSelected) {
-                    g2.color = STATS_GREEN
+                    g2.color = AccountUiColors.chartGreen
                     g2.stroke = BasicStroke(JBUI.scale(2).toFloat())
                     g2.drawLine(tx, height - JBUI.scale(3), tx + fm.stringWidth(label), height - JBUI.scale(3))
                 }
@@ -567,13 +561,13 @@ class UsageStatsDialog(private val project: Project) : DialogWrapper(project) {
                 g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
                 val shape = Jelly.round(0f, 0f, width.toFloat(), height.toFloat(), height / 2f)
                 g2.color = when {
-                    isSelected -> STATS_CHIP_BG
-                    hovering -> STATS_CHIP_BG
+                    isSelected -> AccountUiColors.chipBg
+                    hovering -> AccountUiColors.chipBg
                     else -> AccountUiColors.cardBg
                 }
                 g2.fill(shape)
                 if (isSelected) {
-                    g2.color = STATS_CARD_BORDER
+                    g2.color = AccountUiColors.chartBorder
                     g2.draw(shape)
                 }
                 g2.font = font
@@ -618,7 +612,7 @@ class UsageStatsDialog(private val project: Project) : DialogWrapper(project) {
                 )
                 g2.color = AccountUiColors.cardBg
                 g2.fill(shape)
-                g2.color = STATS_CARD_BORDER
+                g2.color = AccountUiColors.chartBorder
                 g2.draw(shape)
             } finally {
                 g2.dispose()
@@ -655,10 +649,10 @@ class UsageStatsDialog(private val project: Project) : DialogWrapper(project) {
             try {
                 g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
                 val shape = Jelly.round(0f, 0f, width.toFloat(), height.toFloat(), JBUI.scale(4).toFloat())
-                g2.color = if (isSelected) STATS_CHIP_BG else AccountUiColors.cardBg
+                g2.color = if (isSelected) AccountUiColors.chipBg else AccountUiColors.cardBg
                 g2.fill(shape)
                 if (isSelected) {
-                    g2.color = STATS_CARD_BORDER
+                    g2.color = AccountUiColors.chartBorder
                     g2.draw(shape)
                 }
                 g2.font = font
@@ -728,7 +722,7 @@ class UsageStatsDialog(private val project: Project) : DialogWrapper(project) {
             try {
                 g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
                 g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON)
-                g2.color = STATS_PLOT_BG
+                g2.color = AccountUiColors.plotBg
                 g2.fill(Jelly.round(0f, 0f, width.toFloat(), height.toFloat(), JBUI.scale(8).toFloat()))
 
                 if (points.isEmpty()) {
@@ -768,11 +762,11 @@ class UsageStatsDialog(private val project: Project) : DialogWrapper(project) {
                 area.lineTo(xAt(points.size - 1), bottom)
                 area.closePath()
                 g2.paint = GradientPaint(
-                    0f, top, Color(STATS_GREEN.red, STATS_GREEN.green, STATS_GREEN.blue, 70),
-                    0f, bottom, Color(STATS_GREEN.red, STATS_GREEN.green, STATS_GREEN.blue, 6),
+                    0f, top, Color(AccountUiColors.chartGreen.red, AccountUiColors.chartGreen.green, AccountUiColors.chartGreen.blue, 70),
+                    0f, bottom, Color(AccountUiColors.chartGreen.red, AccountUiColors.chartGreen.green, AccountUiColors.chartGreen.blue, 6),
                 )
                 g2.fill(area)
-                g2.color = STATS_GREEN
+                g2.color = AccountUiColors.chartGreen
                 g2.stroke = BasicStroke(JBUI.scale(2).toFloat(), BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND)
                 g2.draw(line)
 
@@ -788,7 +782,7 @@ class UsageStatsDialog(private val project: Project) : DialogWrapper(project) {
                     val dot = JBUI.scale(3)
                     g2.color = AccountUiColors.cardBg
                     g2.fillOval((x - dot).toInt(), (y - dot).toInt(), dot * 2, dot * 2)
-                    g2.color = STATS_GREEN
+                    g2.color = AccountUiColors.chartGreen
                     g2.stroke = BasicStroke(1.6f)
                     g2.drawOval((x - dot).toInt(), (y - dot).toInt(), dot * 2, dot * 2)
 

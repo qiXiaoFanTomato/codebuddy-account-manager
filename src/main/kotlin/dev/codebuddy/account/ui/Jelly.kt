@@ -29,8 +29,6 @@ import javax.swing.event.ChangeListener
  *
  * - [JellyMaterial.FLAT] 纯色：只填色，外层卡片、Hero、轨道一律用它。
  * - [JellyMaterial.SOFT] 柔和：纯色 + 顶部 1px 亮线，给需要与外层区分的嵌套块。
- * - [JellyMaterial.GEL] 兼容别名，行为等同 [JellyMaterial.FLAT]。
- *   旧调用点尚未全部清理，保留常量避免大范围改动，P5 统一删除。
  *
  * 不再绘制体积渐变、径向柔光、底部内阴影与扫光：这些层在窄工具窗里
  * 只会让文字对比度下降，并不增加信息。
@@ -245,9 +243,6 @@ object Jelly {
  * GEL 是旧调用点的兼容别名，绘制行为等同 FLAT。
  */
 enum class JellyMaterial {
-    /** 兼容别名：等同 [FLAT]，待 P5 清理调用点后删除 */
-    GEL,
-
     /** 柔和：纯色 + 顶部 1px 亮线 */
     SOFT,
 

@@ -52,7 +52,7 @@ open class RoundedCard(
     arc: Int = AccountUiRadius.card,
     private val elevated: Boolean = false,
     private val pill: Boolean = false,
-    private val material: JellyMaterial = JellyMaterial.GEL,
+    private val material: JellyMaterial = JellyMaterial.FLAT,
 ) : JPanel() {
 
     private val arcSize = JBUI.scale(arc)
