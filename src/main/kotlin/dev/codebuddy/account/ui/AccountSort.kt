@@ -5,13 +5,23 @@ import dev.codebuddy.account.model.CredentialSnapshot
 /**
  * 账号排序与分组。
  *
- * 分组顺序：当前激活 > 域名 > 昵称
+ * 分组顺序：当前激活恒在最前，其余按所选模式排序。
+ * 枚举名与 label 必须语义一致（选项文案直接取 label 展示）。
  */
 enum class AccountSortMode(val label: String) {
-    DEFAULT("默认"),
+    /** 最近导入优先 */
+    DEFAULT("按导入时间"),
+
+    /** 域名 + 昵称 */
     BY_DOMAIN("按域名分组"),
-    BY_LAST_USED("按过期时间"),
+
+    /** Token 有效期由晚到早 */
+    BY_EXPIRES("按过期时间"),
+
+    /** 剩余额度由多到少 */
     BY_QUOTA("按剩余额度"),
+
+    /** 昵称升序 */
     BY_NAME("按昵称"),
 }
 
@@ -32,7 +42,7 @@ object AccountSorter {
             AccountSortMode.BY_DOMAIN -> rest.sortedWith(
                 compareBy({ it.domainHost }, { it.displayName })
             )
-            AccountSortMode.BY_LAST_USED -> rest.sortedByDescending { it.expiresAt }
+            AccountSortMode.BY_EXPIRES -> rest.sortedByDescending { it.expiresAt }
             AccountSortMode.BY_QUOTA -> rest.sortedByDescending { quotaRemain(it.accountKey) ?: -1.0 }
             AccountSortMode.BY_NAME -> rest.sortedBy { it.displayName }
         }

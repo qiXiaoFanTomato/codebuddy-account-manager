@@ -9,10 +9,13 @@ import java.awt.Component
 import java.awt.Dimension
 import java.awt.Font
 import java.awt.Rectangle
+import java.awt.event.MouseAdapter
+import java.awt.event.MouseEvent
 import javax.swing.JLabel
 import javax.swing.JPanel
 import javax.swing.ScrollPaneConstants
 import javax.swing.Scrollable
+import javax.swing.SwingUtilities
 
 /**
  * 卡片网格视图：自适应多列排布 [AccountGridCard]，支持关键字筛选、分页与多选。
@@ -46,6 +49,12 @@ class AccountGridView : JPanel(BorderLayout()) {
     private var activeKey: String? = null
     private var quotas: Map<String, QuotaSummary> = emptyMap()
     private var filterText: String = ""
+
+    /** 已写凭据但还没重启生效的账号：卡片显示「待重启」 */
+    var pendingRestartKey: String? = null
+
+    /** 卡片右键菜单（x, y 为卡片内坐标） */
+    var onContextMenu: ((AccountGridCard, Int, Int) -> Unit)? = null
 
     /** 勾选账号（跨页保持） */
     private val checkedKeys = linkedSetOf<String>()
@@ -134,14 +143,48 @@ class AccountGridView : JPanel(BorderLayout()) {
 
     fun selectedCards(): List<AccountGridCard> = cards.filter { it.checked }
 
-    /** 跨页勾选的账号快照 */
+    /** 跨页勾选的账号快照（按当前排序顺序） */
     fun selectedSnapshots(): List<CredentialSnapshot> = filtered.filter { it.accountKey in checkedKeys }
 
     fun checkedCount(): Int = checkedKeys.size
 
-    /** 无勾选时回退到当前激活账号，保证单账号操作可用 */
-    fun selectedCard(): AccountGridCard? =
-        selectedCards().firstOrNull() ?: cards.firstOrNull { it.isActive } ?: cards.firstOrNull()
+    /** 是否有任何勾选（工具栏动作据此决定是单条还是批量，或提示先勾选） */
+    fun hasSelection(): Boolean = checkedKeys.isNotEmpty()
+
+    /** 清空勾选（动作执行完或用户主动取消时调用） */
+    fun clearSelection() {
+        if (checkedKeys.isEmpty()) return
+        checkedKeys.clear()
+        for (card in cards) card.checked = false
+        onSelectionChanged?.invoke()
+    }
+
+    /**
+     * 当前页里第一个被勾选的卡片。
+     *
+     * 只用于「卡片上的动作」（卡片自己带 snapshot，不依赖它）；工具栏动作一律走
+     * [selectedSnapshots]，不再隐式回退到激活账号——以前那种回退会让「什么都没选就点删除」
+     * 静默作用于第一张卡。
+     */
+    fun selectedCard(): AccountGridCard? = selectedCards().firstOrNull()
+
+    /**
+     * 程序化翻转某张卡的勾选。
+     *
+     * [AccountGridCard.checked] 的 setter 只改 JCheckBox 状态，不触发 ActionListener，
+     * 所以复选框回调之外改勾选必须走这里，否则勾选集与界面会不一致。
+     */
+    fun toggleChecked(card: AccountGridCard) {
+        val key = card.snapshot.accountKey
+        if (key in checkedKeys) {
+            checkedKeys.remove(key)
+            card.checked = false
+        } else {
+            checkedKeys.add(key)
+            card.checked = true
+        }
+        onSelectionChanged?.invoke()
+    }
 
     /** 全选作用于过滤后的全部账号（跨页） */
     fun selectAll(checked: Boolean) {
@@ -159,6 +202,8 @@ class AccountGridView : JPanel(BorderLayout()) {
     // ---------------------------------------------------------------
 
     private fun render() {
+        // 重建前记住滚动位置：刷新额度 / 删除账号后仍停在用户刚才看的地方
+        val scrollBefore = scrollPane.verticalScrollBar.value
         container.removeAll()
 
         filtered = if (filterText.isBlank()) rawList else rawList.filter { it.matchesKeyword(filterText) }
@@ -173,6 +218,7 @@ class AccountGridView : JPanel(BorderLayout()) {
             AccountGridCard(
                 snapshot = snapshot,
                 isActive = snapshot.accountKey == activeKey,
+                pendingRestart = snapshot.accountKey == pendingRestartKey,
                 quota = quotas[snapshot.accountKey],
                 onCheckedChanged = { card, checked ->
                     if (checked) checkedKeys.add(card.snapshot.accountKey)
@@ -183,6 +229,24 @@ class AccountGridView : JPanel(BorderLayout()) {
             ).apply {
                 checked = snapshot.accountKey in checkedKeys
                 alignmentX = Component.LEFT_ALIGNMENT
+            }.also { card ->
+                card.addMouseListener(object : MouseAdapter() {
+                    override fun mouseClicked(e: MouseEvent) {
+                        // 双击 = 切换该账号（会走确认框，不是"一点就切"）
+                        if (e.clickCount == 2 && SwingUtilities.isLeftMouseButton(e)) {
+                            onAction?.invoke(card, GridCardAction.SWITCH)
+                        }
+                    }
+
+                    override fun mousePressed(e: MouseEvent) = showPopup(e)
+
+                    override fun mouseReleased(e: MouseEvent) = showPopup(e)
+
+                    private fun showPopup(e: MouseEvent) {
+                        if (!e.isPopupTrigger) return
+                        onContextMenu?.invoke(card, e.x, e.y)
+                    }
+                })
             }
         }
         for (card in newCards) container.add(card)
@@ -192,6 +256,11 @@ class AccountGridView : JPanel(BorderLayout()) {
 
         container.revalidate()
         container.repaint()
+        // 布局完成后再恢复：此时滚动条最大值才是新的
+        SwingUtilities.invokeLater {
+            val bar = scrollPane.verticalScrollBar
+            bar.value = scrollBefore.coerceIn(0, (bar.maximum - bar.visibleAmount).coerceAtLeast(0))
+        }
         onSelectionChanged?.invoke()
         onPageChanged?.invoke()
     }

@@ -31,6 +31,8 @@ class AccountGridCard(
     val snapshot: CredentialSnapshot,
     val isActive: Boolean,
     val quota: QuotaSummary?,
+    /** 凭据已写入、等 IDE 重启生效（卡片左上角 tab 改为「待重启」） */
+    val pendingRestart: Boolean = false,
     private val onCheckedChanged: (AccountGridCard, Boolean) -> Unit,
     private val onAction: (AccountGridCard, GridCardAction) -> Unit,
 ) : RoundedCard(
@@ -65,7 +67,12 @@ class AccountGridCard(
             AccountUiSpacing.cardPadV,
             AccountUiSpacing.cardPadH,
         )
-        tabText = if (isActive) "当前激活" else null
+        // 「待重启」优先于「当前激活」：此时凭据已写入但 CodeBuddy 还没重新加载
+        tabText = when {
+            pendingRestart -> "待重启生效"
+            isActive -> "当前激活"
+            else -> null
+        }
         if (isActive) {
             accentStroke = AccountUiColors.ink
             strokeWidth = 1.6f
@@ -351,9 +358,10 @@ class AccountGridCard(
                 onAction(this@AccountGridCard, GridCardAction.SWITCH)
             }.apply { emphasized = true }
         )
-        // 与 HTML `.acct-foot` 一致：切换之后紧跟「额度明细」文字动作
+        // 与 HTML `.acct-foot` 一致：切换之后紧跟额度动作。
+        // 文案刻意与工具栏「额度视图」区分：这里打开的是弹窗，不是切内嵌视图。
         actions.add(
-            JellyButton("额度明细", JellyButtonVariant.GHOST, null, "打开额度明细窗口") {
+            JellyButton("额度弹窗", JellyButtonVariant.GHOST, null, "打开额度明细弹窗") {
                 onAction(this@AccountGridCard, GridCardAction.DETAIL)
             }
         )

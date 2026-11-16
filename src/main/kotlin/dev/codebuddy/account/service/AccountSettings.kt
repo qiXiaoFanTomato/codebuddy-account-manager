@@ -88,6 +88,16 @@ class AccountSettings : PersistentStateComponent<AccountSettings.State> {
         var dashboardHiddenCards: MutableList<String> = mutableListOf(),
         /** 看板卡片顺序（DashboardCardId.name），缺省按枚举声明顺序 */
         var dashboardCardOrder: MutableList<String> = mutableListOf(),
+        /** 账号面板当前视图（dashboard / list / quota）：工具窗重建后恢复 */
+        var uiViewMode: String = "dashboard",
+        /** 账号排序模式（AccountSortMode.name） */
+        var uiSortMode: String = "BY_DOMAIN",
+        /** 账号每页条数 */
+        var uiPageSize: Int = 20,
+        /** 账号列表筛选关键字 */
+        var uiFilterText: String = "",
+        /** 切换账号前是否弹确认框 */
+        var confirmBeforeSwitch: Boolean = true,
     )
 
     private var myState = State()
@@ -188,8 +198,6 @@ class AccountSettings : PersistentStateComponent<AccountSettings.State> {
     val growthEnterpriseId: String get() = myState.growthEnterpriseId.trim()
     val growthAutoActionsEnabled: Boolean get() = myState.growthAutoActionsEnabled
     val modelQuotaEnabled: Boolean get() = myState.modelQuotaEnabled
-    val modelQuotaKeyword: String get() = myState.modelQuotaKeyword
-    val modelQuotaLimit: Double get() = myState.modelQuotaLimit
     val modelQuotaPeriod: dev.codebuddy.account.usage.ModelQuotaPeriod
         get() = dev.codebuddy.account.usage.ModelQuotaPeriod.of(myState.modelQuotaPeriod)
     val modelQuotaWarnPercent: Int get() = myState.modelQuotaWarnPercent
@@ -230,6 +238,39 @@ class AccountSettings : PersistentStateComponent<AccountSettings.State> {
     fun resetDashboardLayout() {
         myState.dashboardHiddenCards = mutableListOf()
         myState.dashboardCardOrder = mutableListOf()
+    }
+
+    // ---------------------------------------------------------------
+    // 账号面板视图状态（工具窗重建 / 重启 IDE 后保持原样）
+    // ---------------------------------------------------------------
+
+    val uiViewMode: String get() = myState.uiViewMode
+    fun setUiViewMode(mode: String) {
+        myState.uiViewMode = mode
+    }
+
+    val uiSortMode: dev.codebuddy.account.ui.AccountSortMode
+        get() = runCatching {
+            dev.codebuddy.account.ui.AccountSortMode.valueOf(myState.uiSortMode)
+        }.getOrDefault(dev.codebuddy.account.ui.AccountSortMode.BY_DOMAIN)
+
+    fun setUiSortMode(mode: dev.codebuddy.account.ui.AccountSortMode) {
+        myState.uiSortMode = mode.name
+    }
+
+    val uiPageSize: Int get() = myState.uiPageSize.coerceIn(10, 50)
+    fun setUiPageSize(size: Int) {
+        myState.uiPageSize = size.coerceIn(10, 50)
+    }
+
+    val uiFilterText: String get() = myState.uiFilterText
+    fun setUiFilterText(text: String) {
+        myState.uiFilterText = text
+    }
+
+    val confirmBeforeSwitch: Boolean get() = myState.confirmBeforeSwitch
+    fun setConfirmBeforeSwitch(enabled: Boolean) {
+        myState.confirmBeforeSwitch = enabled
     }
 
     companion object {

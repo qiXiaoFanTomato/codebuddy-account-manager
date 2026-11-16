@@ -8,6 +8,8 @@ import com.intellij.openapi.fileChooser.FileSaverDescriptor
 import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.options.ShowSettingsUtil
+import com.intellij.openapi.progress.ProgressIndicator
+import com.intellij.openapi.progress.Task
 import com.intellij.openapi.ui.Messages
 import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBLabel
@@ -28,6 +30,7 @@ import dev.codebuddy.account.service.AccountSettings
 import dev.codebuddy.account.service.SwitchResult
 import java.awt.*
 import java.awt.datatransfer.StringSelection
+import java.awt.event.ActionEvent
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import java.nio.file.Files
@@ -68,15 +71,35 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
     /** 底栏读数：CodeBuddy: <账号> · <额度>，额度下降时递减滚动 */
     private lateinit var readoutLabel: RollingReadoutLabel
 
+    private val settings = AccountSettings.getInstance()
+
     private val filterField = JBTextField(14)
-    private var sortMode: AccountSortMode = AccountSortMode.BY_DOMAIN
+    private var sortMode: AccountSortMode = settings.uiSortMode
     private val emptyPanel = buildEmptyPanel()
 
     /** 内嵌的额度明细视图（对应 `#view-quota`） */
     private val quotaView = QuotaView()
 
-    /** 当前中心视图：看板 / 账号卡片 / 额度明细（看板在第一位，默认落在看板） */
-    private var viewMode: String = VIEW_DASHBOARD
+    /** 当前中心视图：看板 / 账号卡片 / 额度明细（取上次离开时的视图） */
+    private var viewMode: String = settings.uiViewMode.takeIf {
+        it == VIEW_DASHBOARD || it == VIEW_LIST || it == VIEW_QUOTA
+    } ?: VIEW_DASHBOARD
+
+    /** 排序下拉（构造时按 [sortMode] 回填，避免"下拉显示默认、实际按域名"） */
+    private lateinit var sortCombo: JComboBox<AccountSortMode>
+
+    /** 正在执行的动作 id：同一动作执行期间禁用入口，防连点（切换会重复写凭据） */
+    private val inFlight = mutableSetOf<String>()
+
+    /** 工具栏动作按钮（忙碌时统一禁用） */
+    private val actionButtons = linkedMapOf<String, JellyButton>()
+
+    /** 已写入凭据、等 IDE 重启生效的 accountKey（卡片显示「待重启」）。后台任务写、EDT 读 */
+    @Volatile
+    private var pendingRestartKey: String? = null
+
+    /** 上次渲染的数据指纹：内容没变就不重建界面（消除一次动作刷新两遍） */
+    private var lastRenderStamp: String? = null
 
     private val dashboard = DashboardPanel(
         onOpenList = { setView(VIEW_LIST) },
@@ -98,17 +121,15 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
     )
 
     private lateinit var viewTabs: SegmentedTabs
-    private lateinit var refreshBtn: JellyButton
+
     private lateinit var selectAllBox: JCheckBox
     private lateinit var selectionHint: JLabel
+    private lateinit var bulkButton: JellyButton
     private lateinit var pagerPanel: JComponent
     private lateinit var pageLabel: JLabel
     private lateinit var prevPageBtn: JComponent
     private lateinit var nextPageBtn: JComponent
     private lateinit var pageSizeCombo: JComboBox<String>
-
-    /** 「批量同步全部账号历史」菜单项：执行中禁用 */
-    private var batchItem: JMenuItem? = null
 
     /** 账号视图底部的切换日志（对应 `.log-bar`） */
     private val logLines = ArrayDeque<String>()
@@ -129,6 +150,7 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
         gridView.onSelectionChanged = { syncSelectionState() }
         gridView.onPageChanged = { updatePager() }
         gridView.onAction = { card, action -> handleGridAction(card, action) }
+        gridView.onContextMenu = { card, x, y -> showCardMenu(card, x, y) }
 
         // 多项目窗口同步：任一窗口改动账号库 / 配额后，其他窗口的面板跟着刷新
         ApplicationManager.getApplication().messageBus.connect(project)
@@ -151,8 +173,26 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
                 override fun themeChanged(theme: AccentTheme) = scheduleRefresh()
             })
 
+        gridView.setPageSize(settings.uiPageSize)
+        installShortcuts()
+
         appendLog("写入凭据前会生成 secret-storage.xml.bak-<时间戳>")
         refresh()
+    }
+
+    /** 面板内快捷键：聚焦筛选（Ctrl+F）/ 清空筛选（Esc）/ 切换选中账号（Ctrl+Enter） */
+    private fun installShortcuts() {
+        fun bind(key: String, name: String, action: () -> Unit) {
+            getInputMap(WHEN_FOCUSED).put(KeyStroke.getKeyStroke(key), name)
+            actionMap.put(name, object : AbstractAction() {
+                override fun actionPerformed(e: ActionEvent?) = action()
+            })
+        }
+        bind("control F", "cb.focusFilter") { filterField.requestFocusInWindow() }
+        bind("ESCAPE", "cb.clearFilter") {
+            if (filterField.text.isNotEmpty()) filterField.text = ""
+        }
+        bind("control ENTER", "cb.switchSelected") { doSwitch() }
     }
 
     /** 外部数据变更后刷新本面板（切回 EDT，避免跨线程操作 Swing） */
@@ -273,9 +313,8 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
         row.add(toolButton("历史对话") { doOpenHistory() })
         row.add(toolButton("切换") { doSwitch() })
         row.add(toolButton("智能调度") { doSmartSwitch() })
-        refreshBtn = toolButton("刷新额度") { doRefreshQuota() }
-        row.add(refreshBtn)
-        row.add(toolButton("额度明细") { setView(VIEW_QUOTA) })
+        row.add(toolButton("刷新额度") { doRefreshQuota() })
+        row.add(toolButton("额度视图") { setView(VIEW_QUOTA) })
         row.add(toolButton("重命名") { doEditAlias() })
         row.add(toolButton("删除", danger = true) { doDelete() })
         row.add(toolButton("回滚") { doRollback() })
@@ -305,14 +344,20 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
             isFocusPainted = false
             font = font.deriveFont(Font.PLAIN, AccountUiType.label)
             foreground = AccountUiColors.textMuted
+            // 全选作用于「当前筛选结果」（跨页），不只是当前页
+            toolTipText = "全选当前筛选结果（跨页）"
             addActionListener { gridView.selectAll(isSelected) }
         }
         selectionHint = JLabel("已选中：—").apply {
             font = AccountUiType.ui(AccountUiType.label)
             foreground = AccountUiColors.textSecondary
         }
+        bulkButton = JellyButton("批量操作", JellyButtonVariant.SECONDARY, null, "对勾选的账号执行批量操作") {
+            showBulkMenu(bulkButton)
+        }.apply { isEnabled = false }
         right.add(selectAllBox)
         right.add(selectionHint)
+        right.add(bulkButton)
 
         // 左侧筛选区放 CENTER：FlowWrapLayout 需要拿到实际可用宽度才会折行
         row.add(left, BorderLayout.CENTER)
@@ -328,6 +373,7 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
         onClick: () -> Unit,
     ): JellyButton = JellyButton(text, variant, null, text, onClick).apply {
         this.danger = danger
+        actionButtons[text] = this
     }
 
     /** 筛选框：等宽小字 + 1px 铅线，对应 `.tw-input` */
@@ -358,12 +404,17 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
         val combo = JComboBox(AccountSortMode.values())
         AccountUiKit.styleCombo(combo) { (it as? AccountSortMode)?.label ?: "" }
         combo.preferredSize = Dimension(JBUI.scale(124), JBUI.scale(28))
+        // 先回填当前排序，再挂监听：否则构造期默认选中第 0 项，
+        // 会出现「下拉显示默认、实际按域名分组」的不一致
+        combo.selectedItem = sortMode
         combo.addActionListener {
-            (combo.selectedItem as? AccountSortMode)?.let {
-                sortMode = it
-                refresh()
-            }
+            val picked = combo.selectedItem as? AccountSortMode ?: return@addActionListener
+            if (picked == sortMode) return@addActionListener
+            sortMode = picked
+            settings.setUiSortMode(picked)
+            refresh()
         }
+        sortCombo = combo
         return combo
     }
 
@@ -374,7 +425,7 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
         fun item(text: String, action: () -> Unit): JMenuItem =
             JMenuItem(text).apply { addActionListener { action() } }.also { menu.add(it) }
 
-        item("切换到此账号") { doSwitch() }
+        item("切换到选中账号") { doSwitch() }
         item("智能调度") { doSmartSwitch() }
         item("重命名") { doEditAlias() }
         item("删除") { doDelete() }
@@ -382,13 +433,21 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
         item("历史对话") { doOpenHistory() }
         item("对话日报 / 周报") { doOpenReport() }
         item("历史共享到当前") { doSyncHistoryToCurrent() }
-        batchItem = item("批量同步全部账号历史") { doSyncAllAccounts() }
+        item("批量同步全部账号历史") { doSyncAllAccounts() }
         menu.addSeparator()
         item("额度明细窗口") { QuotaDetailDialog.show(project) }
         item("消耗明细") { UsageDetailDialog.show(project) }
         item("用量统计…") { UsageStatsDialog.show(project) }
         item("成长计划") { openGrowthCenter() }
+        item("操作记录…") { openOperationLog() }
         menu.addSeparator()
+        // 高频动作的护栏开关：关掉后「切换」不再弹确认框
+        menu.add(
+            JCheckBoxMenuItem("切换前确认").apply {
+                isSelected = settings.confirmBeforeSwitch
+                addActionListener { settings.setConfirmBeforeSwitch(isSelected) }
+            }
+        )
         item("界面色调…") { showThemeMenu(btn) }
         item("回滚上一次切换") { doRollback() }
         item("强制登出") { doForceLogout() }
@@ -439,7 +498,9 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
     }
 
     private fun applyFilter() {
-        gridView.setFilter(filterField.text.trim())
+        val text = filterField.text.trim()
+        settings.setUiFilterText(text)
+        gridView.setFilter(text)
     }
     private fun buildCenter(): JPanel {
         val stack = JPanel(CardLayout())
@@ -519,7 +580,11 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
         val small = AccountUiType.ui(AccountUiType.caption)
 
         pageSizeCombo = JComboBox(arrayOf("10 条/页", "20 条/页", "50 条/页")).apply {
-            selectedIndex = 1
+            selectedIndex = when (settings.uiPageSize) {
+                10 -> 0
+                50 -> 2
+                else -> 1
+            }
             AccountUiKit.styleCombo(this)
             preferredSize = Dimension(JBUI.scale(96), JBUI.scale(28))
             addActionListener {
@@ -528,6 +593,7 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
                     2 -> 50
                     else -> 20
                 }
+                settings.setUiPageSize(size)
                 gridView.setPageSize(size)
                 updatePager()
             }
@@ -560,6 +626,8 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
     private fun setView(mode: String) {
         if (viewMode == mode) return
         viewMode = mode
+        // 记住视图：工具窗关掉再打开、重启 IDE 后仍落在同一视图
+        settings.setUiViewMode(mode)
         if (::viewTabs.isInitialized) {
             viewTabs.setSelectedIndex(viewTabIndex(mode))
         }
@@ -703,9 +771,10 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
         }
     }
 
-    /** 切换日志：账号视图底部的 `.log-bar`，只保留最近几行 */
+    /** 切换日志：账号视图底部的 `.log-bar`，只保留最近几行；同一条同时落盘便于回看 */
     private fun appendLog(text: String, notice: Boolean = false) {
         logLines.addLast(text)
+        dev.codebuddy.account.service.OperationLog.log(text)
         while (logLines.size > MAX_LOG_LINES) logLines.removeFirst()
         if (!::logPanel.isInitialized) return
 
@@ -739,9 +808,17 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
         val active = library.currentActive()
         val quotaMap = library.quotaCache.loadAll()
 
+        // 数据指纹去重：同一批数据不重复重建界面。
+        // 以前「刷新额度」先自己 refresh() 再发 quotaChanged 广播，一次动作会重建两遍，
+        // 滚动位置、hover 状态全丢——指纹相同直接跳过第二次。
+        val stamp = renderStamp(saved, active, quotaMap)
+        if (stamp == lastRenderStamp) return
+        lastRenderStamp = stamp
+
         val sorted = AccountSorter.sort(saved, sortMode, active?.accountKey) { key ->
             quotaMap[key]?.usableRemainPercent
         }
+        gridView.pendingRestartKey = pendingRestartKey
         gridView.setAccounts(sorted, active?.accountKey, quotaMap)
         dashboard.update()
         // 额度明细视图重建成本高（每个账号一张卡），只在它可见时刷新
@@ -763,13 +840,39 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
             append("${saved.size} 个账号")
             val domains = saved.map { it.domainHost.ifBlank { "—" } }.distinct().size
             if (saved.isNotEmpty()) append(" · $domains 个认证域")
-            append(" · 数据已脱敏")
+            if (pendingRestartKey != null) append(" · 待重启生效")
         }
         dashboardMeta.text = "「管理卡片」进入编辑模式可排序 / 增删 · 今天 " + java.time.LocalDate.now()
 
         applyViewState()
         updatePager()
         syncSelectionState()
+    }
+
+    /** 渲染指纹：账号 / 额度 / 排序 / 视图 / 色调 / 待重启标记 任一变化才需要重建 */
+    private fun renderStamp(
+        saved: List<CredentialSnapshot>,
+        active: CredentialSnapshot?,
+        quotaMap: Map<String, QuotaSummary>,
+    ): String {
+        val accounts = saved.joinToString(";") {
+            "${it.accountKey}:${it.alias}:${it.displayName}:${it.expiresAt}"
+        }
+        val quotas = quotaMap.entries
+            .sortedBy { it.key }
+            .joinToString(";") { (key, q) ->
+                "$key:${q.fetchedAt}:${q.error}:${q.lastError}:${q.totalRemain}"
+            }
+        return listOf(
+            accounts,
+            active?.accountKey ?: "",
+            quotas,
+            sortMode.name,
+            viewMode,
+            AccountUiColors.theme.name,
+            settings.statusBarMode.name,
+            pendingRestartKey ?: "",
+        ).joinToString("|")
     }
 
     /** 分页控件只在账号视图出现；其它视图用各自的标题行 */
@@ -806,8 +909,70 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
         val total = gridView.totalCount()
         val checked = gridView.checkedCount()
         selectAllBox.isSelected = total > 0 && checked >= total
-        val name = gridView.selectedCard()?.snapshot?.displayName
-        selectionHint.text = "已选中：${name ?: "—"}"
+        val picked = gridView.selectedSnapshots()
+        selectionHint.text = when {
+            picked.isEmpty() -> "已选中：—"
+            picked.size == 1 -> "已选中：${picked[0].displayName}"
+            else -> "已选中 ${picked.size} 项"
+        }
+        if (::bulkButton.isInitialized) bulkButton.isEnabled = picked.isNotEmpty()
+    }
+
+    /** 批量操作菜单：只对勾选的账号生效，不再需要「先切到账号视图再找按钮」 */
+    private fun showBulkMenu(anchor: JComponent) {
+        val picked = gridView.selectedSnapshots()
+        val menu = JPopupMenu()
+        fun item(text: String, action: () -> Unit): JMenuItem =
+            JMenuItem(text).apply {
+                isEnabled = picked.isNotEmpty()
+                addActionListener { action() }
+            }.also { menu.add(it) }
+
+        val count = picked.size
+        item("刷新额度（$count 个）") { refreshQuotas(picked) }
+        item("导出凭据（$count 个）") { doExport() }
+        item("同步历史到当前账号") { doSyncHistoryToCurrent() }
+        menu.addSeparator()
+        item("删除（$count 个）") { doDelete() }
+        menu.addSeparator()
+        item("清空勾选") { gridView.clearSelection() }
+        menu.show(anchor, 0, anchor.height)
+    }
+
+    /**
+     * 工具栏动作的目标账号：只看勾选，不做任何隐式回退。
+     *
+     * 以前「切换 / 删除 / 刷新额度」在没有勾选时会自动作用于激活账号或第一张卡，
+     * 用户看不到到底操作了谁，属于危险默认。
+     */
+    private fun selectionTargets(actionLabel: String): List<CredentialSnapshot>? {
+        val picked = gridView.selectedSnapshots()
+        if (picked.isEmpty()) {
+            statusLabel.text = "请先在「账号」视图勾选账号，再执行「$actionLabel」"
+            return null
+        }
+        return picked
+    }
+
+    /** 动作闸门：同一动作执行期间禁止再次进入（连点会让切换重复写凭据） */
+    private fun beginAction(id: String): Boolean {
+        if (!inFlight.add(id)) {
+            statusLabel.text = "上一次操作还在进行中，请稍候…"
+            return false
+        }
+        updateBusyUi()
+        return true
+    }
+
+    private fun endAction(id: String) {
+        inFlight.remove(id)
+        updateBusyUi()
+    }
+
+    /** 忙碌时把动作按钮整体禁用，避免"点了没反应再点一次" */
+    private fun updateBusyUi() {
+        val busy = inFlight.isNotEmpty()
+        actionButtons.values.forEach { it.isEnabled = !busy }
     }
 
     /** 分页范围与翻页按钮状态 */
@@ -829,10 +994,21 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
     // ---------------------------------------------------------------
 
     private fun doImport() {
-        val count = library.importFromAuthDir()
-        refresh()
-        if (count > 0) notify("导入完成", "从 auth 目录导入/更新了 $count 个账号。")
-        else notify("没有新账号", "auth 目录下未发现新的可导入凭据。", NotificationType.INFORMATION)
+        if (!beginAction("import")) return
+        statusLabel.text = "正在扫描 auth 目录…"
+        ApplicationManager.getApplication().executeOnPooledThread {
+            // 兜住异常：否则下面的 invokeLater 不执行，动作闸门会永久锁住按钮
+            val count = runCatching { library.importFromAuthDir() }.getOrDefault(-1)
+            ApplicationManager.getApplication().invokeLater {
+                endAction("import")
+                refresh()
+                when {
+                    count < 0 -> notify("导入失败", "读取 auth 目录时出错，请查看 IDE 日志。", NotificationType.ERROR)
+                    count > 0 -> notify("导入完成", "从 auth 目录导入/更新了 $count 个账号。")
+                    else -> notify("没有新账号", "auth 目录下未发现新的可导入凭据。", NotificationType.INFORMATION)
+                }
+            }
+        }
     }
 
     private fun doOpenHistory() {
@@ -958,15 +1134,15 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
         ) == Messages.YES
         if (!ok) return
 
-        batchItem?.isEnabled = false
+        if (!beginAction("syncCurrent")) return
         statusLabel.text = "正在把历史会话同步到 ${target.displayName}…"
 
-        val copyMessages = AccountSettings.getInstance().copyMessagesOnSync
+        val copyMessages = settings.copyMessagesOnSync
         ApplicationManager.getApplication().executeOnPooledThread {
             val r = library.syncHistoryIndexes(target.uid, copyMessages = copyMessages)
             ApplicationManager.getApplication().invokeLater {
                 HistoryReader.clearCache()
-                batchItem?.isEnabled = true
+                endAction("syncCurrent")
                 refresh()
                 if (r.error != null) {
                     notify("历史同步失败", r.error, NotificationType.ERROR)
@@ -984,8 +1160,41 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
     }
 
     private fun doSwitch() {
-        val card = gridView.selectedCard() ?: return
-        switchToWithMode(card.snapshot)
+        val picked = selectionTargets("切换") ?: return
+        if (picked.size > 1) {
+            statusLabel.text = "切换一次只能针对一个账号，请只勾选一个"
+            return
+        }
+        switchToWithMode(picked[0])
+    }
+
+    /**
+     * 切换前确认：切换是全库最高影响的动作（写凭据 + 可能要重启 IDE），
+     * 以前唯一没有确认框。可在 ⋯ 菜单里关掉。
+     */
+    private fun confirmSwitch(target: CredentialSnapshot): Boolean {
+        if (!settings.confirmBeforeSwitch) return true
+        val active = library.currentActive()
+        if (active?.accountKey == target.accountKey) {
+            statusLabel.text = "「${target.displayName}」已经是当前激活账号"
+            return false
+        }
+        val hot = settings.hotSwitchEnabled && CodeBuddyBridge.isAvailable()
+        val message = buildString {
+            append("当前账号：${active?.displayName ?: "未检测到"}\n")
+            append("切换目标：${target.displayName}（${target.domainHost.ifBlank { "—" }}）\n")
+            append("生效方式：${if (hot) "热切换，无需重启 IDE" else "写入凭据后需重启 IDE 生效"}\n")
+            if (settings.autoSyncHistoryOnSwitch) append("历史会话：切换前会合并到目标账号\n")
+            append("\n确定切换？（可在「⋯ → 切换前确认」关闭此提示）")
+        }
+        return Messages.showYesNoDialog(
+            project,
+            message,
+            "切换账号",
+            "切换",
+            "取消",
+            Messages.getQuestionIcon()
+        ) == Messages.YES
     }
 
     /** 卡片底部图标操作 */
@@ -999,6 +1208,24 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
             GridCardAction.DELETE -> doDelete(card.snapshot)
             GridCardAction.GROWTH -> doGrowthOne(card.snapshot.accountKey)
         }
+    }
+
+    /** 卡片右键菜单：与卡片按钮同源，但不占卡片空间 */
+    private fun showCardMenu(card: AccountGridCard, x: Int, y: Int) {
+        val menu = JPopupMenu()
+        fun item(text: String, action: () -> Unit): JMenuItem =
+            JMenuItem(text).apply { addActionListener { action() } }.also { menu.add(it) }
+
+        item("切换到此账号") { switchToWithMode(card.snapshot) }
+        item("额度明细弹窗") { QuotaDetailDialog.show(project) }
+        item("刷新该账号额度") { refreshQuotas(listOf(card.snapshot)) }
+        menu.addSeparator()
+        item(if (card.checked) "取消勾选" else "勾选该账号") { gridView.toggleChecked(card) }
+        item("重命名") { doEditAlias(card.snapshot) }
+        item("导出凭据…") { doExportSingle(card.snapshot) }
+        menu.addSeparator()
+        item("删除") { doDelete(card.snapshot) }
+        menu.show(card, x, y)
     }
 
     /** 智能调度：先消耗快过期的额度，再看额度富余；支持热切换 */
@@ -1038,57 +1265,21 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
         ) == Messages.YES
         if (!ok) return
 
-        switchToWithMode(best.snapshot)
+        // 这里已经确认过一次，不再叠第二个确认框
+        switchToWithMode(best.snapshot, skipConfirm = true)
     }
 
-    /** 按设置决定「热切换」或「常规切换（需重启 IDE）」 */
-    private fun switchToWithMode(target: CredentialSnapshot) {
-        val settings = AccountSettings.getInstance()
-        if (!settings.hotSwitchEnabled) {
-            syncAndSwitch(target)
-            return
-        }
+    /**
+     * 按设置决定「热切换」或「常规切换（需重启 IDE）」。
+     *
+     * 历史合并 + 凭据写入都是磁盘 IO（可能到秒级），整条链放后台任务跑：
+     * 以前全在 EDT 上同步执行，界面冻结且没有进度提示，
+     * 用户只会"点了没反应"然后重复点击。
+     */
+    private fun switchToWithMode(target: CredentialSnapshot, skipConfirm: Boolean = false) {
+        if (!skipConfirm && !confirmSwitch(target)) return
 
-        syncHistoryOnly(target)
-        val r = library.hotSwitchTo(target.accountKey, project)
-        refresh()
-
-        if (r.success) {
-            notifySuccess(
-                "已热切换到 ${target.displayName}",
-                r.message
-                    ?: "CodeBuddy 已重新加载新账号，无需重启 IDE。\n若账号/额度仍显示旧值，稍等几秒或再执行一次切换。"
-            )
-        } else {
-            notify(
-                "热切换未完成",
-                "${r.message ?: "未知原因"}\n\n凭据已写入，重启 IDE 后生效。",
-                NotificationType.WARNING
-            )
-        }
-    }
-
-    /** 仅同步历史会话（热切路径使用，不再弹同步确认） */
-    private fun syncHistoryOnly(target: CredentialSnapshot) {
-        val settings = AccountSettings.getInstance()
-        if (!settings.autoSyncHistoryOnSwitch) return
-        val r = library.syncHistoryIndexes(target.uid, copyMessages = settings.copyMessagesOnSync)
-        HistoryReader.clearCache()
-        if (r.error != null) {
-            notify("历史同步失败", r.error, NotificationType.WARNING)
-        } else {
-            // 账号间会话迁移完成：桌宠反馈（原来成功时是静默的，容易被误认为没同步）
-            dev.codebuddy.account.pet.CbEventCenter.onHistoryMigrated(
-                target.displayName, r.conversationsAdded, r.conversationsCopied,
-            )
-        }
-    }
-
-    /** 切换账号（含可选的历史会话同步），供「切换」与「智能选号」复用 */
-    private fun syncAndSwitch(target: CredentialSnapshot) {
-        val settings = AccountSettings.getInstance()
-
-        // 默认同步时不再追问；关闭默认同步后仍然每次询问
+        // 「是否同步历史」的追问必须在 EDT 上先问清楚，再进后台
         val sync = settings.autoSyncHistoryOnSwitch || Messages.showYesNoDialog(
             project,
             "是否同时把其他账号的历史会话索引同步到 ${target.displayName}？\n（保证切号后侧边栏能看到全部历史对话）",
@@ -1098,28 +1289,97 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
             Messages.getQuestionIcon()
         ) == Messages.YES
 
-        var syncMsg = ""
-        if (sync) {
-            val r = library.syncHistoryIndexes(target.uid, copyMessages = settings.copyMessagesOnSync)
-            HistoryReader.clearCache()
-            syncMsg = if (r.error != null) "\n（历史索引同步失败：${r.error}）"
-            else "\n已同步历史会话：新增 ${r.conversationsAdded} 个会话，复制消息目录 ${r.conversationsCopied} 个。"
-        }
+        if (!beginAction("switch")) return
+        statusLabel.text = "正在切换到 ${target.displayName}…"
+        val hot = settings.hotSwitchEnabled && CodeBuddyBridge.isAvailable()
 
-        when (val result = library.switchTo(target.accountKey)) {
-            is SwitchResult.Success -> {
-                appendLog("已写入 secret-storage.xml")
-                appendLog("已备份 secret-storage.xml.bak-<时间戳>")
-                appendLog("已切换到 ${target.displayName}，重启 IDE 后生效", notice = true)
-                refresh()
-                notifySuccess(
-                    "切换成功",
-                    "已切换到 ${target.displayName}。$syncMsg\n\n请重启 IDE 使 CodeBuddy 插件重新加载凭据。"
-                )
+        object : Task.Backgroundable(project, "切换账号：${target.displayName}", true) {
+            private var ok = false
+            private var message = ""
+            private var historyAdded = 0
+            private var historyCopied = 0
+            private var historyError: String? = null
+
+            override fun run(indicator: ProgressIndicator) {
+                indicator.isIndeterminate = true
+                try {
+                    if (sync) {
+                        indicator.text = "正在合并历史会话…"
+                        val r = library.syncHistoryIndexes(target.uid, copyMessages = settings.copyMessagesOnSync)
+                        HistoryReader.clearCache()
+                        historyAdded = r.conversationsAdded
+                        historyCopied = r.conversationsCopied
+                        historyError = r.error
+                    }
+                    indicator.text = "正在写入凭据…"
+                    if (hot) {
+                        val r = library.hotSwitchTo(target.accountKey, project)
+                        ok = r.success
+                        message = r.message ?: ""
+                        // 热切成功 = 已生效；失败说明凭据写了但内核没重载
+                        pendingRestartKey = if (r.success) null else target.accountKey
+                    } else {
+                        // 乐观标记：switchTo 内部会广播 accountsChanged，
+                        // 先把「待重启」写进去，那次刷新就能同时把卡片标出来
+                        pendingRestartKey = target.accountKey
+                        when (val r = library.switchTo(target.accountKey)) {
+                            is SwitchResult.Success -> ok = true
+                            is SwitchResult.Failure -> {
+                                message = r.message
+                                pendingRestartKey = null
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    message = e.message ?: "未知错误"
+                    pendingRestartKey = null
+                }
             }
 
-            is SwitchResult.Failure -> notify("切换失败", result.message, NotificationType.ERROR)
-        }
+            override fun onSuccess() {
+                if (sync && historyError == null && !hot && historyAdded > 0) {
+                    // 会话迁移完成：桌宠反馈（以前成功时静默，容易被误认为没同步）
+                    dev.codebuddy.account.pet.CbEventCenter.onHistoryMigrated(
+                        target.displayName, historyAdded, historyCopied,
+                    )
+                }
+                val historyMsg = when {
+                    !sync -> ""
+                    historyError != null -> "\n（历史索引同步失败：$historyError）"
+                    else -> "\n已同步历史会话：新增 $historyAdded 个会话，复制消息目录 $historyCopied 个。"
+                }
+
+                when {
+                    hot && ok -> notifySuccess(
+                        "已热切换到 ${target.displayName}",
+                        message.ifBlank { "CodeBuddy 已重新加载新账号，无需重启 IDE。" }
+                    )
+
+                    hot -> notify(
+                        "热切换未完成",
+                        "${message.ifBlank { "未知原因" }}\n\n凭据已写入，重启 IDE 后生效。",
+                        NotificationType.WARNING
+                    )
+
+                    ok -> {
+                        appendLog("已写入 secret-storage.xml")
+                        appendLog("已备份 secret-storage.xml.bak-<时间戳>")
+                        appendLog("已切换到 ${target.displayName}，重启 IDE 后生效", notice = true)
+                        notifySuccess(
+                            "切换成功",
+                            "已切换到 ${target.displayName}。$historyMsg\n\n请重启 IDE 使 CodeBuddy 插件重新加载凭据。"
+                        )
+                    }
+
+                    else -> notify("切换失败", message.ifBlank { "未知错误" }, NotificationType.ERROR)
+                }
+            }
+
+            override fun onFinished() {
+                endAction("switch")
+                refresh()
+            }
+        }.queue()
     }
 
     /** 批量同步：把全量历史会话索引 + 缺失消息目录合并到每一个账号 */
@@ -1141,32 +1401,52 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
         if (!ok) return
 
         val copyMessages = AccountSettings.getInstance().copyMessagesOnSync
-        batchItem?.isEnabled = false
+        if (!beginAction("syncAll")) return
         statusLabel.text = "正在批量同步 ${saved.size} 个账号的历史会话…"
 
-        ApplicationManager.getApplication().executeOnPooledThread {
-            var added = 0
-            var copied = 0
-            var failed = 0
-            for (s in saved) {
-                val r = library.syncHistoryIndexes(s.uid, copyMessages = copyMessages)
-                if (r.error != null) failed++
-                else {
-                    added += r.conversationsAdded
-                    copied += r.conversationsCopied
+        object : Task.Backgroundable(project, "批量同步历史会话", true) {
+            private var added = 0
+            private var copied = 0
+            private val failed = mutableListOf<String>()
+
+            override fun run(indicator: ProgressIndicator) {
+                for ((index, s) in saved.withIndex()) {
+                    if (indicator.isCanceled) return
+                    indicator.fraction = (index + 1).toDouble() / saved.size
+                    indicator.text = "正在同步 ${s.displayName}（${index + 1}/${saved.size}）"
+                    val r = library.syncHistoryIndexes(s.uid, copyMessages = copyMessages)
+                    if (r.error != null) failed += "${s.displayName}：${r.error}"
+                    else {
+                        added += r.conversationsAdded
+                        copied += r.conversationsCopied
+                    }
                 }
             }
-            ApplicationManager.getApplication().invokeLater {
-                HistoryReader.clearCache()
-                batchItem?.isEnabled = true
-                refresh()
-                notifySuccess(
-                    "批量同步完成",
-                    "账号 ${saved.size} 个：新增会话 $added 个，复制消息目录 $copied 个，失败 $failed 个。\n" +
-                        "若侧边栏未刷新，请重启 IDE。"
-                )
+
+            override fun onSuccess() {
+                if (failed.isEmpty()) {
+                    notifySuccess(
+                        "批量同步完成",
+                        "账号 ${saved.size} 个：新增会话 $added 个，复制消息目录 $copied 个。\n" +
+                            "若侧边栏未刷新，请重启 IDE。"
+                    )
+                } else {
+                    notify(
+                        "批量同步部分失败",
+                        "成功 ${saved.size - failed.size} 个，失败 ${failed.size} 个：\n" +
+                            failed.take(8).joinToString("\n") { "· $it" } +
+                            if (failed.size > 8) "\n…另有 ${failed.size - 8} 个" else "",
+                        NotificationType.WARNING
+                    )
+                }
             }
-        }
+
+            override fun onFinished() {
+                HistoryReader.clearCache()
+                endAction("syncAll")
+                refresh()
+            }
+        }.queue()
     }
 
     private fun doRollback() {
@@ -1178,19 +1458,41 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
             project,
             "将把激活凭据恢复为上一次切换前的状态，确定继续？",
             "回滚",
+            "回滚",
+            "取消",
             Messages.getQuestionIcon()
         ) == Messages.YES
         if (!ok) return
+        if (!beginAction("rollback")) return
+        statusLabel.text = "正在回滚凭据…"
 
-        when (val r = library.rollbackLastSwitch()) {
-            is SwitchResult.Success -> {
-                appendLog("已恢复上一次切换前的凭据")
-                appendLog("已回滚，重启 IDE 后生效", notice = true)
-                refresh()
-                notify("回滚成功", "已恢复上一次切换前的凭据。请重启 IDE 生效。")
+        object : Task.Backgroundable(project, "回滚上一次切换", false) {
+            private var result: SwitchResult? = null
+
+            override fun run(indicator: ProgressIndicator) {
+                indicator.isIndeterminate = true
+                result = library.rollbackLastSwitch()
             }
-            is SwitchResult.Failure -> notify("回滚失败", r.message, NotificationType.ERROR)
-        }
+
+            override fun onSuccess() {
+                when (val r = result) {
+                    is SwitchResult.Success -> {
+                        appendLog("已恢复上一次切换前的凭据")
+                        appendLog("已回滚，重启 IDE 后生效", notice = true)
+                        pendingRestartKey = null
+                        notify("回滚成功", "已恢复上一次切换前的凭据。请重启 IDE 生效。")
+                    }
+
+                    is SwitchResult.Failure -> notify("回滚失败", r.message, NotificationType.ERROR)
+                    null -> notify("回滚失败", "后台任务未返回结果，请查看 IDE 日志。", NotificationType.ERROR)
+                }
+            }
+
+            override fun onFinished() {
+                endAction("rollback")
+                refresh()
+            }
+        }.queue()
     }
 
     private fun doForceLogout() {
@@ -1217,14 +1519,16 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
     }
 
     private fun doRefreshQuota() {
-        val card = gridView.selectedCard()
+        val picked = gridView.selectedSnapshots()
         val targets = when {
-            card != null -> listOf(card.snapshot)
-            AccountSettings.getInstance().refreshAllWhenNoSelection -> library.listSaved()
+            picked.isNotEmpty() -> picked
+            // 「未选中时刷新全部」现在真的生效了：以前 selectedCard() 永不返回 null，
+            // 这个设置形同虚设，未勾选时永远只刷激活账号
+            settings.refreshAllWhenNoSelection -> library.listSaved()
             else -> emptyList()
         }
         if (targets.isEmpty()) {
-            statusLabel.text = "请先选择一个账号（或在设置中开启「未选中时刷新全部」）"
+            statusLabel.text = "请先勾选账号（或在设置中开启「未选中时刷新全部」）"
             return
         }
         refreshQuotas(targets)
@@ -1236,28 +1540,52 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
             statusLabel.text = "账号库为空，请先导入账号"
             return
         }
+        if (!beginAction("refresh")) return
         statusLabel.text = "正在查询 ${targets.size} 个账号的额度…"
-        refreshBtn.isEnabled = false
 
         ApplicationManager.getApplication().executeOnPooledThread {
-            var ok = 0
-            var fail = 0
-            for (s in targets) {
-                val summary = library.refreshQuota(s.accountKey)
-                if (summary == null || summary.error != null) fail++ else ok++
+            // 并发刷新（HTTP 出口仍受全局信号量限制），失败逐条带原因
+            val keys = targets.map { it.accountKey }
+            val result = runCatching { library.refreshQuotas(keys) }.getOrElse { e ->
+                dev.codebuddy.account.service.RefreshBatchResult(
+                    0,
+                    keys.map { it to (e.message ?: "未知错误") },
+                )
             }
+            val nameOf = targets.associate { it.accountKey to it.displayName }
             ApplicationManager.getApplication().invokeLater {
-                refresh()
-                refreshBtn.isEnabled = true
+                endAction("refresh")
+                // 只发广播：本面板的 refresh 由事件驱动，且指纹去重后不会重建两遍
                 AccountEvents.fireQuotaChanged()
-                notify("额度刷新完成", "成功 $ok 个，失败 $fail 个。")
+                refresh()
+                val detail = if (result.failures.isEmpty()) {
+                    "成功 ${result.ok} 个。"
+                } else {
+                    "成功 ${result.ok} 个，失败 ${result.failures.size} 个：\n" +
+                        result.failures.take(8).joinToString("\n") {
+                            "· ${nameOf[it.first] ?: it.first}：${it.second}"
+                        } +
+                        if (result.failures.size > 8) "\n…另有 ${result.failures.size - 8} 个" else ""
+                }
+                notify(
+                    "额度刷新完成",
+                    detail,
+                    if (result.failures.isEmpty()) NotificationType.INFORMATION else NotificationType.WARNING
+                )
             }
         }
     }
 
-    /** @param target 为 null 时作用于当前选中卡片 */
+    /** @param target 为 null 时作用于勾选的账号（只支持一个） */
     private fun doEditAlias(target: CredentialSnapshot? = null) {
-        val snapshot = target ?: gridView.selectedCard()?.snapshot ?: return
+        val snapshot = target ?: run {
+            val picked = selectionTargets("重命名") ?: return
+            if (picked.size > 1) {
+                statusLabel.text = "重命名一次只能针对一个账号，请只勾选一个"
+                return
+            }
+            picked[0]
+        }
         val input = Messages.showInputDialog(
             project,
             "为该账号设置别名（留空则显示原昵称）：",
@@ -1267,64 +1595,129 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
             null
         ) ?: return
         if (library.setAlias(snapshot.accountKey, input)) {
+            statusLabel.text = if (input.isBlank()) "已清除「${snapshot.displayName}」的别名" else "已重命名为「$input」"
             refresh()
         } else {
             notify("重命名失败", "请查看 IDE 日志。", NotificationType.ERROR)
         }
     }
 
-    /** @param target 为 null 时作用于当前选中卡片 */
+    /** @param target 为 null 时作用于勾选的账号（支持批量） */
     private fun doDelete(target: CredentialSnapshot? = null) {
-        val snapshot = target ?: gridView.selectedCard()?.snapshot ?: return
-        if (snapshot.accountKey == library.currentActive()?.accountKey) {
+        val targets = target?.let { listOf(it) } ?: selectionTargets("删除") ?: return
+        val activeKey = library.currentActive()?.accountKey
+        val deletable = targets.filterNot { it.accountKey == activeKey }
+        if (deletable.isEmpty()) {
             notify("无法删除", "不能删除当前激活账号。", NotificationType.WARNING)
             return
         }
+
+        val names = deletable.take(10).joinToString("\n") {
+            "· ${it.displayName}（${it.domainHost.ifBlank { "—" }}）"
+        }
+        val more = if (deletable.size > 10) "\n…另有 ${deletable.size - 10} 个" else ""
+        val skipped = if (deletable.size < targets.size) "\n\n（当前激活账号不能删除，已自动跳过）" else ""
         val ok = Messages.showYesNoDialog(
             project,
-            "确定从账号库移除 ${snapshot.displayName}？\n（不会影响 IDE 当前凭据）",
+            "确定从账号库移除 ${deletable.size} 个账号？\n" +
+                "（不影响 IDE 当前凭据；快照会移到 codebuddy-accounts/trash，可手工找回）\n\n" +
+                names + more + skipped,
             "删除账号",
-            Messages.getQuestionIcon()
+            "删除",
+            "取消",
+            Messages.getWarningIcon()
         ) == Messages.YES
         if (!ok) return
+        if (!beginAction("delete")) return
 
-        if (library.delete(snapshot.accountKey)) {
-            library.quotaCache.remove(snapshot.accountKey)
-            refresh()
-            notify("已删除", "${snapshot.displayName} 已从账号库移除。")
-        } else {
-            notify("删除失败", "请查看 IDE 日志。", NotificationType.ERROR)
+        statusLabel.text = "正在删除 ${deletable.size} 个账号…"
+        ApplicationManager.getApplication().executeOnPooledThread {
+            val failed = mutableListOf<CredentialSnapshot>()
+            for (s in deletable) {
+                if (library.delete(s.accountKey)) library.quotaCache.remove(s.accountKey) else failed += s
+            }
+            ApplicationManager.getApplication().invokeLater {
+                endAction("delete")
+                gridView.clearSelection()
+                refresh()
+                if (failed.isEmpty()) {
+                    notifySuccess("已删除", "已从账号库移除 ${deletable.size} 个账号。")
+                } else {
+                    notify(
+                        "部分删除失败",
+                        "失败 ${failed.size} 个：\n" + failed.take(8).joinToString("\n") { "· ${it.displayName}" },
+                        NotificationType.ERROR
+                    )
+                }
+            }
         }
     }
 
+    /** 导出前的明文凭据确认（导出是"把全部 token 写到磁盘"的动作） */
+    private fun confirmPlainTextExport(count: Int): Boolean = Messages.showYesNoDialog(
+        project,
+        "将把 $count 个账号的完整凭据（含 accessToken / refreshToken）以明文 JSON 导出。\n\n" +
+            "导出文件等同于账号本身，请存放在安全位置，不要提交到任何代码仓库或云同步目录。\n\n确定继续？",
+        "导出账号凭据",
+        "继续导出",
+        "取消",
+        Messages.getWarningIcon()
+    ) == Messages.YES
+
     /** 导出单个账号的凭据快照 */
     private fun doExportSingle(snapshot: CredentialSnapshot) {
+        if (!confirmPlainTextExport(1)) return
         val descriptor = FileSaverDescriptor("导出账号凭据", "选择保存位置", "json")
         val dialog = FileChooserFactory.getInstance().createSaveFileDialog(descriptor, project)
         val wrapper = dialog.save(null as java.nio.file.Path?, "codebuddy-${snapshot.uid.take(8)}.json")
             ?: return
         val path = wrapper.file.toPath()
-        try {
-            Files.writeString(path, library.exportJson(setOf(snapshot.accountKey)))
-            notifySuccess(
-                "导出成功",
-                "已导出 ${snapshot.displayName} 到：${path.toAbsolutePath()}\n\n注意：文件包含完整凭据，请妥善保管。"
-            )
-        } catch (e: Exception) {
-            notify("导出失败", e.message ?: "未知错误", NotificationType.ERROR)
+        // 序列化 + 写盘都是重 IO，不放在 EDT 上
+        ApplicationManager.getApplication().executeOnPooledThread {
+            try {
+                Files.writeString(path, library.exportJson(setOf(snapshot.accountKey)))
+                ApplicationManager.getApplication().invokeLater {
+                    notifySuccess(
+                        "导出成功",
+                        "已导出 ${snapshot.displayName} 到：${path.toAbsolutePath()}\n\n注意：文件包含完整凭据，请妥善保管。"
+                    )
+                }
+            } catch (e: Exception) {
+                ApplicationManager.getApplication().invokeLater {
+                    notify("导出失败", e.message ?: "未知错误", NotificationType.ERROR)
+                }
+            }
         }
     }
 
     private fun doExport() {
+        val picked = gridView.selectedSnapshots()
+        val count = if (picked.isEmpty()) library.listSaved().size else picked.size
+        if (count == 0) {
+            notify("没有可导出的账号", "账号库为空，请先导入账号。", NotificationType.WARNING)
+            return
+        }
+        if (!confirmPlainTextExport(count)) return
+
         val descriptor = FileSaverDescriptor("导出账号库", "选择保存位置", "json")
         val dialog = FileChooserFactory.getInstance().createSaveFileDialog(descriptor, project)
         val wrapper = dialog.save(null as java.nio.file.Path?, "codebuddy-accounts.json") ?: return
         val path = wrapper.file.toPath()
-        try {
-            Files.writeString(path, library.exportJson())
-            notifySuccess("导出成功", "已导出到：${path.toAbsolutePath()}\n\n注意：文件包含完整凭据，请妥善保管。")
-        } catch (e: Exception) {
-            notify("导出失败", e.message ?: "未知错误", NotificationType.ERROR)
+        val keys = if (picked.isEmpty()) null else picked.map { it.accountKey }.toSet()
+        ApplicationManager.getApplication().executeOnPooledThread {
+            try {
+                Files.writeString(path, library.exportJson(keys))
+                ApplicationManager.getApplication().invokeLater {
+                    notifySuccess(
+                        "导出成功",
+                        "已导出 $count 个账号到：${path.toAbsolutePath()}\n\n注意：文件包含完整凭据，请妥善保管。"
+                    )
+                }
+            } catch (e: Exception) {
+                ApplicationManager.getApplication().invokeLater {
+                    notify("导出失败", e.message ?: "未知错误", NotificationType.ERROR)
+                }
+            }
         }
     }
 
@@ -1334,16 +1727,49 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
             .createFileChooser(descriptor, project, null)
             .choose(project)
             .firstOrNull() ?: return
-        val count = try {
-            library.importJson(Files.readString(Paths.get(file.path)))
+
+        val text = try {
+            Files.readString(Paths.get(file.path))
         } catch (e: Exception) {
-            -1
+            notify("导入失败", "读取文件失败：${e.message}", NotificationType.ERROR)
+            return
         }
-        if (count >= 0) {
-            refresh()
-            notify("导入完成", "从文件导入了 $count 个账号。")
-        } else {
+        val preview = library.previewImportJson(text)
+        if (preview == null) {
             notify("导入失败", "文件格式不正确。", NotificationType.ERROR)
+            return
+        }
+        if (preview.total == 0) {
+            notify("导入失败", "文件中没有可识别的账号凭据。", NotificationType.WARNING)
+            return
+        }
+
+        // 覆盖式合并前必须让用户看到影响面
+        val ok = Messages.showYesNoDialog(
+            project,
+            "文件中有 ${preview.total} 个账号：\n" +
+                "· 新增 ${preview.added} 个\n" +
+                "· 覆盖已有 ${preview.overwritten} 个（以文件中的凭据为准）\n\n确定导入？",
+            "导入账号库",
+            "导入",
+            "取消",
+            if (preview.overwritten > 0) Messages.getWarningIcon() else Messages.getQuestionIcon()
+        ) == Messages.YES
+        if (!ok) return
+
+        if (!beginAction("importLibrary")) return
+        statusLabel.text = "正在导入 ${preview.total} 个账号…"
+        ApplicationManager.getApplication().executeOnPooledThread {
+            val count = library.importJson(text)
+            ApplicationManager.getApplication().invokeLater {
+                endAction("importLibrary")
+                refresh()
+                if (count >= 0) {
+                    notify("导入完成", "从文件导入了 $count 个账号（其中覆盖 ${preview.overwritten} 个）。")
+                } else {
+                    notify("导入失败", "文件格式不正确。", NotificationType.ERROR)
+                }
+            }
         }
     }
 
@@ -1358,12 +1784,31 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
      * 见 [dev.codebuddy.account.pet.PetNotifier]。
      */
     private fun notify(title: String, content: String, type: NotificationType = NotificationType.INFORMATION) {
+        dev.codebuddy.account.service.OperationLog.log("[$title] $content")
         dev.codebuddy.account.pet.PetNotifier.notify(title, content, type, project)
     }
 
     /** 操作成功的反馈（桌宠播「成功」动作） */
     private fun notifySuccess(title: String, content: String) {
+        dev.codebuddy.account.service.OperationLog.log("[$title] $content")
         dev.codebuddy.account.pet.PetNotifier.success(title, content, project)
+    }
+
+    /** 打开操作记录文件（IDE 编辑器内查看，可搜索历史失败原因） */
+    private fun openOperationLog() {
+        if (!java.nio.file.Files.isRegularFile(dev.codebuddy.account.service.OperationLog.file)) {
+            notify("没有操作记录", "还没有产生操作记录。", NotificationType.INFORMATION)
+            return
+        }
+        val virtual = com.intellij.openapi.vfs.VfsUtil.findFileByIoFile(
+            dev.codebuddy.account.service.OperationLog.file.toFile(),
+            true,
+        )
+        if (virtual == null) {
+            notify("打开失败", "找不到操作记录文件：${dev.codebuddy.account.service.OperationLog.file}", NotificationType.WARNING)
+            return
+        }
+        com.intellij.openapi.fileEditor.FileEditorManager.getInstance(project).openFile(virtual, true)
     }
 
     private companion object {
