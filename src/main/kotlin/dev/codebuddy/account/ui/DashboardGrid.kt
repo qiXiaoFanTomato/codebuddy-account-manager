@@ -63,7 +63,7 @@ enum class DashboardCardId(val title: String) {
     ;
 
     companion object {
-        fun of(name: String): DashboardCardId? = entries.firstOrNull { it.name == name }
+        fun of(name: String): DashboardCardId? = DashboardCardId.values().firstOrNull { it.name == name }
     }
 }
 

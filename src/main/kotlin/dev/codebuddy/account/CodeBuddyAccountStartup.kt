@@ -3,18 +3,21 @@ package dev.codebuddy.account
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.project.Project
-import com.intellij.openapi.startup.ProjectActivity
+import com.intellij.openapi.startup.StartupActivity
 import dev.codebuddy.account.service.AccountLibrary
 import dev.codebuddy.account.service.AutoRefreshService
 
 /**
  * 项目打开时启动后台服务。
+ *
+ * 使用 `StartupActivity` 而不是 `ProjectActivity`：前者自 2021.1 起就存在，
+ * 后者是 2023.1 才引入的接口，用了它插件就无法装到 2022.3 ~ 2023.1 之间的 IDE。
  */
-class CodeBuddyAccountStartup : ProjectActivity {
+class CodeBuddyAccountStartup : StartupActivity.DumbAware {
 
     private val log = logger<CodeBuddyAccountStartup>()
 
-    override suspend fun execute(project: Project) {
+    override fun runActivity(project: Project) {
         val app = ApplicationManager.getApplication()
         if (app.isUnitTestMode || app.isHeadlessEnvironment) return
 

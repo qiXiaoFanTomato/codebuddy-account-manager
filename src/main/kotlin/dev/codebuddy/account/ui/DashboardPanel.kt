@@ -323,7 +323,7 @@ class DashboardPanel(
     private fun effectiveCardOrder(): List<String> {
         val saved = settings.dashboardCardOrder.filter { DashboardCardId.of(it) != null }
         val known = saved.toSet()
-        return saved + DashboardCardId.entries.map { it.name }.filter { it !in known }
+        return saved + DashboardCardId.values().map { it.name }.filter { it !in known }
     }
 
     /**
@@ -492,7 +492,7 @@ class DashboardPanel(
     private fun showAddCardMenu(anchor: JComponent) {
         val menu = JPopupMenu()
         val hidden = settings.hiddenDashboardCards
-        val candidates = DashboardCardId.entries.filter { it.name in hidden }
+        val candidates = DashboardCardId.values().filter { it.name in hidden }
         if (candidates.isEmpty()) {
             menu.add(JMenuItem("全部卡片已在看板中").apply { isEnabled = false })
         } else {

@@ -384,7 +384,7 @@ enum class CbApprovalMode(val label: String, val hint: String) {
     ;
 
     companion object {
-        fun of(name: String?): CbApprovalMode = entries.firstOrNull { it.name == name } ?: NONE
+        fun of(name: String?): CbApprovalMode = CbApprovalMode.values().firstOrNull { it.name == name } ?: NONE
     }
 }
 
@@ -396,7 +396,7 @@ enum class CbNormalPolicy(val label: String) {
     ;
 
     companion object {
-        fun of(name: String?): CbNormalPolicy = entries.firstOrNull { it.name == name } ?: ASK
+        fun of(name: String?): CbNormalPolicy = CbNormalPolicy.values().firstOrNull { it.name == name } ?: ASK
     }
 }
 
@@ -407,7 +407,7 @@ enum class CbDangerPolicy(val label: String) {
     ;
 
     companion object {
-        fun of(name: String?): CbDangerPolicy = entries.firstOrNull { it.name == name } ?: ASK
+        fun of(name: String?): CbDangerPolicy = CbDangerPolicy.values().firstOrNull { it.name == name } ?: ASK
     }
 }
 
@@ -422,6 +422,6 @@ enum class PetQuadrant(val label: String) {
 
     companion object {
         fun of(name: String?): PetQuadrant =
-            entries.firstOrNull { it.name == name } ?: BOTTOM_RIGHT
+            PetQuadrant.values().firstOrNull { it.name == name } ?: BOTTOM_RIGHT
     }
 }

@@ -28,7 +28,7 @@ enum class ReportDimension(val label: String) {
     companion object {
         /** 单日报告不需要「按日期」维度（只有一天） */
         fun forRange(days: Int): List<ReportDimension> =
-            if (days <= 1) entries.filter { it != DAY } else entries
+            if (days <= 1) ReportDimension.values().filter { it != DAY } else ReportDimension.values().toList()
     }
 }
 

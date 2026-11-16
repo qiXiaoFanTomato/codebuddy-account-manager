@@ -489,7 +489,7 @@ enum class AccentTheme(
     ));
 
     companion object {
-        fun byId(id: String?): AccentTheme? = entries.firstOrNull { it.id == id }
+        fun byId(id: String?): AccentTheme? = AccentTheme.values().firstOrNull { it.id == id }
     }
 }
 

@@ -179,7 +179,7 @@ enum class QuotaDisplayMode(val label: String) {
 
     companion object {
         fun of(name: String?): QuotaDisplayMode =
-            entries.firstOrNull { it.name == name } ?: TOTAL_PERCENT
+            QuotaDisplayMode.values().firstOrNull { it.name == name } ?: TOTAL_PERCENT
     }
 }
 

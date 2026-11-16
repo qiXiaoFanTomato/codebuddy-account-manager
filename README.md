@@ -97,7 +97,7 @@ JetBrains IDE 插件：在本地统一管理多个 **CodeBuddy（coding-copilot-
 ## 环境要求
 
 - **Windows**：插件依赖 `%LOCALAPPDATA%\CodeBuddyExtension\Data`（WorkBuddy 桌面端数据目录）与 JetBrains 配置目录，其他平台无对应实现。
-- **IntelliJ IDEA 2026.2**（`sinceBuild = 262`，`untilBuild = 262.*`）。
+- **IntelliJ IDEA 2022.3 及以上**（`sinceBuild = 223`，不设 `untilBuild`，2022.3 ~ 最新版及后续版本均可安装）。
 - 已安装 **CodeBuddy 插件**（插件 id `com.tencent.cloud.codingcopilot`），并至少登录过一个账号。
 
 ## 安装
@@ -139,17 +139,19 @@ JetBrains IDE 插件：在本地统一管理多个 **CodeBuddy（coding-copilot-
 .\gradlew.bat runIde          # 在沙箱 IDE 中调试运行
 ```
 
-构建使用本地安装的 IntelliJ IDEA 2026.2 作为开发目标，因此需要先把 `build.gradle.kts` 中的依赖路径改为本机安装目录：
+构建以插件声明的最低支持版本 **IntelliJ IDEA Community 2022.3** 作为编译目标（从 JetBrains 仓库下载，首次约 700MB）。这样一旦误用了新版平台 API，会直接编译失败，而不是等用户在旧 IDE 上报 `NoSuchMethodError`：
 
 ```kotlin
 dependencies {
     intellijPlatform {
-        local("C:/Program Files/JetBrains/IntelliJ IDEA 2026.2.0.1")
-        // 或改为从 JetBrains 仓库下载：
-        // intellijIdeaCommunity("2026.2")
+        create(IntelliJPlatformType.IntellijIdeaCommunity, "2022.3")
+        // 本机已装新版 IDE 时可临时切换为 local 验证新版编译：
+        // local("C:/Program Files/JetBrains/IntelliJ IDEA 2026.2.0.1")
     }
 }
 ```
+
+字节码目标固定为 JDK 8（`jvmTarget = JVM_1_8`）：JBR 8 / 11 / 17 / 21 的 IDE 运行时都能加载，不受运行时 JBR 版本限制。注意既然目标 2022.3，则 Kotlin 标准库按 2022.3 自带的 1.7 校验，代码里不能用 `Enum.entries`、`buildList` 这类 1.9+ 才有的 API（已全部换成 `values()`）。
 
 `gradle.properties` 中的 `org.gradle.java.installations.paths` 与 `tools/`、`tmp/`、`*.zip` 等本地工具链目录已被 `.gitignore` 忽略，克隆后按本机环境重新配置即可。
 

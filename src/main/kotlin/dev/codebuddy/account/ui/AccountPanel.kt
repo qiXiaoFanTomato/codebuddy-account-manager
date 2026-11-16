@@ -355,7 +355,7 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
 
     /** 排序下拉：对应 `.tw-select` */
     private fun buildSortCombo(): JComboBox<AccountSortMode> {
-        val combo = JComboBox(AccountSortMode.entries.toTypedArray())
+        val combo = JComboBox(AccountSortMode.values())
         AccountUiKit.styleCombo(combo) { (it as? AccountSortMode)?.label ?: "" }
         combo.preferredSize = Dimension(JBUI.scale(124), JBUI.scale(28))
         combo.addActionListener {
@@ -409,7 +409,7 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
     private fun showThemeMenu(anchor: JComponent) {
         val menu = JPopupMenu()
         val group = ButtonGroup()
-        for (theme in AccentTheme.entries) {
+        for (theme in AccentTheme.values()) {
             val swatch = ThemeSwatchIcon(
                 JBColor(theme.palette.accentLight, theme.palette.accentDark),
                 JBColor(theme.palette.sheenLight, theme.palette.sheenDark),
@@ -659,7 +659,7 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
         val settings = AccountSettings.getInstance()
         val menu = JPopupMenu()
         val group = ButtonGroup()
-        for (mode in QuotaDisplayMode.entries) {
+        for (mode in QuotaDisplayMode.values()) {
             val item = JRadioButtonMenuItem(mode.label, mode == settings.statusBarMode)
             item.addActionListener {
                 settings.setStatusBarMode(mode)

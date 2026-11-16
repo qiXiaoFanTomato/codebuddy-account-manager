@@ -100,7 +100,7 @@ object GrowthService {
         companion object {
             fun of(raw: String?): TaskState {
                 val key = raw?.trim()?.lowercase() ?: return UNKNOWN
-                return entries.firstOrNull { it.raw == key } ?: UNKNOWN
+                return TaskState.values().firstOrNull { it.raw == key } ?: UNKNOWN
             }
         }
     }

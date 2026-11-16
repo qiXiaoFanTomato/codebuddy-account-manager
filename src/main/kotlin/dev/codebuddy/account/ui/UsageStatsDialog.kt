@@ -234,7 +234,7 @@ class UsageStatsDialog(private val project: Project) : DialogWrapper(project) {
             alignmentX = Component.LEFT_ALIGNMENT
             maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(34))
         }
-        for (m in Metric.entries) {
+        for (m in Metric.values()) {
             row.add(
                 UnderlineTab(m.label, metric == m) {
                     metric = m
@@ -306,7 +306,7 @@ class UsageStatsDialog(private val project: Project) : DialogWrapper(project) {
             BorderLayout.WEST,
         )
         val modes = JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(6), 0)).apply { isOpaque = false }
-        for (m in TrendMode.entries) {
+        for (m in TrendMode.values()) {
             modes.add(
                 SmallToggle(m.label, trendMode == m) {
                     trendMode = m

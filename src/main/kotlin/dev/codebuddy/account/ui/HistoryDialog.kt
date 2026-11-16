@@ -158,7 +158,7 @@ class HistoryDialog(
         })
 
         // 扫描范围：默认最近 7 天；选「指定日期」才启用日期选择
-        for (range in ScanRange.entries) rangeCombo.addItem(range)
+        for (range in ScanRange.values()) rangeCombo.addItem(range)
         AccountUiKit.styleCombo(rangeCombo) { (it as? ScanRange)?.label ?: "" }
         rangeCombo.addActionListener {
             dateSpinner.isEnabled = rangeCombo.selectedItem == ScanRange.SPECIFIC_DATE
@@ -187,7 +187,7 @@ class HistoryDialog(
         }
         accountCombo.addItem(AccountChoice(null, "全部账号"))
 
-        for (mode in GroupMode.entries) groupCombo.addItem(mode)
+        for (mode in GroupMode.values()) groupCombo.addItem(mode)
         groupCombo.addActionListener { if (!suppressCombo) applyFilter() }
 
         searchField.textEditor.document.addDocumentListener(object : DocumentListener {

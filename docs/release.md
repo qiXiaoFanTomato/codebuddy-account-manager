@@ -68,11 +68,13 @@ $env:PUBLISH_TOKEN = "<token>"
 `build.gradle.kts` 的 `patchPluginXml` 控制：
 
 ```kotlin
-sinceBuild.set("262")
-untilBuild.set("262.*")
+sinceBuild.set("223")                              // 2022.3
+untilBuild.set(provider { null })                  // 不设上限
 ```
 
-支持新的 IDE 大版本时同步调整这两行，例如放宽到 `untilBuild.set("263.*")`。
+- `sinceBuild = 223` 与编译目标 `create(IntelliJPlatformType.IntellijIdeaCommunity, "2022.3")` 保持一致。改小之前必须先确认平台 API 在目标版本存在，最稳的做法是把编译 SDK 一起换成该版本，编译不过就是 API 用错。
+- `untilBuild` 留空表示不限制上限，新版 IDE（2026.3、2027.x…）都能直接装；代价是平台内部实现大改时需要靠运行时兜底（内部 API 调用点都已有 try-catch 降级）。
+- 若某个版本区间确实不兼容，再临时收紧为 `untilBuild.set("26x.*")`。
 
 ## 7. 已踩过的坑
 

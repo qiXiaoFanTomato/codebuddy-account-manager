@@ -38,7 +38,7 @@ enum class ModelQuotaPeriod(val label: String) {
 
     companion object {
         fun of(name: String?): ModelQuotaPeriod =
-            entries.firstOrNull { it.name.equals(name, ignoreCase = true) } ?: MONTH
+            ModelQuotaPeriod.values().firstOrNull { it.name.equals(name, ignoreCase = true) } ?: MONTH
     }
 }
 

@@ -58,9 +58,9 @@ class PetSettingsDialog(private val onChange: () -> Unit) : DialogWrapper(true) 
             1,
         )
     )
-    private val approvalModeCombo = labelCombo(CbApprovalMode.entries.toTypedArray()) { it.label }
-    private val approvalNormalCombo = labelCombo(CbNormalPolicy.entries.toTypedArray()) { it.label }
-    private val approvalDangerCombo = labelCombo(CbDangerPolicy.entries.toTypedArray()) { it.label }
+    private val approvalModeCombo = labelCombo(CbApprovalMode.values()) { it.label }
+    private val approvalNormalCombo = labelCombo(CbNormalPolicy.values()) { it.label }
+    private val approvalDangerCombo = labelCombo(CbDangerPolicy.values()) { it.label }
     private val approvalHint = JBLabel().apply {
         font = AccountUiType.ui(AccountUiType.micro)
         foreground = AccountUiColors.textMuted
@@ -104,7 +104,7 @@ class PetSettingsDialog(private val onChange: () -> Unit) : DialogWrapper(true) 
         SpinnerNumberModel(100, PetSettings.MIN_OPACITY, 100, 5)
     )
 
-    private val quadrantCombo = JComboBox(PetQuadrant.entries.toTypedArray()).apply {
+    private val quadrantCombo = JComboBox(PetQuadrant.values()).apply {
         renderer = object : DefaultListCellRenderer() {
             override fun getListCellRendererComponent(
                 list: JList<*>?,
