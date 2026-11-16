@@ -50,19 +50,50 @@ class AccountLibrary {
     // 读取
     // ---------------------------------------------------------------
 
+    /** index.json 指纹（mtime + size）：文件没变就复用解析结果，避免 UI 线程反复读盘 */
+    private var indexStamp: String? = null
+
+    /** 与 [indexStamp] 对应的解析结果（含 hydrate 后的 rawContent） */
+    private var indexCache: List<CredentialSnapshot> = emptyList()
+
+    /** 旧版快照迁移只需做一次：每次 list 目录都是无谓 IO */
+    private var legacyMigrated = false
+
     /** 返回账号库中已保存的所有快照（按导入时间倒序） */
     fun listSaved(): List<CredentialSnapshot> {
         synchronized(lock) {
             migrateLegacySnapshotsIfNeeded()
-            if (!Files.isRegularFile(indexFile)) return emptyList()
+            if (!Files.isRegularFile(indexFile)) {
+                invalidateIndexCache()
+                return emptyList()
+            }
+            val stamp = stampOf(indexFile)
+            if (stamp != null && stamp == indexStamp) return indexCache
             return try {
                 val arr = CredentialParser.parseIndex(Files.readString(indexFile, StandardCharsets.UTF_8))
-                arr.map { hydrate(it) }.sortedByDescending { it.importedAt }
+                val parsed = arr.map { hydrate(it) }.sortedByDescending { it.importedAt }
+                indexStamp = stamp
+                indexCache = parsed
+                parsed
             } catch (e: Exception) {
                 log.warn("读取账号索引失败", e)
                 emptyList()
             }
         }
+    }
+
+    /** 文件指纹：mtime + 大小，任一变化即视为内容已变 */
+    private fun stampOf(file: Path): String? = try {
+        val attrs = Files.readAttributes(file, java.nio.file.attribute.BasicFileAttributes::class.java)
+        "${attrs.lastModifiedTime().toMillis()}:${attrs.size()}"
+    } catch (_: Exception) {
+        null
+    }
+
+    /** 索引被改写后清缓存，让下一次读取重新解析 */
+    private fun invalidateIndexCache() {
+        indexStamp = null
+        indexCache = emptyList()
     }
 
     /**
@@ -72,6 +103,7 @@ class AccountLibrary {
      * 若发现旧文件且能从内容解析出 domain，则重命名为新格式。
      */
     private fun migrateLegacySnapshotsIfNeeded() {
+        if (legacyMigrated) return
         if (!Files.isDirectory(snapshotsDir)) return
         try {
             val files = Files.list(snapshotsDir).use { it.toList() }
@@ -91,6 +123,7 @@ class AccountLibrary {
                     log.info("已迁移旧快照: $name -> $newName")
                 }
             }
+            legacyMigrated = true
         } catch (e: Exception) {
             log.warn("迁移旧快照失败", e)
         }
@@ -166,6 +199,42 @@ class AccountLibrary {
             }
         }
         return summary
+    }
+
+    /**
+     * 批量刷新额度：并发提交，单账号失败不影响其它。
+     *
+     * 串行 for + 单账号 20s 超时，账号一多就是 N×20s 的等待；
+     * HTTP 出口本身有全局并发上限（[limited]），这里只负责并行提交。
+     *
+     * **不要从 EDT 调用**：内部 `latch.await()` 会阻塞调用线程。
+     *
+     * @return 成功个数 + 失败明细（accountKey → 原因）
+     */
+    fun refreshQuotas(keys: List<String>, auto: Boolean = false): RefreshBatchResult {
+        if (keys.isEmpty()) return RefreshBatchResult(0, emptyList())
+        val okCount = java.util.concurrent.atomic.AtomicInteger(0)
+        val failures = java.util.Collections.synchronizedList(mutableListOf<Pair<String, String>>())
+        val latch = java.util.concurrent.CountDownLatch(keys.size)
+
+        for (key in keys) {
+            refreshPool.execute {
+                try {
+                    val summary = refreshQuota(key, auto)
+                    when {
+                        summary == null -> failures.add(key to "未返回结果（快照或 token 缺失）")
+                        summary.error != null -> failures.add(key to summary.error)
+                        else -> okCount.incrementAndGet()
+                    }
+                } catch (e: Exception) {
+                    failures.add(key to (e.message ?: "未知错误"))
+                } finally {
+                    latch.countDown()
+                }
+            }
+        }
+        latch.await()
+        return RefreshBatchResult(okCount.get(), failures.toList())
     }
 
     /**
@@ -299,7 +368,8 @@ class AccountLibrary {
     private fun importSnapshotLocked(snapshot: CredentialSnapshot): Boolean {
         return try {
             val target = snapshotsDir.resolve(dev.codebuddy.account.model.AccountKeys.toFileName(snapshot.accountKey))
-            Files.writeString(target, snapshot.rawContent, StandardCharsets.UTF_8)
+            // 原子写：中途崩溃不会留下半个 JSON 文件（原来直接 writeString 会写坏快照）
+            MultiInstanceCoordinator.writeAtomic(target, snapshot.rawContent)
 
             val all = listSaved().filterNot { it.accountKey == snapshot.accountKey }.toMutableList()
             all.add(snapshot.copy(sourcePath = target.toString()))
@@ -338,10 +408,27 @@ class AccountLibrary {
         }
     }
 
+    /**
+     * 删除账号：先落索引，再把快照文件移入 trash（不是直接删）。
+     *
+     * 顺序理由：索引是账号库的唯一可信来源。先删文件后写索引，中途失败会留下
+     * 「索引里有、文件没了」的坏账号；反过来最多留下一个孤儿文件，不影响使用。
+     * 移入 trash 而不是删除，给误删留一次手工恢复的机会。
+     */
     private fun deleteLocked(uid: String): Boolean {
         return try {
-            Files.deleteIfExists(snapshotsDir.resolve(dev.codebuddy.account.model.AccountKeys.toFileName(uid)))
             writeIndex(listSaved().filterNot { it.accountKey == uid })
+
+            val target = snapshotsDir.resolve(dev.codebuddy.account.model.AccountKeys.toFileName(uid))
+            if (Files.exists(target)) {
+                val trashDir = baseDir.resolve("trash").also { Files.createDirectories(it) }
+                val dest = trashDir.resolve("${target.fileName}.${System.currentTimeMillis()}")
+                try {
+                    Files.move(target, dest, StandardCopyOption.REPLACE_EXISTING)
+                } catch (_: Exception) {
+                    Files.deleteIfExists(target)
+                }
+            }
             AccountEvents.fireAccountsChanged()
             true
         } catch (e: Exception) {
@@ -385,7 +472,12 @@ class AccountLibrary {
                 onSuccess = { SwitchResult.Success(it) },
                 onFailure = { SwitchResult.Failure(it.message ?: "写入凭据失败") }
             )
-            if (switchResult is SwitchResult.Success) AccountEvents.fireAccountsChanged()
+            if (switchResult is SwitchResult.Success) {
+                AccountEvents.fireAccountsChanged()
+            } else {
+                // 凭据没写成功：撤销待生效记录，否则下次启动会把一次「失败的操作」补写上去
+                PendingSwitch.clear()
+            }
             return switchResult
         }
     }
@@ -447,7 +539,7 @@ class AccountLibrary {
             val dir = target.parent ?: return SwitchResult.Failure("路径异常")
             val latestBackup = try {
                 Files.list(dir).use { stream ->
-                    stream.filter { it.fileName.toString().startsWith("secret-storage.xml.bak-") }
+                    stream.filter { it.fileName.toString().startsWith(SecretStorage.BACKUP_PREFIX) }
                         .max(Comparator.comparingLong { Files.getLastModifiedTime(it).toMillis() })
                         .orElse(null)
                 }
@@ -473,7 +565,7 @@ class AccountLibrary {
         val dir = target.parent ?: return false
         return try {
             Files.list(dir).use { s ->
-                s.anyMatch { it.fileName.toString().startsWith("secret-storage.xml.bak-") }
+                s.anyMatch { it.fileName.toString().startsWith(SecretStorage.BACKUP_PREFIX) }
             }
         } catch (_: Exception) {
             false
@@ -553,6 +645,41 @@ class AccountLibrary {
         }
     }
 
+    /**
+     * 导入前预览：不落盘，只统计「总共 / 新增 / 会覆盖」。
+     *
+     * 导入是"直接合并覆盖"的破坏性动作，先让用户看到影响面再决定。
+     * 解析失败返回 null。
+     */
+    fun previewImportJson(json: String): ImportPreview? {
+        synchronized(lock) {
+            return try {
+                val arr = com.google.gson.JsonParser.parseString(json).asJsonArray
+                val existing = listSaved().map { it.accountKey }.toSet()
+                var total = 0
+                var added = 0
+                var overwritten = 0
+                for (el in arr) {
+                    if (!el.isJsonObject) continue
+                    val o = el.asJsonObject
+                    val raw = if (o.has("rawContent") && !o.get("rawContent").isJsonNull) {
+                        o.get("rawContent").asString
+                    } else {
+                        ""
+                    }
+                    if (raw.isBlank()) continue
+                    val parsed = CredentialParser.parseContent(raw) ?: continue
+                    total++
+                    if (parsed.accountKey in existing) overwritten++ else added++
+                }
+                ImportPreview(total, added, overwritten)
+            } catch (e: Exception) {
+                log.warn("预览导入失败", e)
+                null
+            }
+        }
+    }
+
     /** 从导出的 JSON 导入账号库，返回导入数量 */
     fun importJson(json: String): Int {
         synchronized(lock) {
@@ -585,12 +712,19 @@ class AccountLibrary {
         val json = CredentialParser.serializeIndex(items)
         val write = { MultiInstanceCoordinator.writeAtomic(indexFile, json) }
         MultiInstanceCoordinator.withLockFor(indexFile) { write() } ?: write()
+        invalidateIndexCache()
     }
 
     companion object {
         /** 全局并发上限：限制消耗明细翻页等重请求占满线程池 */
         private const val MAX_CONCURRENT_REQUESTS = 4
         private val requestLimiter = java.util.concurrent.Semaphore(MAX_CONCURRENT_REQUESTS, true)
+
+        /** 批量刷新的专用线程池：daemon，避免占用 IDE 的共享池导致排队 */
+        private val refreshPool: java.util.concurrent.ExecutorService =
+            java.util.concurrent.Executors.newFixedThreadPool(MAX_CONCURRENT_REQUESTS) { r ->
+                Thread(r, "codebuddy-quota-refresh").apply { isDaemon = true }
+            }
 
         /** 统一的网络请求闸门：计数日志 + 并发上限 */
         private fun <T> limited(kind: String, block: () -> T): T {
@@ -617,4 +751,17 @@ data class HotSwitchResult(
     val success: Boolean,
     /** 失败原因或部分成功提示；完全成功且内核已重启时为 null */
     val message: String?,
+)
+
+/** 导入预览：文件里有多少条有效账号、其中多少是新增、多少会覆盖已有 */
+data class ImportPreview(
+    val total: Int,
+    val added: Int,
+    val overwritten: Int,
+)
+
+/** 批量刷新额度结果：成功个数 + 失败明细（accountKey → 原因） */
+data class RefreshBatchResult(
+    val ok: Int,
+    val failures: List<Pair<String, String>>,
 )

@@ -45,16 +45,27 @@ class QuotaCache(private val cacheFile: Path) {
     /**
      * 更新单个账号的配额缓存。
      * 「读-改-写」在跨进程锁内完成，避免多开时两个实例互相覆盖其它账号刚刷新的结果。
+     *
+     * 失败结果不覆盖已有数据：本次查询失败时保留上一次成功的 packages，
+     * 只把失败原因写进 lastError（界面可继续显示旧读数并标过期）。
      */
     fun put(uid: String, summary: QuotaSummary) {
         synchronized(lock) {
             val locked = MultiInstanceCoordinator.withLockFor(cacheFile) {
-                putLocked(uid, summary)
+                putLocked(uid, mergeForStore(uid, summary))
                 true
             }
             // 锁不可用时降级为仅 JVM 锁，至少保证本进程缓存可更新
-            if (locked == null) putLocked(uid, summary)
+            if (locked == null) putLocked(uid, mergeForStore(uid, summary))
         }
+    }
+
+    /** 失败时保留旧数据，仅记录 lastError */
+    private fun mergeForStore(uid: String, fresh: QuotaSummary): QuotaSummary {
+        if (fresh.error == null) return fresh.copy(lastError = null)
+        val old = loadAll()[uid] ?: return fresh
+        if (old.packages.isEmpty() || old.error != null) return fresh
+        return old.copy(error = null, lastError = fresh.error)
     }
 
     private fun putLocked(uid: String, summary: QuotaSummary) {
@@ -90,6 +101,7 @@ class QuotaCache(private val cacheFile: Path) {
             val o = JsonObject()
             o.addProperty("fetchedAt", s.fetchedAt)
             if (s.error != null) o.addProperty("error", s.error)
+            if (s.lastError != null) o.addProperty("lastError", s.lastError)
             val arr = com.google.gson.JsonArray()
             for (p in s.packages) {
                 val po = JsonObject()
@@ -123,6 +135,7 @@ class QuotaCache(private val cacheFile: Path) {
 
     private fun toSummary(o: JsonObject): QuotaSummary {
         val error = if (o.has("error") && !o.get("error").isJsonNull) o.get("error").asString else null
+        val lastError = if (o.has("lastError") && !o.get("lastError").isJsonNull) o.get("lastError").asString else null
         val fetchedAt = if (o.has("fetchedAt")) o.get("fetchedAt").asLong else 0L
         val packages = mutableListOf<QuotaPackage>()
         val arr = o.get("packages")
@@ -152,7 +165,7 @@ class QuotaCache(private val cacheFile: Path) {
                 )
             }
         }
-        return QuotaSummary(packages, fetchedAt, error)
+        return QuotaSummary(packages, fetchedAt, error, lastError)
     }
 
     private fun JsonObject.str(k: String): String =

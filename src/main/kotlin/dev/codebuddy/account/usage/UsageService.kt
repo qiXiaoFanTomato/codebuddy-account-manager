@@ -57,6 +57,12 @@ object UsageService {
      *
      * @param pageNum 页码，从 1 开始
      */
+    /** 网络抖动 / 5xx 的最大重试次数（凭据失效与 4xx 不重试） */
+    private const val MAX_RETRIES = 1
+
+    /** 重试退避基数：第 n 次重试等待 n × 该值 */
+    private const val RETRY_BACKOFF_MS = 800L
+
     fun fetch(
         domain: String,
         accessToken: String,
@@ -66,7 +72,32 @@ object UsageService {
         pageNum: Int = 1,
     ): UsagePage {
         if (accessToken.isBlank()) return UsagePage(error = "accessToken 为空")
+        var result = fetchOnce(domain, accessToken, startTime, endTime, pageSize, pageNum)
+        var attempt = 0
+        while (result.error != null && attempt < MAX_RETRIES && isRetryable(result.error!!)) {
+            attempt++
+            try {
+                Thread.sleep(RETRY_BACKOFF_MS * attempt)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                break
+            }
+            result = fetchOnce(domain, accessToken, startTime, endTime, pageSize, pageNum)
+        }
+        return result
+    }
 
+    private fun isRetryable(error: String): Boolean =
+        !error.contains("401") && !error.contains("凭据") && !error.startsWith("HTTP 4")
+
+    private fun fetchOnce(
+        domain: String,
+        accessToken: String,
+        startTime: String,
+        endTime: String,
+        pageSize: Int,
+        pageNum: Int,
+    ): UsagePage {
         val host = if (domain.isBlank()) "www.codebuddy.cn" else domain
         val url = "https://$host/billing/meter/get-user-request-usage"
         val body = JsonObject().apply {

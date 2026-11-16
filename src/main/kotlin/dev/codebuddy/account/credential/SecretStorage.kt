@@ -26,6 +26,12 @@ object SecretStorage {
 
     const val ENTRY_KEY = "Tencent-Cloud.coding-copilot.new.accessToken"
 
+    /** 凭据备份文件名前缀（回滚与清理共用） */
+    const val BACKUP_PREFIX = "secret-storage.xml.bak-"
+
+    /** 最多保留的备份份数 */
+    private const val MAX_BACKUPS = 10
+
     fun file(): Path? {
         return try {
             val configDir = PathManager.getConfigDir()
@@ -42,17 +48,49 @@ object SecretStorage {
         return if (Files.isRegularFile(f)) f else null
     }
 
+    /** readCurrent 缓存戳（文件 mtime + 大小） */
+    @Volatile
+    private var cachedStamp: String? = null
+
+    /** 与 [cachedStamp] 对应的解析结果；文件未变时直接返回，避免 UI 线程反复读 XML */
+    @Volatile
+    private var cachedSnapshot: CredentialSnapshot? = null
+
+    @Volatile
+    private var cacheValid = false
+
     /** 读取当前激活的凭据快照 */
     fun readCurrent(): CredentialSnapshot? {
         val f = file() ?: return null
+        val stamp = stampOf(f)
+        if (cacheValid && stamp != null && stamp == cachedStamp) return cachedSnapshot
         return try {
             val xml = Files.readString(f, StandardCharsets.UTF_8)
             val json = extractEntryValue(xml, ENTRY_KEY) ?: return null
-            CredentialParser.parseContent(json, f.toString())
+            val snapshot = CredentialParser.parseContent(json, f.toString())
+            cachedStamp = stamp
+            cachedSnapshot = snapshot
+            cacheValid = true
+            snapshot
         } catch (e: Exception) {
             log.warn("读取 secret-storage 失败", e)
             null
         }
+    }
+
+    /** 文件指纹：mtime + 大小，任一变化即视为内容已变 */
+    private fun stampOf(f: Path): String? = try {
+        val attrs = Files.readAttributes(f, java.nio.file.attribute.BasicFileAttributes::class.java)
+        "${attrs.lastModifiedTime().toMillis()}:${attrs.size()}"
+    } catch (_: Exception) {
+        null
+    }
+
+    /** 本进程写入 / 清除凭据后立即让缓存失效（同毫秒内 mtime 可能不变，不能只靠指纹） */
+    private fun invalidateCache() {
+        cacheValid = false
+        cachedStamp = null
+        cachedSnapshot = null
     }
 
     /** 从 XML 中提取指定 key 的 value（已反转义） */
@@ -66,7 +104,9 @@ object SecretStorage {
     fun writeCurrent(snapshotJson: String): Result<Path> {
         val f = file() ?: return Result.failure(IllegalStateException("找不到 secret-storage.xml，请先登录一次 CodeBuddy"))
         val locked = MultiInstanceCoordinator.withLockFor(f) { writeCurrentLocked(f, snapshotJson) }
-        return locked ?: writeCurrentLocked(f, snapshotJson)
+        val result = locked ?: writeCurrentLocked(f, snapshotJson)
+        invalidateCache()
+        return result
     }
 
     private fun writeCurrentLocked(f: Path, snapshotJson: String): Result<Path> {
@@ -82,7 +122,7 @@ object SecretStorage {
                 xml.replaceFirst("<Scores>", "<Scores>\n      " + newEntry)
             }
 
-            val backup = f.resolveSibling("secret-storage.xml.bak-" + System.currentTimeMillis())
+            val backup = f.resolveSibling(BACKUP_PREFIX + System.currentTimeMillis())
             Files.copy(f, backup, StandardCopyOption.REPLACE_EXISTING)
 
             val tmp = f.resolveSibling("secret-storage.xml.tmp-" + System.nanoTime())
@@ -92,10 +132,35 @@ object SecretStorage {
             } catch (_: Exception) {
                 Files.move(tmp, f, StandardCopyOption.REPLACE_EXISTING)
             }
+            pruneBackups(f)
             Result.success(f)
         } catch (e: Exception) {
             log.warn("写入 secret-storage 失败", e)
             Result.failure(e)
+        }
+    }
+
+    /**
+     * 备份清理：只保留最近 [MAX_BACKUPS] 份。
+     *
+     * 每次写凭据都会生成一份完整的 secret-storage.xml.bak-<ts>，里面是明文凭据，
+     * 长期不清理会无限增长（既是磁盘问题也是安全问题）。
+     */
+    private fun pruneBackups(current: Path) {
+        val dir = current.parent ?: return
+        try {
+            val backups = Files.list(dir).use { s ->
+                s.filter { it.fileName.toString().startsWith(BACKUP_PREFIX) }
+                    .sorted(Comparator.comparingLong<Path> { runCatching { Files.getLastModifiedTime(it).toMillis() }.getOrDefault(0L) }.reversed())
+                    .toList()
+            }
+            for (old in backups.drop(MAX_BACKUPS)) {
+                try {
+                    Files.deleteIfExists(old)
+                } catch (_: Exception) {
+                }
+            }
+        } catch (_: Exception) {
         }
     }
 
@@ -107,7 +172,9 @@ object SecretStorage {
     fun clearCredentials(): Result<Int> {
         val f = file() ?: return Result.failure(IllegalStateException("找不到 secret-storage.xml"))
         val locked = MultiInstanceCoordinator.withLockFor(f) { clearCredentialsLocked(f) }
-        return locked ?: clearCredentialsLocked(f)
+        val result = locked ?: clearCredentialsLocked(f)
+        invalidateCache()
+        return result
     }
 
     private fun clearCredentialsLocked(f: Path): Result<Int> {
@@ -123,7 +190,7 @@ object SecretStorage {
 
             if (removed == 0) return Result.success(0)
 
-            val backup = f.resolveSibling("secret-storage.xml.bak-" + System.currentTimeMillis())
+            val backup = f.resolveSibling(BACKUP_PREFIX + System.currentTimeMillis())
             Files.copy(f, backup, StandardCopyOption.REPLACE_EXISTING)
 
             val tmp = f.resolveSibling("secret-storage.xml.tmp-" + System.nanoTime())
@@ -133,6 +200,7 @@ object SecretStorage {
             } catch (_: Exception) {
                 Files.move(tmp, f, StandardCopyOption.REPLACE_EXISTING)
             }
+            pruneBackups(f)
             log.info("已清除 CodeBuddy 凭据条目: " + removed)
             Result.success(removed)
         } catch (e: Exception) {

@@ -136,14 +136,13 @@ class AutoRefreshService : Disposable {
             val library = AccountLibrary.getInstance()
             val saved = library.listSaved()
             if (saved.isEmpty()) return
-            var ok = 0
-            var fail = 0
-            // 注意：刷新缓存以 accountKey 为 key，不能传裸 uid
-            for (s in saved) {
-                val summary = library.refreshQuota(s.accountKey, auto = true)
-                if (summary == null || summary.error != null) fail++ else ok++
-            }
-            log.info("自动刷新配额完成：成功 $ok 个，失败 $fail 个，${MultiInstanceCoordinator.instanceTag()}")
+            // 注意：刷新缓存以 accountKey 为 key，不能传裸 uid。
+            // 并发提交（HTTP 出口仍受全局信号量限制），避免 N×20s 的串行等待
+            val result = library.refreshQuotas(saved.map { it.accountKey }, auto = true)
+            log.info(
+                "自动刷新配额完成：成功 ${result.ok} 个，失败 ${result.failures.size} 个，" +
+                    MultiInstanceCoordinator.instanceTag()
+            )
             AccountEvents.fireQuotaChanged()
             autoSwitchIfNeeded()
             // 模型积分限额统计（如 DeepSeek 200 积分限制），用于达标提醒

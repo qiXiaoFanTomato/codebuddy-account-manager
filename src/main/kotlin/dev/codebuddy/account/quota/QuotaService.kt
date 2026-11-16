@@ -46,14 +46,44 @@ object QuotaService {
             .build()
     }
 
+    /** 网络抖动 / 5xx 的最大重试次数（凭据失效与业务错误不重试） */
+    private const val MAX_RETRIES = 1
+
+    /** 重试退避基数：第 n 次重试等待 n × 该值 */
+    private const val RETRY_BACKOFF_MS = 800L
+
     /**
      * 查询指定 accessToken 的配额。
      * 网络/解析失败时返回带 error 的 QuotaSummary，不抛异常。
+     *
+     * 网络抖动（超时、连接失败、5xx）自动重试 [MAX_RETRIES] 次；
+     * 401/403 与业务错误重试没有意义，直接返回，避免白等一个超时周期。
      */
     fun fetch(domain: String, accessToken: String): QuotaSummary {
         if (accessToken.isBlank()) {
             return QuotaSummary(emptyList(), error = "accessToken 为空")
         }
+        var result = fetchOnce(domain, accessToken)
+        var attempt = 0
+        while (result.error != null && attempt < MAX_RETRIES && isRetryable(result.error!!)) {
+            attempt++
+            try {
+                Thread.sleep(RETRY_BACKOFF_MS * attempt)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                break
+            }
+            result = fetchOnce(domain, accessToken)
+        }
+        return result
+    }
+
+    /** 该错误是否值得重试 */
+    private fun isRetryable(error: String): Boolean =
+        !error.contains("401") && !error.contains("403") &&
+            !error.startsWith("接口返回") && !error.contains("accessToken")
+
+    private fun fetchOnce(domain: String, accessToken: String): QuotaSummary {
         val host = if (domain.isBlank()) "www.codebuddy.cn" else domain
         val url = "https://$host/v2/billing/meter/get-user-resource"
 
@@ -69,7 +99,12 @@ object QuotaService {
 
             val response = httpClient.send(request, HttpResponse.BodyHandlers.ofString())
             if (response.statusCode() != 200) {
-                return QuotaSummary(emptyList(), error = "HTTP ${response.statusCode()}")
+                // 401/403 单独给可操作的文案：用户看到「HTTP 401」不知道要重新登录
+                val msg = when (response.statusCode()) {
+                    401, 403 -> "凭据已失效（HTTP ${response.statusCode()}），请切换该账号或重新登录"
+                    else -> "HTTP ${response.statusCode()}"
+                }
+                return QuotaSummary(emptyList(), error = msg)
             }
             parse(response.body())
         } catch (e: Exception) {

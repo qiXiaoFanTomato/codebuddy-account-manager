@@ -55,7 +55,8 @@ data class QuotaPackage(
     companion object {
         fun fmt(v: Double): String =
             if (v == v.toLong().toDouble()) v.toLong().toString()
-            else String.format("%.2f", v)
+            // 显式 Locale.ROOT：默认 locale 是逗号小数点时界面会显示 "12,30"
+            else String.format(java.util.Locale.ROOT, "%.2f", v)
     }
 }
 
@@ -85,7 +86,20 @@ data class QuotaSummary(
     val fetchedAt: Long = System.currentTimeMillis(),
     /** 查询失败时的错误信息；成功为 null */
     val error: String? = null,
+    /**
+     * 最近一次刷新失败的原因（本次展示的仍是上一次成功的数据）。
+     *
+     * 与 [error] 的区别：[error] 非空表示「没有可用数据」，
+     * [lastError] 非空表示「数据是旧的，这次查询失败了」，界面仍应展示旧读数并标过期。
+     */
+    val lastError: String? = null,
 ) {
+
+    /** 是否有一份可展示的数据（哪怕是旧的） */
+    val hasData: Boolean get() = packages.isNotEmpty()
+
+    /** 数据是否过期：本次刷新失败但有旧数据兜底 */
+    val isStale: Boolean get() = lastError != null && packages.isNotEmpty()
     val totalSize: Double get() = packages.sumOf { it.size }
     val totalUsed: Double get() = packages.sumOf { it.used }
     val totalRemain: Double get() = packages.sumOf { it.remain }
