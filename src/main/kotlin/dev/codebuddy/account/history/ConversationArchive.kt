@@ -166,10 +166,11 @@ object ConversationArchive {
             "lastMessageAt",
             conv.lastMessageAt.ifBlank { conv.createdAt }.ifBlank { exportedAt },
         )
-        copyStringMap(index, "modelMap", conversation)
-        copyBooleanMap(index, "maxModeMap", conversation)
-        copyStringMap(index, "effortMap", conversation)
-        copyStringMap(index, "contextLengthMap", conversation)
+        val modelSource = modelMapsOf(conv, convDir, index)
+        copyStringMap(modelSource, "modelMap", conversation)
+        copyBooleanMap(modelSource, "maxModeMap", conversation)
+        copyStringMap(modelSource, "effortMap", conversation)
+        copyStringMap(modelSource, "contextLengthMap", conversation)
         conversation.add("requests", requests)
 
         val data = JsonObject()
@@ -283,6 +284,31 @@ object ConversationArchive {
             }
         }
         return if (out.size() == 0) null else out
+    }
+
+    /**
+     * 模型相关映射（modelMap / maxModeMap / effortMap / contextLengthMap）实测只存在于
+     * 工作区级 index.json 的会话条目里，会话级 index.json 只有 messages / requests。
+     * 两处都看：会话级优先，缺失字段从工作区条目补，否则归档会整段丢掉模型信息。
+     */
+    private fun modelMapsOf(
+        conv: HistoryReader.Conversation,
+        convDir: Path,
+        convIndex: JsonObject,
+    ): JsonObject {
+        val keys = listOf("modelMap", "maxModeMap", "effortMap", "contextLengthMap")
+        val wsIndex = convDir.parent?.let { readObject(it.resolve("index.json")) }
+        val entry = wsIndex?.get("conversations")
+            ?.takeIf { it.isJsonArray }
+            ?.asJsonArray
+            ?.firstOrNull { it.isJsonObject && str(it.asJsonObject, "id") == conv.id }
+            ?.asJsonObject
+            ?: return convIndex
+        val merged = JsonObject()
+        for (key in keys) {
+            (convIndex.get(key) ?: entry.get(key))?.let { merged.add(key, it) }
+        }
+        return merged
     }
 
     private fun copyStringMap(source: JsonObject, key: String, target: JsonObject) {
