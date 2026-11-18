@@ -2,6 +2,11 @@
 
 本项目的所有重要变更记录在此文件中，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [未发布]
+
+### 新增
+- 账号面板新增「添加账号」窗口，三条入口：OAuth 授权（`/v2/plugin/auth/state` 取 state → 浏览器授权 → 轮询 `/auth/token` 换 token → `/login/account` 补账号信息）、粘贴 Token / 凭据 JSON（裸 token 走 `/v2/plugin/accounts` 反查）、本地扫描 auth 目录或手选 `.info` 文件。
+
 ## [0.45.1] - 2026-11-16
 
 ### 新增

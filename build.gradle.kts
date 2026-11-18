@@ -8,7 +8,7 @@ plugins {
 }
 
 group = "dev.codebuddy.account"
-version = "0.45.1"
+version = "0.48.2"
 
 repositories {
     maven { url = uri("https://maven.aliyun.com/repository/public") }
@@ -28,6 +28,11 @@ dependencies {
         // local("D:/Program Files/JetBrains/IntelliJ IDEA 2026.2.0.1")
     }
     implementation("com.google.code.gson:gson:2.11.0")
+    // Kotlin 2.x 会给每个 enum 生成引用 kotlin.enums.EnumEntries 的 $ENTRIES 字段，
+    // 而 2022.3/2023.x 内置的 kotlin-stdlib 没有 kotlin.enums 包，
+    // verifier 在 2022.3.3 上判为 CRITICAL（Package 'kotlin.enums' is not found）。
+    // 显式随包分发 stdlib（gradle.properties 的 kotlin.stdlib.default.dependency=false 只关闭自动添加）。
+    implementation(kotlin("stdlib"))
     testImplementation("org.junit.jupiter:junit-jupiter:5.11.3")
     // Gradle 9 不再隐式提供 JUnit Platform Launcher，未显式声明时 test 任务起不来
     testRuntimeOnly("org.junit.platform:junit-platform-launcher:1.11.3")
