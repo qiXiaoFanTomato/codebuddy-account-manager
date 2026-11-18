@@ -1,19 +1,19 @@
-package dev.codebuddy.account.ui
+package dev.codebuddy.account.ui.views
 
 import com.intellij.icons.AllIcons
 import com.intellij.notification.NotificationType
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory
 import com.intellij.openapi.fileChooser.FileChooserFactory
 import com.intellij.openapi.fileChooser.FileSaverDescriptor
-import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory
-import com.intellij.openapi.project.Project
 import com.intellij.openapi.options.ShowSettingsUtil
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.Task
+import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
-import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBTextField
+import com.intellij.ui.JBColor
 import com.intellij.util.ui.JBUI
 import dev.codebuddy.account.checkin.CheckinTracker
 import dev.codebuddy.account.growth.GrowthTracker
@@ -23,11 +23,37 @@ import dev.codebuddy.account.model.CredentialSnapshot
 import dev.codebuddy.account.pet.QuickPhraseDialog
 import dev.codebuddy.account.quota.QuotaDisplayMode
 import dev.codebuddy.account.quota.QuotaSummary
-import dev.codebuddy.account.service.QuotaScheduler
 import dev.codebuddy.account.service.AccountEvents
 import dev.codebuddy.account.service.AccountLibrary
 import dev.codebuddy.account.service.AccountSettings
+import dev.codebuddy.account.service.QuotaScheduler
 import dev.codebuddy.account.service.SwitchResult
+import dev.codebuddy.account.ui.AccountSorter
+import dev.codebuddy.account.ui.AccountSortMode
+import dev.codebuddy.account.ui.components.AccountGridCard
+import dev.codebuddy.account.ui.components.AccountUiKit
+import dev.codebuddy.account.ui.components.FullWidthRow
+import dev.codebuddy.account.ui.components.GlyphBadge
+import dev.codebuddy.account.ui.components.GridCardAction
+import dev.codebuddy.account.ui.components.JellyButton
+import dev.codebuddy.account.ui.components.JellyButtonVariant
+import dev.codebuddy.account.ui.components.RoundedCard
+import dev.codebuddy.account.ui.components.SegmentedTabs
+import dev.codebuddy.account.ui.components.ThemeSwatchIcon
+import dev.codebuddy.account.ui.foundation.FlowWrapLayout
+import dev.codebuddy.account.ui.foundation.NumberDisplay
+import dev.codebuddy.account.ui.foundation.NumberDisplayBuilder
+import dev.codebuddy.account.ui.foundation.RollingReadout
+import dev.codebuddy.account.ui.foundation.ViewportTrigger
+import dev.codebuddy.account.ui.statusbar.CodeBuddyStatusBarWidget
+import dev.codebuddy.account.ui.tokens.AccentTheme
+import dev.codebuddy.account.ui.tokens.AccountUiColors
+import dev.codebuddy.account.ui.tokens.AccountUiRadius
+import dev.codebuddy.account.ui.tokens.AccountUiSpacing
+import dev.codebuddy.account.ui.tokens.AccountUiType
+import dev.codebuddy.account.ui.tokens.baseLabelFont
+import dev.codebuddy.account.ui.tokens.UiThemeEvents
+import dev.codebuddy.account.ui.tokens.UiThemeListener
 import java.awt.*
 import java.awt.datatransfer.StringSelection
 import java.awt.event.ActionEvent
@@ -54,16 +80,10 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
     private val gridView = AccountGridView()
 
     /** 底栏右侧：进度 / 结果提示（切换、刷新、同步的即时反馈） */
-    private val statusLabel = JBLabel("悬停看明细 · 点击读数切换维度")
+    private val statusLabel = JBLabel("")
 
     /** 账号视图 meta：账号数 / 认证域数 / 分页范围 */
     private val rangeLabel = JBLabel("").apply {
-        font = AccountUiType.ui(AccountUiType.caption)
-        foreground = AccountUiColors.textSecondary
-    }
-
-    /** 看板视图 meta */
-    private val dashboardMeta = JBLabel("").apply {
         font = AccountUiType.ui(AccountUiType.caption)
         foreground = AccountUiColors.textSecondary
     }
@@ -121,6 +141,12 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
     )
 
     private lateinit var viewTabs: SegmentedTabs
+
+    /** 抽屉面工具栏容器：视图切换后按视图显隐动作并重新布局 */
+    private lateinit var toolDrawer: JComponent
+
+    /** 账号视图专属的工具栏控件（切换 / 改名 / 删除 / 回滚 / 筛选 / 排序 / 导出导入 / 勾选） */
+    private val listOnlyControls = mutableListOf<JComponent>()
 
     private lateinit var selectAllBox: JCheckBox
     private lateinit var selectionHint: JLabel
@@ -188,11 +214,17 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
                 override fun actionPerformed(e: ActionEvent?) = action()
             })
         }
-        bind("control F", "cb.focusFilter") { filterField.requestFocusInWindow() }
+        // 筛选框只在账号视图可见，其它视图按快捷键不做无效聚焦
+        bind("control F", "cb.focusFilter") {
+            if (viewMode == VIEW_LIST) filterField.requestFocusInWindow()
+        }
         bind("ESCAPE", "cb.clearFilter") {
             if (filterField.text.isNotEmpty()) filterField.text = ""
         }
-        bind("control ENTER", "cb.switchSelected") { doSwitch() }
+        // 切换作用于账号卡片上的勾选，只在账号视图响应
+        bind("control ENTER", "cb.switchSelected") {
+            if (viewMode == VIEW_LIST) doSwitch()
+        }
     }
 
     /** 外部数据变更后刷新本面板（切回 EDT，避免跨线程操作 Swing） */
@@ -230,14 +262,14 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
 
         // 品牌：18px 方框 + 内嵌朱印点（对应 `.brand-mark`）
         val brandRow = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(9), 0)).apply { isOpaque = false }
-        brandRow.add(BrandMark())
+        brandRow.add(AccountUiKit.brandMark())
         brandRow.add(JLabel("CodeBuddy Accounts").apply {
             font = baseLabelFont().deriveFont(Font.BOLD, AccountUiType.tab)
             foreground = AccountUiColors.onInk
         })
         val brand = centeredInTitleBar(brandRow)
 
-        viewTabs = SegmentedTabs(
+        viewTabs = AccountUiKit.segmented(
             listOf("看板", "账号", "额度明细"),
             viewTabIndex(viewMode),
             { index -> setView(viewModeOf(index)) },
@@ -290,6 +322,10 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
      * 第一行是动作（导入 / 历史 / 切换 / 调度 / 刷新 / 额度明细 / 重命名 / 删除 / 回滚），
      * 第二行是筛选、排序、导出导入与设置，右侧是勾选状态与「已选中」，与
      * design/plugin-ui.html 的 `.toolbar` 一一对应。
+     *
+     * 工具栏常驻，但只显示当前视图用得上的动作：账号专属动作（切换 / 改名 / 删除 /
+     * 回滚 / 筛选 / 排序 / 导出导入 / 勾选批量）在看板与额度明细里隐藏，
+     * 避免在看板上点了没有对应对象。
      */
     private fun buildToolDrawer(): JComponent {
         val drawer = JPanel()
@@ -301,6 +337,7 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
         )
         drawer.add(buildActionRow())
         drawer.add(buildFilterRow())
+        toolDrawer = drawer
         return drawer
     }
 
@@ -309,15 +346,24 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
         val row = FullWidthRow(FlowWrapLayout(JBUI.scale(6), JBUI.scale(6)))
         row.border = JBUI.Borders.emptyBottom(AccountUiSpacing.sm)
 
-        row.add(toolButton("从 auth 目录导入", JellyButtonVariant.PRIMARY) { doImport() })
+        row.add(toolButton("添加账号", JellyButtonVariant.PRIMARY) { doAddAccount() })
+        row.add(toolButton("从 auth 目录导入") { doImport() })
         row.add(toolButton("历史对话") { doOpenHistory() })
-        row.add(toolButton("切换") { doSwitch() })
+        row.add(toolButton("历史共享到当前", listOnly = true, tooltip = "把全部账号的历史会话合并到当前激活账号") {
+            doSyncHistoryToCurrent()
+        })
+        row.add(
+            toolButton("批量同步历史", listOnly = true, tooltip = "把全部账号的历史会话互相合并到每一个账号") {
+                doSyncAllAccounts()
+            }
+        )
+        row.add(toolButton("切换", listOnly = true) { doSwitch() })
         row.add(toolButton("智能调度") { doSmartSwitch() })
         row.add(toolButton("刷新额度") { doRefreshQuota() })
-        row.add(toolButton("额度视图") { setView(VIEW_QUOTA) })
-        row.add(toolButton("重命名") { doEditAlias() })
-        row.add(toolButton("删除", danger = true) { doDelete() })
-        row.add(toolButton("回滚") { doRollback() })
+        row.add(toolButton("额度视图", listOnly = true) { setView(VIEW_QUOTA) })
+        row.add(toolButton("重命名", listOnly = true) { doEditAlias() })
+        row.add(toolButton("删除", danger = true, listOnly = true) { doDelete() })
+        row.add(toolButton("回滚", listOnly = true) { doRollback() })
         return row
     }
 
@@ -330,12 +376,12 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
         )
 
         val left = JPanel(FlowWrapLayout(JBUI.scale(6), JBUI.scale(6))).apply { isOpaque = false }
-        left.add(toolbarLabel("筛选:"))
-        left.add(buildFilterField())
-        left.add(toolbarLabel("排序:"))
-        left.add(buildSortCombo())
-        left.add(toolButton("导出") { doExport() })
-        left.add(toolButton("导入库") { doImportLibrary() })
+        left.add(toolbarLabel("筛选:").listOnly())
+        left.add(buildFilterField().listOnly())
+        left.add(toolbarLabel("排序:").listOnly())
+        left.add(buildSortCombo().listOnly())
+        left.add(toolButton("导出", listOnly = true) { doExport() })
+        left.add(toolButton("导入库", listOnly = true) { doImportLibrary() })
         left.add(toolButton("设置") { doOpenSettings() })
 
         val right = JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(6), 0)).apply { isOpaque = false }
@@ -352,12 +398,12 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
             font = AccountUiType.ui(AccountUiType.label)
             foreground = AccountUiColors.textSecondary
         }
-        bulkButton = JellyButton("批量操作", JellyButtonVariant.SECONDARY, null, "对勾选的账号执行批量操作") {
+        bulkButton = AccountUiKit.button("批量操作", JellyButtonVariant.SECONDARY, null, "对勾选的账号执行批量操作") {
             showBulkMenu(bulkButton)
         }.apply { isEnabled = false }
-        right.add(selectAllBox)
-        right.add(selectionHint)
-        right.add(bulkButton)
+        right.add(selectAllBox.listOnly())
+        right.add(selectionHint.listOnly())
+        right.add(bulkButton.listOnly())
 
         // 左侧筛选区放 CENTER：FlowWrapLayout 需要拿到实际可用宽度才会折行
         row.add(left, BorderLayout.CENTER)
@@ -370,10 +416,19 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
         text: String,
         variant: JellyButtonVariant = JellyButtonVariant.SECONDARY,
         danger: Boolean = false,
+        listOnly: Boolean = false,
+        tooltip: String? = null,
         onClick: () -> Unit,
-    ): JellyButton = JellyButton(text, variant, null, text, onClick).apply {
+    ): JellyButton = AccountUiKit.button(text, variant, null, tooltip ?: text, onClick).apply {
         this.danger = danger
         actionButtons[text] = this
+        if (listOnly) this.listOnly()
+    }
+
+    /** 标记该控件只在账号视图出现（看板 / 额度明细里隐藏） */
+    private fun <T : JComponent> T.listOnly(): T {
+        listOnlyControls += this
+        return this
     }
 
     /** 筛选框：等宽小字 + 1px 铅线，对应 `.tw-input` */
@@ -453,7 +508,7 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
         item("强制登出") { doForceLogout() }
 
         // 标题栏右侧的 ⋯：与 HTML `.titlebar-tools` 同一位置
-        btn = JellyButton("", JellyButtonVariant.SECONDARY, AllIcons.Actions.More, "更多操作") {
+        btn = AccountUiKit.button("", JellyButtonVariant.SECONDARY, AllIcons.Actions.More, "更多操作") {
             menu.show(btn, 0, btn.height)
         }.apply { onDark = true }
         return btn
@@ -533,7 +588,7 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
     private fun buildDashboardView(): JComponent {
         val panel = JPanel(BorderLayout())
         panel.background = AccountUiColors.panelBg
-        panel.add(viewHead("看板", dashboardMeta, dashboard.headerControls()), BorderLayout.NORTH)
+        panel.add(viewHead("看板", null, dashboard.headerControls()), BorderLayout.NORTH)
         panel.add(dashboard, BorderLayout.CENTER)
         return panel
     }
@@ -548,7 +603,7 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
     }
 
     /** 视图标题行：对应 `.view-head`（标题 + 右侧读数 + 操作） */
-    private fun viewHead(title: String, meta: JLabel, actions: JComponent? = null): JComponent {
+    private fun viewHead(title: String, meta: JLabel?, actions: JComponent? = null): JComponent {
         val row = JPanel(BorderLayout(JBUI.scale(16), 0))
         row.isOpaque = false
         row.border = JBUI.Borders.empty(
@@ -565,7 +620,7 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
                 foreground = AccountUiColors.textPrimary
             }
         )
-        left.add(meta)
+        if (meta != null) left.add(meta)
         row.add(left, BorderLayout.WEST)
         if (actions != null) {
             actions.alignmentY = Component.CENTER_ALIGNMENT
@@ -598,7 +653,7 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
                 updatePager()
             }
         }
-        prevPageBtn = JellyButton("上一页", JellyButtonVariant.SECONDARY, null, "回到上一页") {
+        prevPageBtn = AccountUiKit.button("上一页", JellyButtonVariant.SECONDARY, null, "回到上一页") {
             gridView.setPage(gridView.pageIndex() - 1)
             updatePager()
         }
@@ -607,7 +662,7 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
             foreground = AccountUiColors.textMuted
             border = JBUI.Borders.empty(0, 4)
         }
-        nextPageBtn = JellyButton("下一页", JellyButtonVariant.SECONDARY, null, "翻到下一页") {
+        nextPageBtn = AccountUiKit.button("下一页", JellyButtonVariant.SECONDARY, null, "翻到下一页") {
             gridView.setPage(gridView.pageIndex() + 1)
             updatePager()
         }
@@ -646,7 +701,7 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
         box.border = JBUI.Borders.empty(26, 32)
         box.preferredSize = Dimension(JBUI.scale(320), JBUI.scale(196))
 
-        val badge = GlyphBadge("CB", AccountUiColors.accentSoft, AccountUiColors.accent, size = 40).apply {
+        val badge = AccountUiKit.glyph("CB", AccountUiColors.accentSoft, AccountUiColors.accent, size = 40).apply {
             alignmentX = Component.CENTER_ALIGNMENT
         }
         val title = JBLabel("还没有任何账号").apply {
@@ -659,7 +714,7 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
             font = font.deriveFont(Font.PLAIN, AccountUiType.label)
             foreground = AccountUiColors.textMuted
         }
-        val action = JellyButton("立即导入", JellyButtonVariant.PRIMARY, null, "从 auth 目录导入") { doImport() }
+        val action = AccountUiKit.button("立即导入", JellyButtonVariant.PRIMARY, null, "从 auth 目录导入") { doImport() }
         val actionRow = JPanel(FlowLayout(FlowLayout.CENTER, 0, 0)).apply {
             isOpaque = false
             alignmentX = Component.CENTER_ALIGNMENT
@@ -842,7 +897,6 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
             if (saved.isNotEmpty()) append(" · $domains 个认证域")
             if (pendingRestartKey != null) append(" · 待重启生效")
         }
-        dashboardMeta.text = "「管理卡片」进入编辑模式可排序 / 增删 · 今天 " + java.time.LocalDate.now()
 
         applyViewState()
         updatePager()
@@ -877,8 +931,21 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
 
     /** 分页控件只在账号视图出现；其它视图用各自的标题行 */
     private fun applyViewState() {
+        applyToolbarScope()
         if (!::pagerPanel.isInitialized) return
         pagerPanel.isVisible = viewMode == VIEW_LIST
+    }
+
+    /**
+     * 工具栏按视图收敛：账号专属动作（切换 / 改名 / 删除 / 回滚 / 筛选 / 排序 /
+     * 导出导入 / 勾选批量）只在账号视图出现，看板与额度明细只保留全局动作。
+     */
+    private fun applyToolbarScope() {
+        if (!::toolDrawer.isInitialized) return
+        val accountsView = viewMode == VIEW_LIST
+        listOnlyControls.forEach { it.isVisible = accountsView }
+        toolDrawer.revalidate()
+        toolDrawer.repaint()
     }
 
     /** 底部概览：账号数 / token 过期数 / 当前账号 / 额度最高账号 */
@@ -992,6 +1059,15 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
     // ---------------------------------------------------------------
     // 操作
     // ---------------------------------------------------------------
+
+    /** 添加账号：OAuth 授权 / Token·JSON / 本地导入三入口 */
+    private fun doAddAccount() {
+        AddAccountDialog.show(project) { count ->
+            if (count <= 0) return@show
+            refresh()
+            notifySuccess("添加成功", "已添加/更新 $count 个账号，点「刷新额度」可拉取资源包数据。")
+        }
+    }
 
     private fun doImport() {
         if (!beginAction("import")) return
@@ -1808,7 +1884,9 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
             notify("打开失败", "找不到操作记录文件：${dev.codebuddy.account.service.OperationLog.file}", NotificationType.WARNING)
             return
         }
-        com.intellij.openapi.fileEditor.FileEditorManager.getInstance(project).openFile(virtual, true)
+        // openFile(VirtualFile, boolean) 已废弃，改用显式的 OpenFileDescriptor 打开文本编辑器
+        com.intellij.openapi.fileEditor.FileEditorManager.getInstance(project)
+            .openTextEditor(com.intellij.openapi.fileEditor.OpenFileDescriptor(project, virtual), true)
     }
 
     private companion object {
@@ -1820,33 +1898,6 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
 
         /** 切换日志最多保留的行数（对应 `.log-bar` 的一小段历史） */
         const val MAX_LOG_LINES = 4
-    }
-}
-
-/** 品牌标记：白框 + 朱红点，对应设计稿的 `.brand-mark` */
-private class BrandMark : JComponent() {
-
-    private val side = JBUI.scale(18)
-
-    init {
-        isOpaque = false
-        preferredSize = Dimension(side, side)
-        minimumSize = preferredSize
-        maximumSize = preferredSize
-    }
-
-    override fun paintComponent(g: Graphics) {
-        val g2 = g.create() as Graphics2D
-        try {
-            g2.color = AccountUiColors.onInk
-            g2.stroke = BasicStroke(2f)
-            g2.draw(java.awt.geom.Rectangle2D.Float(1f, 1f, (side - 2).toFloat(), (side - 2).toFloat()))
-            g2.color = AccountUiColors.seal
-            val dot = (side / 3).toFloat()
-            g2.fill(java.awt.geom.Rectangle2D.Float((side - dot) / 2f, (side - dot) / 2f, dot, dot))
-        } finally {
-            g2.dispose()
-        }
     }
 }
 
