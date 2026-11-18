@@ -1,4 +1,4 @@
-package dev.codebuddy.account.ui
+package dev.codebuddy.account.ui.views
 
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
@@ -7,27 +7,36 @@ import com.intellij.openapi.ui.DialogWrapper
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.util.ui.JBUI
 import dev.codebuddy.account.service.AccountLibrary
+import dev.codebuddy.account.ui.components.AccountUiKit
+import dev.codebuddy.account.ui.components.HairLine
+import dev.codebuddy.account.ui.components.RoundedCard
+import dev.codebuddy.account.ui.foundation.Jelly
+import dev.codebuddy.account.ui.tokens.AccountUiColors
+import dev.codebuddy.account.ui.tokens.AccountUiRadius
+import dev.codebuddy.account.ui.tokens.AccountUiSpacing
+import dev.codebuddy.account.ui.tokens.AccountUiType
 import dev.codebuddy.account.usage.DailyUsage
+import dev.codebuddy.account.usage.formatCreditThousands
 import dev.codebuddy.account.usage.UsageRecord
 import dev.codebuddy.account.usage.UsageStats
-import dev.codebuddy.account.usage.formatCreditThousands
 import java.awt.BasicStroke
 import java.awt.BorderLayout
 import java.awt.Color
 import java.awt.Component
 import java.awt.Cursor
 import java.awt.Dimension
-import java.awt.FlowLayout
-import java.awt.Font
-import java.awt.Graphics
-import java.awt.Graphics2D
-import java.awt.GradientPaint
-import java.awt.GridLayout
-import java.awt.RenderingHints
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
-import java.time.LocalDate
+import java.awt.FlowLayout
+import java.awt.Font
+import java.awt.GradientPaint
+import java.awt.Graphics
+import java.awt.Graphics2D
+import java.awt.GridLayout
+import java.awt.RenderingHints
 import java.time.format.DateTimeFormatter
+import java.time.LocalDate
+import java.util.Locale
 import javax.swing.Action
 import javax.swing.Box
 import javax.swing.BoxLayout
@@ -39,13 +48,15 @@ import javax.swing.ScrollPaneConstants
 import javax.swing.SwingConstants
 import javax.swing.SwingUtilities
 
+
+
 /**
  * 用量统计窗口：1:1 复刻 WorkDaddy「用量统计」页。
  *
  * 结构：
  *  - 顶部「Token / 积分」口径 tab（Token 目前接口未提供，页内如实提示）；
  *  - 时间范围：今天 / 近 7 天 / 近 30 天 / 近 90 天；
- *  - 两张指标卡：积分消耗、调用次数；
+ *  - 四张指标卡：积分消耗、约合人民币、约合输出 token（两者都按估算系数折算）、调用次数；
  *  - 每日趋势：总览 / 按账号，折线图按天聚合（无记录的天补 0）；
  *  - 账号用量：按积分降序，右侧给数值与调用次数。
  *
@@ -157,7 +168,9 @@ class UsageStatsDialog(private val project: Project) : DialogWrapper(project) {
                 render()
                 status(
                     "已统计 ${byAccount.size} 个账号 · ${allRecords().size} 次调用 · " +
-                        "${formatCreditThousands(totalCredit())} 积分"
+                        "${formatCreditThousands(totalCredit())} 积分 ≈ ${formatCny(totalCredit())}" +
+                        " ≈ ${formatTokens(totalCredit())} token" +
+                        "（人民币按 99 元 / 2000 积分、token 按 1 积分 ≈ 2000 输出 token 估算）"
                 )
             }
         }
@@ -265,7 +278,7 @@ class UsageStatsDialog(private val project: Project) : DialogWrapper(project) {
     }
 
     private fun metricCards(): JComponent {
-        val row = JPanel(GridLayout(1, 2, JBUI.scale(10), 0)).apply {
+        val row = JPanel(GridLayout(1, 4, JBUI.scale(10), 0)).apply {
             isOpaque = false
             alignmentX = Component.LEFT_ALIGNMENT
             maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(86))
@@ -275,14 +288,40 @@ class UsageStatsDialog(private val project: Project) : DialogWrapper(project) {
             loading -> "…"
             else -> formatCreditThousands(totalCredit())
         }
+        val cnyText = when {
+            metric == Metric.TOKEN -> "—"
+            loading -> "…"
+            else -> formatCny(totalCredit())
+        }
+        val tokenText = when {
+            metric == Metric.TOKEN -> "—"
+            loading -> "…"
+            else -> formatTokens(totalCredit())
+        }
         val countText = when {
             metric == Metric.TOKEN -> "—"
             loading -> "…"
             else -> totalCount().toString()
         }
         row.add(MetricCard(if (metric == Metric.TOKEN) "Token 消耗" else "积分消耗", creditText))
-        row.add(MetricCard("调用", countText))
+        row.add(MetricCard("约合人民币", cnyText))
+        row.add(MetricCard("约合 token（输出）", tokenText))
+        row.add(MetricCard("调用次数", countText))
         return row
+    }
+
+    /** 积分折算人民币：按 [CNY_PER_CREDIT] 估算，展示成「¥12.34」 */
+    private fun formatCny(credit: Double): String =
+        String.format(Locale.ROOT, "¥%,.2f", credit * CNY_PER_CREDIT)
+
+    /** 积分折算输出 token：按 [TOKENS_PER_CREDIT] 估算，过万用「万 / 亿」免得数字挤爆卡片 */
+    private fun formatTokens(credit: Double): String {
+        val tokens = credit * TOKENS_PER_CREDIT
+        return when {
+            tokens >= 100_000_000 -> String.format(Locale.ROOT, "%.2f 亿", tokens / 100_000_000)
+            tokens >= 10_000 -> String.format(Locale.ROOT, "%.1f 万", tokens / 10_000)
+            else -> String.format(Locale.ROOT, "%,.0f", tokens)
+        }
     }
 
     private fun trendCard(): JComponent {
@@ -384,7 +423,7 @@ class UsageStatsDialog(private val project: Project) : DialogWrapper(project) {
 
         var first = true
         for ((name, credit, count) in rows) {
-            if (!first) card.add(HairLine())
+            if (!first) card.add(AccountUiKit.divider())
             first = false
             card.add(AccountUsageRow(name, if (metric == Metric.TOKEN) "—" else formatCreditThousands(credit), count))
         }
@@ -432,31 +471,14 @@ class UsageStatsDialog(private val project: Project) : DialogWrapper(project) {
         fun endTime(): String = to().toString() + " 23:59:59"
     }
 
-    /** 白色圆角卡片 */
-    private class StatsCard : JPanel() {
+    /** 白色圆角卡片：统一走档案卡外壳，不再自绘一份卡底 */
+    private class StatsCard : RoundedCard(
+        AccountUiColors.cardBg,
+        AccountUiColors.border,
+        AccountUiRadius.card,
+    ) {
         init {
-            isOpaque = false
-            layout = BoxLayout(this, BoxLayout.Y_AXIS)
-            alignmentX = Component.LEFT_ALIGNMENT
-            border = JBUI.Borders.empty(14, 16)
-        }
-
-        override fun paintComponent(g: Graphics) {
-            val g2 = g.create() as Graphics2D
-            try {
-                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-                val shape = Jelly.round(
-                    0.5f, 0.5f, (width - 1).toFloat(), (height - 1).toFloat(),
-                    JBUI.scale(8).toFloat(),
-                )
-                g2.color = AccountUiColors.cardBg
-                g2.fill(shape)
-                g2.color = AccountUiColors.chartBorder
-                g2.draw(shape)
-            } finally {
-                g2.dispose()
-            }
-            super.paintComponent(g)
+            border = JBUI.Borders.empty(AccountUiSpacing.cardPadV, AccountUiSpacing.cardPadH)
         }
 
         override fun getMaximumSize(): Dimension = Dimension(Int.MAX_VALUE, preferredSize.height)
@@ -580,11 +602,15 @@ class UsageStatsDialog(private val project: Project) : DialogWrapper(project) {
         }
     }
 
-    /** 指标卡：标签 + 大号数值 */
-    private class MetricCard(label: String, value: String) : JPanel(BorderLayout()) {
+    /** 指标卡：标签 + 大号数值（统一走档案卡外壳） */
+    private class MetricCard(label: String, value: String) : RoundedCard(
+        AccountUiColors.cardBg,
+        AccountUiColors.border,
+        AccountUiRadius.card,
+    ) {
         init {
-            isOpaque = false
-            border = JBUI.Borders.empty(12, 14)
+            layout = BorderLayout()
+            border = JBUI.Borders.empty(AccountUiSpacing.md, AccountUiSpacing.lg)
             add(
                 JLabel(label).apply {
                     font = AccountUiType.ui(AccountUiType.caption)
@@ -600,24 +626,6 @@ class UsageStatsDialog(private val project: Project) : DialogWrapper(project) {
                 },
                 BorderLayout.CENTER,
             )
-        }
-
-        override fun paintComponent(g: Graphics) {
-            val g2 = g.create() as Graphics2D
-            try {
-                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-                val shape = Jelly.round(
-                    0.5f, 0.5f, (width - 1).toFloat(), (height - 1).toFloat(),
-                    JBUI.scale(8).toFloat(),
-                )
-                g2.color = AccountUiColors.cardBg
-                g2.fill(shape)
-                g2.color = AccountUiColors.chartBorder
-                g2.draw(shape)
-            } finally {
-                g2.dispose()
-            }
-            super.paintComponent(g)
         }
     }
 
@@ -739,36 +747,57 @@ class UsageStatsDialog(private val project: Project) : DialogWrapper(project) {
                 if (right <= left || bottom <= top) return
 
                 val maxCredit = points.maxOf { it.credit }.coerceAtLeast(1.0)
-                val stepX = if (points.size <= 1) 0f else (right - left) / (points.size - 1)
+                // 单日（如时间范围选「今天」）没有折线：点位放图中间，避免零宽路径退化成贴左边的竖条
+                val single = points.size == 1
+                val stepX = if (single) 0f else (right - left) / (points.size - 1)
 
-                fun xAt(i: Int): Float = left + stepX * i
+                fun xAt(i: Int): Float = if (single) (left + right) / 2f else left + stepX * i
                 fun yAt(v: Double): Float = (bottom - ((v / maxCredit) * (bottom - top))).toFloat()
 
-                // 折线 + 填充
-                val line = java.awt.geom.Path2D.Float()
-                val area = java.awt.geom.Path2D.Float()
-                for ((i, p) in points.withIndex()) {
-                    val x = xAt(i)
-                    val y = yAt(p.credit)
-                    if (i == 0) {
-                        line.moveTo(x, y)
-                        area.moveTo(x, bottom)
-                        area.lineTo(x, y)
-                    } else {
-                        line.lineTo(x, y)
-                        area.lineTo(x, y)
-                    }
-                }
-                area.lineTo(xAt(points.size - 1), bottom)
-                area.closePath()
-                g2.paint = GradientPaint(
-                    0f, top, Color(AccountUiColors.chartGreen.red, AccountUiColors.chartGreen.green, AccountUiColors.chartGreen.blue, 70),
-                    0f, bottom, Color(AccountUiColors.chartGreen.red, AccountUiColors.chartGreen.green, AccountUiColors.chartGreen.blue, 6),
+                val green = AccountUiColors.chartGreen
+                val fillPaint = GradientPaint(
+                    0f, top, Color(green.red, green.green, green.blue, 70),
+                    0f, bottom, Color(green.red, green.green, green.blue, 6),
                 )
-                g2.fill(area)
-                g2.color = AccountUiColors.chartGreen
-                g2.stroke = BasicStroke(JBUI.scale(2).toFloat(), BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND)
-                g2.draw(line)
+
+                if (single) {
+                    // 一天只有一根柱子：竖向渐变 + 居中细柱，读起来仍是「当天消耗量」
+                    val x = xAt(0)
+                    val y = yAt(points[0].credit)
+                    g2.paint = fillPaint
+                    val barWidth = JBUI.scale(3).toFloat()
+                    g2.fill(
+                        java.awt.geom.Rectangle2D.Float(
+                            x - barWidth / 2f,
+                            y,
+                            barWidth,
+                            (bottom - y).coerceAtLeast(1f),
+                        )
+                    )
+                } else {
+                    // 折线 + 填充
+                    val line = java.awt.geom.Path2D.Float()
+                    val area = java.awt.geom.Path2D.Float()
+                    for ((i, p) in points.withIndex()) {
+                        val x = xAt(i)
+                        val y = yAt(p.credit)
+                        if (i == 0) {
+                            line.moveTo(x, y)
+                            area.moveTo(x, bottom)
+                            area.lineTo(x, y)
+                        } else {
+                            line.lineTo(x, y)
+                            area.lineTo(x, y)
+                        }
+                    }
+                    area.lineTo(xAt(points.size - 1), bottom)
+                    area.closePath()
+                    g2.paint = fillPaint
+                    g2.fill(area)
+                    g2.color = green
+                    g2.stroke = BasicStroke(JBUI.scale(2).toFloat(), BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND)
+                    g2.draw(line)
+                }
 
                 // 点 / 数值 / 日期
                 val valueFont = AccountUiType.ui(AccountUiType.micro)
@@ -807,6 +836,25 @@ class UsageStatsDialog(private val project: Project) : DialogWrapper(project) {
     }
 
     companion object {
+        /**
+         * 积分折算人民币的单价。
+         *
+         * 官方个人版标准价 99 元 / 2000 基础积分 ≈ 0.0495 元/积分
+         * （高级版 199/4000、旗舰版 999/20000 的基础积分单价一致），即 20 积分 ≈ 1 元。
+         * 口径：不区分积分来源——基础积分、加赠积分、限免额度消耗掉的部分都按同一单价折算，
+         * 反映「这些用量按正常售价值多少钱」，不做免费额度的折扣。
+         */
+        private const val CNY_PER_CREDIT = 0.0495
+
+        /**
+         * 积分折算输出 token 的经验系数。
+         *
+         * 官方没有固定汇率：积分按各模型的 token 单价折算，同一笔积分在不同模型上
+         * 换到的 token 数差别很大。实测公开数据集中在 1 积分 ≈ 1000~3000 输出 token，
+         * 这里取中位值 2000 做估算，只用于「大概多少 token」的量级参考，改口径只改这里。
+         */
+        private const val TOKENS_PER_CREDIT = 2000.0
+
         private val RANGES = arrayOf(
             RangeChoice("今天", 1),
             RangeChoice("近 7 天", 7),

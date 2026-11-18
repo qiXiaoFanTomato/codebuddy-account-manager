@@ -4,14 +4,17 @@ import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManager
 import com.intellij.util.ui.JBUI
-import dev.codebuddy.account.service.AccountLibrary
 import dev.codebuddy.account.pet.PetWhisper.Motion
-import dev.codebuddy.account.ui.AccountUiColors
-import dev.codebuddy.account.ui.HistoryDialog
+import dev.codebuddy.account.service.AccountLibrary
+import dev.codebuddy.account.ui.tokens.AccountUiColors
+import dev.codebuddy.account.ui.views.HistoryDialog
+import dev.codebuddy.account.ui.views.UsageStatsDialog
 import dev.codebuddy.account.usage.UsageTodayTracker
 import java.awt.Color
 import java.awt.Cursor
 import java.awt.Dimension
+import java.awt.event.MouseAdapter
+import java.awt.event.MouseEvent
 import java.awt.Font
 import java.awt.Graphics
 import java.awt.Graphics2D
@@ -19,14 +22,14 @@ import java.awt.GraphicsEnvironment
 import java.awt.Point
 import java.awt.Rectangle
 import java.awt.RenderingHints
-import java.awt.event.MouseAdapter
-import java.awt.event.MouseEvent
 import javax.swing.JComponent
 import javax.swing.JMenuItem
 import javax.swing.JPopupMenu
 import javax.swing.JWindow
 import javax.swing.SwingUtilities
 import javax.swing.Timer
+
+
 
 /**
  * 桌宠浮窗：无边框透明 [JWindow]，只承载形象与交互。
@@ -35,7 +38,7 @@ import javax.swing.Timer
  * - 悬停：描边转墨蓝、投影加深
  * - 单击：点击回应动画与音效；拖动改变位置并持久化
  * - 双击积分读数：随机文案（统计 / 鼓励 / 调侃）+ 配套动作，不弹窗
- * - 右键菜单 / 额度气泡：额度明细、历史对话、立即刷新
+ * - 右键菜单：用量统计、历史对话、立即刷新；额度气泡：额度明细
  *
  * 窗口不抢 IDE 焦点（`isFocusableWindow = false`），不进入任务栏（JWindow 天然无任务栏项）。
  */
@@ -283,7 +286,7 @@ class PetWindow(
         bubble.hide()
         val menu = JPopupMenu()
         menu.add(JMenuItem("刷新一下额度").apply { addActionListener { onRefresh() } })
-        menu.add(JMenuItem("看看额度与上一轮消耗…").apply { addActionListener { openQuotaDetail() } })
+        menu.add(JMenuItem("看看用量统计…").apply { addActionListener { openUsageStats() } })
         menu.add(JMenuItem("让我说句话").apply { addActionListener { whisper(PetWhisper.nextLine()) } })
         menu.add(JMenuItem("给我讲个笑话").apply { addActionListener { tellJoke() } })
         menu.add(JMenuItem("看一眼余额").apply { addActionListener { toggleBubble() } })
@@ -319,11 +322,18 @@ class PetWindow(
         UsageTodayTracker.ensureFresh()
     }
 
-    /** 额度明细入口：右键菜单与额度气泡上的「额度明细」按钮 */
+    /** 额度明细入口：额度气泡上的「额度明细」按钮（右键菜单已改为用量统计） */
     private fun openQuotaDetail() {
         bubble.hide()
         val project = activeProject() ?: return
         PetQuotaDialog.show(project)
+    }
+
+    /** 用量统计入口：积分 / 约合人民币 / 调用趋势 */
+    private fun openUsageStats() {
+        bubble.hide()
+        val project = activeProject() ?: return
+        UsageStatsDialog.show(project)
     }
 
     /** 定时随机小动作（由 [PetService] 的定时器调用）；返回是否真的演了一段 */
