@@ -1,21 +1,21 @@
 package dev.codebuddy.account.service
 
-import com.intellij.openapi.Disposable
+import com.intellij.notification.NotificationType
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.diagnostic.logger
-import com.intellij.notification.NotificationType
+import com.intellij.openapi.Disposable
 import dev.codebuddy.account.credential.SecretStorage
 import dev.codebuddy.account.hotswap.CodeBuddyBridge
 import dev.codebuddy.account.model.CredentialSnapshot
 import java.nio.file.*
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.ThreadLocalRandom
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * 后台服务：
@@ -181,12 +181,21 @@ class AutoRefreshService : Disposable {
             try {
                 val saved = AccountLibrary.getInstance().listSaved()
                 if (saved.isEmpty()) return@execute
-                val expired = saved.filter { it.isRefreshTokenExpired || it.isAccessTokenExpired }
-                if (expired.isEmpty()) return@execute
-                notify(
-                    "CodeBuddy 账号 token 异常",
-                    "共 ${expired.size} 个账号 token 过期或即将失效：\n" + describe(expired),
-                    NotificationType.WARNING
+                // 已过期 + 剩余不足 3 天，统一汇总成一条
+                val abnormal = saved.filter { it.needsTokenAttention }
+                if (abnormal.isEmpty()) return@execute
+                val expiredCount = abnormal.count { it.isRefreshTokenExpired || it.isAccessTokenExpired }
+                val title = if (expiredCount == 0) "CodeBuddy 账号 token 即将失效" else "CodeBuddy 账号 token 异常"
+                val head = if (expiredCount == 0) {
+                    "共 ${abnormal.size} 个账号 token 将在 ${warnWindowText()}内失效："
+                } else {
+                    "共 ${abnormal.size} 个账号 token 过期或即将失效："
+                }
+                // token 告警必须留痕：IDE 通知与桌宠同时发
+                dev.codebuddy.account.pet.PetNotifier.notifyBoth(
+                    dev.codebuddy.account.pet.PetNotifier.Level.WARN,
+                    title,
+                    head + "\n" + describe(abnormal),
                 )
             } catch (e: Exception) {
                 log.warn("检查 token 过期失败", e)
@@ -256,10 +265,28 @@ class AutoRefreshService : Disposable {
 
     private fun describe(list: List<CredentialSnapshot>): String =
         list.take(6).joinToString("\n") { s ->
-            val state = if (s.isRefreshTokenExpired) "refresh token 过期，需重新登录"
-            else "access token 过期，可能需刷新"
-            "· ${s.displayName}（${s.domainHost}）：$state"
+            "· ${s.displayName}（${s.domainHost}）：${tokenStateOf(s)}"
         } + if (list.size > 6) "\n… 等 ${list.size} 个" else ""
+
+    /** 单个账号的 token 状态文案：已过期优先，其次「还有多久失效」 */
+    private fun tokenStateOf(s: CredentialSnapshot): String = when {
+        s.isRefreshTokenExpired -> "refresh token 过期，需重新登录"
+        s.isAccessTokenExpired -> "access token 过期，可能需刷新"
+        s.isRefreshTokenExpiringSoon ->
+            "refresh token 将在 ${remainText(s.refreshExpiresAt)}后失效，建议提前重新登录"
+        else -> "access token 将在 ${remainText(s.expiresAt)}后失效"
+    }
+
+    /** 预警窗口的自然语言描述，如「3 天」 */
+    private fun warnWindowText(): String =
+        "${CredentialSnapshot.EXPIRY_WARN_WINDOW_MS / (24 * 60 * 60 * 1000L)} 天"
+
+    /** 剩余时长：不足 1 天按小时显示，避免出现「0 天后失效」 */
+    private fun remainText(deadline: Long): String {
+        val leftMs = (deadline - System.currentTimeMillis()).coerceAtLeast(0)
+        val hours = leftMs / (60 * 60 * 1000L)
+        return if (hours >= 24) "${hours / 24} 天" else "${hours.coerceAtLeast(1)} 小时"
+    }
 
     /** 统一提示出口：优先由桌宠承载，不可用时退回 IDE 气泡通知 */
     private fun notify(title: String, content: String, type: NotificationType) {

@@ -4,6 +4,8 @@ import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
 import com.intellij.openapi.project.Project
 
+
+
 /**
  * 系统提示的统一出口：**优先由桌宠承载**，桌宠不可用时退回 IDE 气泡通知。
  *
@@ -64,6 +66,28 @@ object PetNotifier {
             false
         }
         if (shownByPet) return
+        balloon(level, title, content, project)
+    }
+
+    /**
+     * 同时通知：IDE 气泡与桌宠各发一份，不做二选一。
+     *
+     * 只给**必须留痕的关键告警**用（如 token 过期）：桌宠在启动早期、非持有者进程或
+     * 已关闭时可能没有窗口，单走桌宠会让整条通知消失，所以 IDE 通知照发。
+     */
+    fun notifyBoth(
+        level: Level,
+        title: String,
+        content: String,
+        project: Project? = null,
+        durationMs: Int? = null,
+        highlight: Boolean = false,
+    ) {
+        try {
+            PetService.getInstance().showNotice(level, title, content, durationMs, highlight)
+        } catch (_: Throwable) {
+            // 桌宠不可用不影响 IDE 通知
+        }
         balloon(level, title, content, project)
     }
 

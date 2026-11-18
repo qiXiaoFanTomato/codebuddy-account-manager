@@ -55,4 +55,33 @@ data class CredentialSnapshot(
 
     val isRefreshTokenExpired: Boolean
         get() = refreshExpiresAt > 0 && System.currentTimeMillis() > refreshExpiresAt
+
+    /** access token 即将失效：尚未过期，但剩余有效期不足预警窗口 */
+    val isAccessTokenExpiringSoon: Boolean
+        get() = isExpiringSoon(expiresAt)
+
+    /** refresh token 即将失效：尚未过期，但剩余有效期不足预警窗口 */
+    val isRefreshTokenExpiringSoon: Boolean
+        get() = isExpiringSoon(refreshExpiresAt)
+
+    /** 是否需要提醒：任一 token 已过期或即将失效 */
+    val needsTokenAttention: Boolean
+        get() = isRefreshTokenExpired || isAccessTokenExpired ||
+            isRefreshTokenExpiringSoon || isAccessTokenExpiringSoon
+
+    private fun isExpiringSoon(deadline: Long): Boolean {
+        if (deadline <= 0) return false
+        val left = deadline - System.currentTimeMillis()
+        return left > 0 && left <= EXPIRY_WARN_WINDOW_MS
+    }
+
+    companion object {
+        /**
+         * 提前预警窗口：剩余不足 3 天即视为「即将失效」。
+         *
+         * 实测 access token 有效期约 60 天、refresh token 约 90 天，
+         * 3 天窗口既不会天天误报，也留出重新登录的余量。
+         */
+        const val EXPIRY_WARN_WINDOW_MS: Long = 3L * 24 * 60 * 60 * 1000
+    }
 }
