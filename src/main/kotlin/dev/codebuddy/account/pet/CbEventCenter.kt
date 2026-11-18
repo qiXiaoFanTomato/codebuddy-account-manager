@@ -7,12 +7,15 @@ import com.intellij.ide.util.PropertiesComponent
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.logger
 import dev.codebuddy.account.history.ActivityFeed
+import dev.codebuddy.account.history.ProjectResolver
 import dev.codebuddy.account.service.AccountEvents
+import java.time.format.DateTimeFormatter
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.ZoneId
-import java.time.format.DateTimeFormatter
+
+
 
 /**
  * CodeBuddy 运行态事件的统一入口。
@@ -115,6 +118,20 @@ object CbEventCenter {
     }
 
     /**
+     * 页面通道的实时输出样本。
+     *
+     * 页面只数得到**字符**，token 数是按 [tokensPerChar] 估算的；换算系数用每一步结束时
+     * 日志里的真实 `outputTokens` 反向校准，因此读数会向真实值收敛，但仍是估算值，
+     * 与 [UsageSample]（步末实测）不是同一口径，展示时要分开标注。
+     */
+    data class StreamSample(
+        val workspace: String,
+        val project: String,
+        val tokensPerSecond: Double,
+        val at: Long,
+    )
+
+    /**
      * 对话运行态（状态栏用）。
      *
      * 日志里没有「这一轮开始」的明确信号，只能靠步指标、确认、结束三类行推断：
@@ -161,6 +178,9 @@ object CbEventCenter {
     }
 
     private const val MAX_EVENTS = 60
+
+    /** workspace 目录名口径：32 位十六进制 MD5 */
+    private val WORKSPACE_HASH = Regex("^[0-9a-fA-F]{32}$")
 
     /** 最近事件（倒序，功能页直接读） */
     private val events = ArrayList<EventRecord>()
@@ -212,20 +232,40 @@ object CbEventCenter {
         detail: String,
         source: String = "hook",
         danger: Boolean = false,
+        project: String = "",
+        workspace: String = "",
+        sessionTitle: String = "",
     ) {
         val name = tool.ifBlank { "工具调用" }
         val what = detail.replace(WHITESPACE, " ").trim().take(60)
         // 逐次审计：谁放的行（hook 决策 / 日志兜底）、放的是什么工具与命令原文
         PetAuditLog.approval(
             source = source, auto = true, kind = "allow", via = source, label = name,
-            what = detail, project = "", sessionId = "", danger = danger,
+            what = detail, project = project, sessionId = "", danger = danger,
         )
         // 危险命令的代放不能和普通放行共用文案，主人一眼要能看出这次是「危险」级别
         val title = if (danger) "我先替主人放行了危险命令「$name」" else "我先替主人放行了「$name」"
         val ordinal = autoApprovalsToday() + 1
-        val content = if (what.isBlank()) "今日第 $ordinal 次代点" else "$what · 今日第 $ordinal 次代点"
+        // 放行提示也要说清是哪个项目、哪个对话，否则多开时根本对不上号
+        val whereName = displayProject(project, workspace)
+        val chatTitle = sessionTitle.ifBlank { titleOf(workspace) }
+        val where = when {
+            whereName.isBlank() -> ""
+            chatTitle.isBlank() -> whereName
+            else -> "$whereName · $chatTitle"
+        }
+        val parts = ArrayList<String>(3)
+        if (what.isNotBlank()) parts.add(what)
+        if (where.isNotBlank()) parts.add(where)
+        parts.add("今日第 $ordinal 次代点")
+        val content = parts.joinToString(" · ")
         // hook 通道与日志兜底可能同时认出同一次放行：去重键只取命令原文
         // （hook 报的是工具名 Bash，日志报的是「命令」），提示只播一次，次数照常累计
+        // 落一条可查询的代点记录：项目 / 对话 / 命令，结果等 PostToolUse 回填
+        PetApprovalHistory.record(
+            project = whereName, title = chatTitle, tool = name,
+            what = detail, auto = true, danger = danger, source = source,
+        )
         val duplicated = !claim("autoAllow", what)
         val now = System.currentTimeMillis()
         // 再加一个最小间隔：一轮对话里连续放行时不把提示刷成走马灯，只更新次数与事件
@@ -249,10 +289,100 @@ object CbEventCenter {
      * 与 [onHookAutoApproval] 同一套文案与计数，去重键也一致，
      * 因此 hook 真正接管时同一条命令不会被提示两次。
      */
-    fun onLogAutoApproval(tool: String, detail: String) {
+    fun onLogAutoApproval(tool: String, detail: String, project: String = "", workspace: String = "") {
         if (!PetSettings.getInstance().enabled) return
-        onHookAutoApproval(tool, detail, source = "log")
+        onHookAutoApproval(tool, detail, source = "log", project = project, workspace = workspace)
     }
+
+    /**
+     * 提示里的位置信息：项目 + 当前对话标题。
+     *
+     * 标题按 workspace 直读会话索引（[titleOf]，3 秒缓存），读不到就只显示项目名，
+     * 不让提示因为索引读失败而空着。
+     */
+    fun whereText(project: String, workspace: String): String {
+        val name = project.trim()
+        if (name.isBlank()) return ""
+        val title = titleOf(workspace)
+        return if (title.isBlank()) name else "$name · $title"
+    }
+
+    /**
+     * 某个项目的当前对话标题；读不到返回空串（索引有落盘延迟，不当作错误）。
+     *
+     * 走 [ActivityFeed.titleOf]：只读这一个 workspace 的索引、3 秒缓存，
+     * 正在跑的对话改名后提示里能立刻跟上（全量扫描的 30 秒缓存会一直显示旧标题）。
+     */
+    fun titleOf(workspace: String): String {
+        if (workspace.isBlank()) return ""
+        return try {
+            ActivityFeed.titleOf(workspace)
+        } catch (_: Throwable) {
+            ""
+        }
+    }
+
+    /** 提示里展示的项目名：占位文案（「当前项目」）能按 hash 反查到真名就换掉 */
+    private fun displayProject(project: String, workspace: String): String {
+        val name = project.trim()
+        if (name.isNotEmpty() && name != "当前项目") return name
+        if (workspace.isBlank()) return name
+        return ProjectResolver.nameOf(workspace) ?: name
+    }
+
+    /**
+     * 把「路径 / 项目名 / workspace hash」统一解析成「项目名 to workspace」。
+     *
+     * 顺序：hash 直认 → 活动项目名精确匹配 → recentProjects.xml 反查 → 路径算 hash。
+     * **匹配不到只返回原名，不再回退到最近活跃的项目**——以前那句兜底会把
+     * 别的项目的名字安在当前提示上，多开时看到的「项目 + 对话」就是错的。
+     * 传进来的是认不出的绝对路径时返回空串：宿主给的 cwd 实测是 IDE 进程目录
+     * （`C:\Users\<用户名>` 或安装目录），把末段当项目名等于把账本写成用户名。
+     *
+     * @return 项目名 to workspace（workspace 为空时 [whereText] 只显示项目名）
+     */
+    fun resolveWhere(cwd: String): Pair<String, String> {
+        val raw = cwd.trim()
+        if (raw.isEmpty()) return "" to ""
+        val dir = raw.replace('\\', '/').trimEnd('/').substringAfterLast('/')
+        val active = try {
+            activeProjects()
+        } catch (_: Throwable) {
+            emptyList()
+        }
+
+        // 1. 对方直接给了 workspace hash
+        if (WORKSPACE_HASH.matches(raw)) {
+            val hit = active.firstOrNull { it.workspace.equals(raw, ignoreCase = true) }
+            return (hit?.project ?: ProjectResolver.nameOf(raw) ?: dir) to raw
+        }
+
+        // 2. 活动项目名精确匹配（日志文件名与页面注入都是项目名）
+        active.firstOrNull {
+            it.project.equals(dir, ignoreCase = true) || it.project.equals(raw, ignoreCase = true)
+        }?.let { return it.project to it.workspace }
+
+        // 3. recentProjects.xml 里登记过的项目：按名字反查 hash
+        ProjectResolver.workspaceOfName(dir)?.let { ws ->
+            return (ProjectResolver.nameOf(ws) ?: dir) to ws
+        }
+
+        // 4. 给的是完整路径：按 history 目录口径算 hash 再认一次
+        if (isAbsolutePath(raw)) {
+            val ws = ProjectResolver.hashOf(raw)
+            ProjectResolver.nameOf(ws)?.let { return it to ws }
+        }
+
+        // 5. 认不出：给的是名字就保留名字，不硬套别的项目；
+        //    给的是路径说明它不是任何已知项目，末段往往是用户名（`C:\Users\qfang`）
+        //    或 IDE 安装目录，拿来当项目名会把账本写脏
+        if (isAbsolutePath(raw)) return "" to ""
+        return dir to ""
+    }
+
+    /** 绝对路径（Windows 盘符 / UNC / POSIX），用来区分「给的是路径」还是「给的是项目名」 */
+    private fun isAbsolutePath(raw: String): Boolean =
+        (raw.length > 2 && raw[1] == ':') || raw.startsWith("/") || raw.startsWith("\\\\")
 
     /** 默认放行的紧凑记录：上一条也是放行就原地更新，保持事件列表不被放行记录淹没 */
     private fun mergeAutoEvent(title: String, content: String) {
@@ -288,6 +418,44 @@ object CbEventCenter {
 
     /** workspace hash -> 该项目最近一步的吞吐；状态栏按项目并排展示时各取各的读数 */
     private val usages = HashMap<String, UsageSample>()
+
+    /** 最近一条实时样本（页面通道）；状态栏正文与 tooltip 都用它做「正在输出」的读数 */
+    @Volatile
+    private var lastStream: StreamSample? = null
+
+    /** workspace hash -> 该项目最近一条实时样本 */
+    private val streams = HashMap<String, StreamSample>()
+
+    /** 实时速率的平滑值（字符/秒）：页面窗口只有几百毫秒，不平滑会比读数本身跳得更厉害 */
+    private var smoothCps = 0.0
+
+    /** 字符 -> token 换算系数，由步末真实 outputTokens 校准；初值按中英混排的经验值给 */
+    @Volatile
+    private var tokensPerChar = DEFAULT_TOKENS_PER_CHAR
+
+    /**
+     * 实时样本的新鲜度窗口。
+     *
+     * 页面 400ms 左右上报一次；这里留到 1.5 秒，是为了容忍旧版脚本（1 秒一写、不带速率字段）
+     * 与新脚本交替写 `window.name` 造成的一两次空档，不让读数闪断。
+     */
+    private const val STREAM_TTL_MS = 1_500L
+
+    private const val DEFAULT_TOKENS_PER_CHAR = 0.7
+
+    private const val MIN_TOKENS_PER_CHAR = 0.05
+    private const val MAX_TOKENS_PER_CHAR = 3.0
+
+    /** 校准所需的最小字符量：太少时一次重渲染就能把系数带飞 */
+    private const val MIN_CALIBRATE_CHARS = 300
+
+    /** 字符桶宽度与数量：250ms × 600 = 150 秒，覆盖最长的单步耗时 */
+    private const val CHARS_BUCKET_MS = 250L
+    private const val CHARS_BUCKET_COUNT = 600
+
+    /** 环形字符桶：桶号 = 时刻 / 250ms，用来按时间窗累计页面报上来的字符数 */
+    private val charsBucketAt = LongArray(CHARS_BUCKET_COUNT)
+    private val charsBucketSum = IntArray(CHARS_BUCKET_COUNT)
 
     /** 吞吐刷新的节流时刻：一轮对话可能有几十步，看板不必每步重建 */
     @Volatile
@@ -334,6 +502,8 @@ object CbEventCenter {
                     label = e.str("label"),
                     sessionId = e.str("sessionId"),
                     credit = e.bool("credit"),
+                    // 页面注入的 workspace（面板所属项目）比按名字猜准得多
+                    workspace = e.str("ws", "workspace"),
                 )
 
                 "rateLimit" -> onRateLimit(
@@ -361,12 +531,12 @@ object CbEventCenter {
      * 日志通道的「等确认」事件。与 DOM 通道共用去重表：
      * DOM 已经提示过的弹窗不会再从日志提示一次，反之亦然。
      */
-    fun onLogApproval(project: String, what: String, dangerous: Boolean) =
+    fun onLogApproval(project: String, what: String, dangerous: Boolean, workspace: String = "") =
         onApproval(
             project = project, what = what, dangerous = dangerous, auto = false,
             // 日志通道只认得出「有人在等确认」，认不出卡片上的按钮，审计里如实标注
             kind = "none", via = "log", label = "", sessionId = "", credit = false,
-            source = "log",
+            source = "log", workspace = workspace,
         )
 
     /** 日志通道的异常结束事件 */
@@ -392,12 +562,27 @@ object CbEventCenter {
         sessionId: String,
         credit: Boolean,
         source: String = "page",
+        workspace: String = "",
     ) {
+        // workspace 优先用通道给的（页面注入 / 日志文件名解析），没有再按项目名反查
+        val ws = workspace.trim().ifBlank { resolveWhere(project).second }
+        // 页面没注入成功时会传「当前项目」这种占位：能按 hash 反查到真名就换掉
+        val displayName = displayProject(project, ws)
         // 逐次审计先写：扣费卡也要留痕——它不代点，但排查时要能确认确实被识别过
         PetAuditLog.approval(
             source = source, auto = auto, kind = kind, via = via, label = label,
-            what = what, project = project, sessionId = sessionId,
+            what = what, project = displayName, sessionId = sessionId,
             credit = credit, danger = dangerous,
+        )
+        // 可查询的代点记录：结果等 PostToolUse 回填，没回填的显示「待回填」
+        PetApprovalHistory.record(
+            project = displayName,
+            title = titleOf(ws),
+            tool = label.ifBlank { if (credit) "扣费确认" else "页面确认" },
+            what = what,
+            auto = auto,
+            danger = dangerous,
+            source = source,
         )
         val settings = PetSettings.getInstance()
         // 扣费卡（积分 / 金额 / 余额）永远不代点；要不要提示由「扣费确认提示」开关决定，
@@ -415,16 +600,22 @@ object CbEventCenter {
             // 回落到「本次会话内始终允许」是放大权限的操作，标题必须点明，别让主人以为是普通允许
             auto && kind == "session" -> PetNotifier.Level.INFO to "我先替主人点了「本次会话内始终允许」"
             auto -> PetNotifier.Level.INFO to "我先替主人点了「运行」"
+            // 日志通道的危险项来自宿主 [SafetyRule]，hook 管不到（实测 despite hook presence）；
+            // 页面通道的危险卡才是 JCEF 里的危险命令，两者标题分开，别让主人以为桌宠漏了
+            dangerous && source == "log" -> PetNotifier.Level.WARN to "宿主安全规则在等主人确认"
             dangerous -> PetNotifier.Level.WARN to "有危险命令在等主人点头"
             else -> PetNotifier.Level.WARN to "CodeBuddy 在等主人点头"
         }
         val tail = when {
             credit -> "$what（会扣积分，不代点）"
+            dangerous && !auto && source == "log" -> "$what（宿主安全规则拦截，桌宠不代点）"
             dangerous && !auto -> "$what（危险命令，不代点）"
             auto && kind == "session" -> "$what（本会话内同类操作不再询问）"
             else -> what
         }
-        val content = "「$project」$tail"
+        // 等待确认的提示同样要标出项目与对话标题，多开时才认得出是哪一条
+        val where = whereText(displayName, ws).ifBlank { displayName }
+        val content = "「$where」$tail"
         PetNotifier.notify(level, title, content, durationMs = 12_000)
         record("approval", title, content, auto)
     }
@@ -557,6 +748,111 @@ object CbEventCenter {
         }
     }
 
+    // ---------------------------------------------------------------
+    // 实时输出（页面通道，估算口径）
+    // ---------------------------------------------------------------
+
+    /**
+     * 页面通道报来一段窗口内的新增字符数。
+     *
+     * @param chars 该窗口内新出现在聊天区的字符数（已由页面脚本剔除按钮/状态栏等噪声）
+     * @param ms 窗口宽度
+     */
+    fun onStreamChars(
+        workspace: String,
+        project: String,
+        chars: Int,
+        ms: Long,
+        at: Long = System.currentTimeMillis(),
+    ) {
+        if (ms <= 0L) return
+        if (chars > 0) addChars(chars, at)
+        // 没有新增字符说明这一步的输出停了：清掉平滑值，让读数按 TTL 自然过期，
+        // 但不要写一条 0 tok/s 的样本（那会让状态栏闪一下 0）
+        if (chars <= 0) {
+            smoothCps = 0.0
+            return
+        }
+        val cps = chars * 1000.0 / ms
+        smoothCps = if (smoothCps <= 0.0) cps else smoothCps * 0.55 + cps * 0.45
+        val key = workspace.trim()
+        val sample = StreamSample(
+            workspace = key,
+            project = project.trim(),
+            tokensPerSecond = smoothCps * tokensPerChar,
+            at = at,
+        )
+        lastStream = sample
+        if (key.isNotEmpty()) {
+            synchronized(streams) { streams[key] = sample }
+        }
+    }
+
+    /** 最近一条仍在有效期内的实时样本；没有就是 null */
+    fun recentStream(now: Long = System.currentTimeMillis()): StreamSample? =
+        lastStream?.takeIf { isStreamFresh(it, now) }
+
+    /** 指定项目的实时样本；状态栏多项目并排时各取各的 */
+    fun streamOf(workspace: String, now: Long = System.currentTimeMillis()): StreamSample? {
+        if (workspace.isBlank()) return null
+        return synchronized(streams) { streams[workspace.trim()] }?.takeIf { isStreamFresh(it, now) }
+    }
+
+    /** 所有有效的实时样本，按时间倒序 */
+    fun projectStreams(now: Long = System.currentTimeMillis()): List<StreamSample> =
+        synchronized(streams) { streams.values.toList() }
+            .filter { isStreamFresh(it, now) }
+            .sortedByDescending { it.at }
+
+    private fun isStreamFresh(sample: StreamSample, now: Long): Boolean =
+        sample.tokensPerSecond > 0.0 && now - sample.at <= STREAM_TTL_MS
+
+    /** 把一个窗口的字符数记到对应的时间桶里，供步末按耗时窗口回溯 */
+    private fun addChars(chars: Int, at: Long) {
+        val bucket = at / CHARS_BUCKET_MS
+        val slot = ((bucket % CHARS_BUCKET_COUNT + CHARS_BUCKET_COUNT) % CHARS_BUCKET_COUNT).toInt()
+        synchronized(charsBucketAt) {
+            if (charsBucketAt[slot] != bucket) {
+                charsBucketAt[slot] = bucket
+                charsBucketSum[slot] = 0
+            }
+            charsBucketSum[slot] = charsBucketSum[slot] + chars
+        }
+    }
+
+    /** 时间窗内累计的字符数；桶不存在按 0 算 */
+    private fun charsBetween(from: Long, to: Long): Int {
+        if (to <= from) return 0
+        var total = 0
+        val first = from / CHARS_BUCKET_MS
+        val last = to / CHARS_BUCKET_MS
+        synchronized(charsBucketAt) {
+            var bucket = first
+            while (bucket <= last) {
+                val slot = ((bucket % CHARS_BUCKET_COUNT + CHARS_BUCKET_COUNT) % CHARS_BUCKET_COUNT).toInt()
+                if (charsBucketAt[slot] == bucket) total += charsBucketSum[slot]
+                bucket++
+            }
+        }
+        return total
+    }
+
+    /**
+     * 用一步的真实 outputTokens 校准「字符 -> token」系数。
+     *
+     * 窗口取 `[步结束时刻 - 步耗时, 步结束时刻]`：步耗时含工具执行与等待，那段时间页面不产字符，
+     * 会让系数偏大（读数偏高）。因此只做慢速 EMA（0.25）并夹在合理区间内，
+     * 靠多步平均把工具时间的偏差摊掉，而不是追求单步精确。
+     */
+    private fun calibrate(outputTokens: Int, durationMs: Long, at: Long) {
+        if (outputTokens <= 0 || durationMs <= 0L) return
+        val chars = charsBetween(at - durationMs, at)
+        if (chars < MIN_CALIBRATE_CHARS) return
+        val k = outputTokens.toDouble() / chars
+        if (k < MIN_TOKENS_PER_CHAR || k > MAX_TOKENS_PER_CHAR) return
+        tokensPerChar = tokensPerChar * 0.75 + k * 0.25
+    }
+
     /** 最近一步的输出吞吐；没有样本时为 null */
     fun recentUsage(): UsageSample? = lastUsage
 
@@ -642,6 +938,8 @@ object CbEventCenter {
     fun onLogUsage(workspace: String, project: String, model: String, outputTokens: Int, durationMs: Long) {
         if (outputTokens <= 0 || durationMs <= 0L) return
         val now = System.currentTimeMillis()
+        // 步末是唯一拿得到真实 token 数的时刻：顺手校准页面通道的估算系数
+        calibrate(outputTokens, durationMs, now)
         val key = workspace.trim()
         val sample = UsageSample(
             model = model.trim().ifBlank { "当前模型" },

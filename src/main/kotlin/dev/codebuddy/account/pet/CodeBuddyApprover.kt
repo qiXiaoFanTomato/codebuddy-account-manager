@@ -5,11 +5,14 @@ import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.wm.ToolWindowManager
+import dev.codebuddy.account.history.ProjectResolver
 import java.awt.Component
 import java.awt.Container
 import java.lang.reflect.Field
 import java.lang.reflect.Modifier
 import java.util.WeakHashMap
+
+
 
 /**
  * 在 CodeBuddy 聊天面板（JCEF）里点击「允许」按钮。
@@ -177,6 +180,68 @@ object CodeBuddyApprover {
             null
         }
     } ?: ""
+
+    /**
+     * 面板 + 所属项目。
+     *
+     * [workspace] 是 history 目录口径的 hash，与状态栏、日志文件名同一套键，
+     * 实时速度样本靠它挂到正确项目上，多开时不会串味。
+     */
+    internal class ProjectBrowser(val project: String, val workspace: String, val browser: Any)
+
+    /**
+     * 只返回「该项目自己的」面板（不跨项目兜底扫描）。
+     *
+     * 与 [browsers] 的区别：那个是给代点用的，找不到就全树兜底，只要能点到就行；
+     * 这里要的是归属准确，宁可少一个面板也不能把 A 项目的速度算到 B 项目头上。
+     */
+    internal fun projectBrowsers(): List<ProjectBrowser> = onEdt {
+        val projects = try {
+            ProjectManager.getInstance().openProjects.filter { !it.isDisposed }
+        } catch (_: Exception) {
+            emptyList()
+        }
+        val out = ArrayList<ProjectBrowser>()
+        // 同一个面板可能被多个 ToolWindow 内容引用，按对象身份去重，取第一个归属
+        val claimed = java.util.IdentityHashMap<Any, Boolean>()
+        for (project in projects) {
+            val found = ArrayList<Any>()
+            collectInProject(project, found)
+            val workspace = try {
+                project.basePath?.takeIf { it.isNotBlank() }?.let { ProjectResolver.hashOf(it) }.orEmpty()
+            } catch (_: Exception) {
+                ""
+            }
+            for (browser in found) {
+                if (claimed.put(browser, true) != null) continue
+                out.add(ProjectBrowser(project.name, workspace, browser))
+            }
+        }
+        out
+    } ?: emptyList()
+
+    /** 只在该项目自己的 CodeBuddy 窗口里找面板；不触发跨窗口兜底 */
+    private fun collectInProject(project: Project, out: MutableList<Any>) {
+        val manager = try {
+            ToolWindowManager.getInstance(project)
+        } catch (_: Exception) {
+            return
+        }
+        for (id in CHAT_TOOL_WINDOW_IDS) {
+            val window = try {
+                manager.getToolWindow(id)
+            } catch (_: Exception) {
+                null
+            } ?: continue
+            try {
+                for (content in window.contentManager.contents) {
+                    collect(content.component, out)
+                }
+            } catch (_: Exception) {
+                // 单个窗口不可用不影响其它候选
+            }
+        }
+    }
 
     /** 面板里的 JCEF 浏览器：优先项目名匹配，其次任意项目；组件树遍历必须在 EDT */
     fun browsers(projectName: String? = null): List<Any> = onEdt {

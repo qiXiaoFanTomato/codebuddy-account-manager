@@ -5,8 +5,8 @@ import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.util.ui.FormBuilder
 import com.intellij.util.ui.JBUI
-import dev.codebuddy.account.ui.AccountUiColors
-import dev.codebuddy.account.ui.AccountUiType
+import dev.codebuddy.account.ui.tokens.AccountUiColors
+import dev.codebuddy.account.ui.tokens.AccountUiType
 import java.awt.BorderLayout
 import java.awt.Component
 import java.awt.Dimension
@@ -22,6 +22,9 @@ import javax.swing.JList
 import javax.swing.JPanel
 import javax.swing.JSpinner
 import javax.swing.SpinnerNumberModel
+import javax.swing.SwingUtilities
+
+
 
 /**
  * 桌宠专属设置窗口（右键桌宠 → 「桌宠设置…」）。
@@ -261,11 +264,43 @@ class PetSettingsDialog(private val onChange: () -> Unit) : DialogWrapper(true) 
             }
             lines.add("危险命令等 $wait 没人管就自动放行；凭证 / 扣费 / 对外分发仍要人工")
         }
-        // hook 通道在本机宿主不执行时是空操作，选中自动放行时提示一句，避免「开了没反应」
-        if ((auto || timeoutAllow) && mode == CbApprovalMode.HOOK) {
-            lines.add("宿主不执行 hook 时此项不生效，建议改用页面代点")
+        // 宿主的 [SafetyRule] 在 hook 之后还有一道，hook 的 allow 豁免不了它（实测
+        // `Safety rule triggered despite hook presence`）；这类命令桌宠只提醒、不弹确认
+        if (active) {
+            lines.add("PowerShell 递归删除 / 脚本执行 / node -e 这类命令由宿主安全规则二次拦截，桌宠只提醒、不弹确认")
+        }
+        // hook 通道在本机宿主不执行时是空操作；通道失效后由页面代点接管，这里如实说明
+        if (mode == CbApprovalMode.HOOK) {
+            when {
+                ApprovalChannel.isHookBroken() ->
+                    lines.add("当前宿主没有执行 hook：桌宠弹窗用不了，已自动改用页面代点（超时按分钟计）")
+                PetSettings.getInstance().cbHookConsent == CbHookConsent.DECLINED ->
+                    lines.add("还没同意改写 CodeBuddy 配置：看板「启用桌宠弹窗」可随时启用")
+                PetSettings.getInstance().cbHookConsent == CbHookConsent.UNKNOWN ->
+                    lines.add("还没确认过是否允许改写 CodeBuddy 配置；已存在的 hook 会继续使用")
+                auto || timeoutAllow ->
+                    lines.add("宿主不执行 hook 时此项不生效，届时自动改用页面代点")
+            }
         }
         approvalHint.text = "<html>" + lines.joinToString("<br>") + "</html>"
+    }
+
+    /**
+     * 切到「桌宠弹窗」时询问是否允许改写宿主配置。
+     *
+     * 只对「还没问过」的情况弹一次；已经拒绝的不再主动打扰，
+     * 想通了的入口是看板「启用桌宠弹窗」按钮。
+     */
+    private fun askHookConsentIfNeeded() {
+        val settings = PetSettings.getInstance()
+        if (settings.cbApprovalMode != CbApprovalMode.HOOK) return
+        if (settings.cbHookConsent != CbHookConsent.UNKNOWN) return
+        if (CodeBuddyHookInstaller.isInstalled()) return
+        // 下拉框的监听里直接弹模态框会把事件循环卡住，挪到下一拍
+        SwingUtilities.invokeLater {
+            PetService.getInstance().requestHookInstall()
+            refreshApprovalState()
+        }
     }
 
     override fun getPreferredFocusedComponent(): JComponent = scaleSpinner
@@ -288,6 +323,7 @@ class PetSettingsDialog(private val onChange: () -> Unit) : DialogWrapper(true) 
         approvalModeCombo.addActionListener {
             refreshApprovalState()
             apply()
+            askHookConsentIfNeeded()
         }
         approvalNormalCombo.addActionListener {
             refreshApprovalState()

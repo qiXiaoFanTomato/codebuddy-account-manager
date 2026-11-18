@@ -30,6 +30,12 @@ const MAX_DETAIL = 2000;
 const LOG_DETAIL = 500;
 const MAX_RESPONSE_BYTES = 64;
 const EVENT_LOG_MAX = 512 * 1024;
+/** PostToolUse 结果上报路径，与 HookApprovalServer.RESULT_PATH 保持一致 */
+const RESULT_PATH = '/result';
+/** 回传结果的摘要上限：够看出成功/失败与关键输出即可 */
+const MAX_RESULT = 600;
+/** 结果上报超时：只是记账，不该拖住宿主 */
+const RESULT_TIMEOUT_MS = 2_000;
 
 const DATA_DIR = path.join(process.env.USERPROFILE || os.homedir(), '.codebuddy', 'codebuddy-pet');
 const EVENT_LOG = path.join(DATA_DIR, 'hook-events.jsonl');
@@ -75,7 +81,13 @@ function project(payload) {
   const truncated = str(rawDetail).length > MAX_DETAIL;
   const detail = bounded(rawDetail, MAX_DETAIL);
   const event = bounded(payload.hook_event_name || process.argv[2] || 'PreToolUse', 64) || 'PreToolUse';
-  return { toolName, detail, event, truncated };
+  // 只取工作目录，用来标出「哪个项目」；不读提示词 / 结果
+  const cwd = bounded(payload.cwd || process.cwd(), 400);
+  // 会话 ID：桌宠用它反查项目与对话标题（宿主的 cwd 是 IDE 进程目录，不是项目目录）
+  const sessionId = bounded(payload.session_id, 80);
+  // 会话转写文件路径：索引还没落盘时，桌宠用它兜底认 workspace
+  const transcriptPath = bounded(payload.transcript_path, 400);
+  return { toolName, detail, event, truncated, cwd, sessionId, transcriptPath };
 }
 
 function appendEvent(record) {
@@ -157,6 +169,85 @@ function requestDecision(body) {
   });
 }
 
+/**
+ * 从 PostToolUse 的 payload 里压一句执行结果。
+ *
+ * 宿主不同版本把结果放在 tool_response 里，可能是字符串，也可能是
+ * { stdout, stderr, exitCode, isError } 这类对象；只取白名单字段，别的都不读。
+ */
+function summarizeResult(payload) {
+  const r = payload.tool_response;
+  if (r === undefined || r === null) return { ok: '', text: '' };
+  if (typeof r === 'string') return { ok: '', text: bounded(r, MAX_RESULT) };
+  const parts = [];
+  let ok = '';
+  try {
+    for (const key of ['stdout', 'stderr', 'output', 'content', 'message', 'error']) {
+      const v = r[key];
+      if (v !== undefined && v !== null && v !== '') parts.push(`${key}=${bounded(String(v), 300)}`);
+    }
+    const code = r.exitCode !== undefined ? r.exitCode : r.exit_code;
+    if (code !== undefined && code !== null) {
+      ok = String(code === 0 || code === '0');
+      parts.push(`exitCode=${code}`);
+    }
+    if (r.isError !== undefined && ok === '') ok = String(!r.isError);
+    if (r.interrupted === true) {
+      ok = 'false';
+      parts.push('interrupted=true');
+    }
+  } catch {
+    // 结构不认识就退化成整段截断
+  }
+  if (parts.length === 0) {
+    try {
+      return { ok, text: bounded(JSON.stringify(r), MAX_RESULT) };
+    } catch {
+      return { ok, text: '' };
+    }
+  }
+  return { ok, text: bounded(parts.join(' | '), MAX_RESULT) };
+}
+
+/** 把结果送给桌宠记账；拿不到回应也无所谓，绝不阻断宿主 */
+function reportResult(body) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+    try {
+      const data = Buffer.from(JSON.stringify(body), 'utf8');
+      const req = http.request(
+        {
+          host: '127.0.0.1',
+          port: PORT,
+          path: RESULT_PATH,
+          method: 'POST',
+          agent: false,
+          headers: { 'Content-Type': 'application/json', 'Content-Length': data.length },
+        },
+        (res) => {
+          res.resume();
+          res.on('end', finish);
+          res.on('error', finish);
+        },
+      );
+      req.setTimeout(RESULT_TIMEOUT_MS, () => {
+        req.destroy();
+        finish();
+      });
+      req.on('error', finish);
+      req.write(data);
+      req.end();
+    } catch {
+      finish();
+    }
+  });
+}
+
 /** 三套 schema 冗余写，兼容宿主不同版本对决策字段的读法 */
 function decisionOutput(decision, event) {
   if (decision === 'allow') {
@@ -191,7 +282,23 @@ function decisionOutput(decision, event) {
 async function main() {
   const raw = readStdin();
   const payload = parsePayload(raw);
-  const { toolName, detail, event, truncated } = project(payload);
+  const { toolName, detail, event, truncated, cwd, sessionId, transcriptPath } = project(payload);
+
+  // PostToolUse：只把执行结果回传给桌宠记账，不参与决策、不写 stdout
+  if (event === 'PostToolUse') {
+    const summary = summarizeResult(payload);
+    appendEvent({
+      ts: new Date().toISOString(),
+      event,
+      tool: toolName,
+      ok: summary.ok,
+      result: bounded(summary.text, LOG_DETAIL),
+      cwd: bounded(cwd, 200),
+      stage: 'result',
+    });
+    await reportResult({ cwd, session_id: sessionId, tool: toolName, ok: summary.ok, result: summary.text });
+    return;
+  }
 
   appendEvent({
     ts: new Date().toISOString(),
@@ -199,6 +306,11 @@ async function main() {
     tool: toolName,
     detail: bounded(detail, LOG_DETAIL),
     truncated,
+    cwd: bounded(cwd, 200),
+    // 只记顶层键名（不记值），用来核对宿主到底给了哪些可用的项目 / 会话线索
+    keys: Object.keys(payload).slice(0, 24).join(','),
+    sid: bounded(payload.session_id, 80),
+    transcript: bounded(transcriptPath, 200),
     stage: 'received',
   });
 
@@ -207,6 +319,9 @@ async function main() {
     detail,
     event,
     detail_truncated: truncated,
+    cwd,
+    session_id: sessionId,
+    transcript_path: transcriptPath,
   });
 
   appendEvent({ ts: new Date().toISOString(), event, tool: toolName, decision: decision || 'none' });

@@ -6,6 +6,8 @@ import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.State
 import com.intellij.openapi.components.Storage
 
+
+
 /**
  * 桌宠（档案柜精灵）的持久化设置。
  *
@@ -96,6 +98,13 @@ class PetSettings : PersistentStateComponent<PetSettings.State> {
         var cbApprovalNormal: String = CbNormalPolicy.ASK.name,
         /** 危险命令策略（[CbDangerPolicy] 名称），两个通道共用 */
         var cbApprovalDanger: String = CbDangerPolicy.ASK.name,
+        /**
+         * 是否同意插件改写宿主 `~/.codebuddy/settings.json`（[CbHookConsent] 名称）。
+         *
+         * 宿主配置是主人自己的文件，首次写入前必须问一句；拒绝过就不再自动写，
+         * 只能从看板按钮重新发起。
+         */
+        var cbHookConsent: String = CbHookConsent.UNKNOWN.name,
         /** 桌宠弹窗等待秒数（仅桌宠弹窗模式使用） */
         var cbApprovalTimeoutSeconds: Int = 45,
         /** 设置迁移版本号：0 表示还没把旧开关折算成新的三组策略 */
@@ -322,6 +331,18 @@ class PetSettings : PersistentStateComponent<PetSettings.State> {
             myState.cbApprovalTimeoutSeconds = value.coerceIn(MIN_HOOK_SECONDS, MAX_HOOK_SECONDS)
         }
 
+    /**
+     * 是否同意改写宿主配置（写入 / 移除 PreToolUse hook）。
+     *
+     * 只有 [CbHookConsent.APPROVED] 才会在同步时自动写；[CbHookConsent.DECLINED]
+     * 之后不再自动写，改由看板「启用桌宠弹窗」按钮重新询问。
+     */
+    var cbHookConsent: CbHookConsent
+        get() = CbHookConsent.of(myState.cbHookConsent)
+        set(value) {
+            myState.cbHookConsent = value.name
+        }
+
     /** 模型频率限制与预计解封时间提示 */
     var cbLimitNoticeEnabled: Boolean
         get() = myState.cbLimitNoticeEnabled
@@ -423,6 +444,25 @@ enum class CbDangerPolicy(val label: String) {
 
     companion object {
         fun of(name: String?): CbDangerPolicy = CbDangerPolicy.values().firstOrNull { it.name == name } ?: ASK
+    }
+}
+
+/**
+ * 是否允许插件改写宿主 CodeBuddy 的 `~/.codebuddy/settings.json`。
+ *
+ * 这个文件不属于插件，首次写入（加 PreToolUse hook）必须先征得同意：
+ * - [UNKNOWN] 还没问过：需要写入时弹一次确认；
+ * - [APPROVED] 已同意：之后同步直接写，写入前自动备份；
+ * - [DECLINED] 已拒绝：不再自动写，只能从看板按钮重新发起。
+ */
+enum class CbHookConsent(val label: String) {
+    UNKNOWN("还没问过"),
+    APPROVED("已同意写入"),
+    DECLINED("已拒绝写入"),
+    ;
+
+    companion object {
+        fun of(name: String?): CbHookConsent = CbHookConsent.values().firstOrNull { it.name == name } ?: UNKNOWN
     }
 }
 

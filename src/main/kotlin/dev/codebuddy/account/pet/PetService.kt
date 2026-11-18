@@ -1,20 +1,23 @@
 package dev.codebuddy.account.pet
 
-import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.diagnostic.logger
+import com.intellij.openapi.Disposable
+import com.intellij.openapi.ui.Messages
 import com.intellij.util.messages.MessageBusConnection
 import dev.codebuddy.account.quota.QuotaSummary
 import dev.codebuddy.account.service.AccountEvents
 import dev.codebuddy.account.service.AccountLibrary
-import java.util.Locale
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
+import java.util.Locale
 import javax.swing.SwingUtilities
+
+
 
 /** 强提醒的优先级加权：必须大于所有普通等级（最高 ERROR = 3） */
 private const val HIGHLIGHT_PRIORITY_BOOST = 10
@@ -322,6 +325,9 @@ class PetService : Disposable {
     }
 
     private val pendingNotices = ArrayList<Notice>()
+
+    /** 窗口尚未建好时收到的提示，桌宠出现后补播（启动早期的 token 告警会落在这里） */
+    private val earlyNotices = ArrayList<Notice>()
     private var activeNotice: Notice? = null
     private var noticeTimer: javax.swing.Timer? = null
     private var lastNoticeKey = ""
@@ -340,10 +346,26 @@ class PetService : Disposable {
     ): Boolean {
         val settings = PetSettings.getInstance()
         if (!settings.enabled || !settings.noticePetEnabled) return false
-        if (window == null) return false
+        // 本实例没拿到桌宠所有权：窗口不会出现，直接让调用方走 IDE 通知
+        if (window == null && !instance.isOwner) return false
         val notice = Notice(level, title, content, durationMs ?: durationFor(level, content), highlight)
-        SwingUtilities.invokeLater { enqueueNotice(notice) }
+        SwingUtilities.invokeLater {
+            // 启动阶段窗口还没建好：先攒着，等桌宠出现再补播，不能整条丢掉
+            if (window == null) {
+                if (earlyNotices.size < MAX_PENDING_NOTICES) earlyNotices.add(notice)
+            } else {
+                enqueueNotice(notice)
+            }
+        }
         return true
+    }
+
+    /** 窗口建好后补播攒下的提示（此时才有气泡定位） */
+    private fun flushEarlyNotices() {
+        if (earlyNotices.isEmpty()) return
+        val list = ArrayList(earlyNotices)
+        earlyNotices.clear()
+        list.forEach { enqueueNotice(it) }
     }
 
     /**
@@ -407,6 +429,7 @@ class PetService : Disposable {
         noticeTimer = null
         activeNotice = null
         pendingNotices.clear()
+        earlyNotices.clear()
         window?.hideNotice()
     }
 
@@ -500,6 +523,7 @@ class PetService : Disposable {
             w.show()
             w.update(data)
             window = w
+            flushEarlyNotices()
             refreshDataAsync()
             scheduleRandomActions()
             scheduleWhisper()
@@ -549,13 +573,92 @@ class PetService : Disposable {
             }
             return
         }
-        if (hookServer?.isRunning == true) return
-        if (!CodeBuddyHookInstaller.ensureInstalled()) {
-            log.info("CodeBuddy hook 未就绪（缺少 node 或配置不可写），确认请求继续走原生流程")
+        // 宿主配置是主人自己的文件：没点头、也没装过，就一个字都不写，等按钮 / 设置页发起询问
+        if (settings.cbHookConsent != CbHookConsent.APPROVED && !CodeBuddyHookInstaller.isInstalled()) {
+            stopHookServer()
             return
         }
+        if (hookServer?.isRunning == true) return
+        ensureHookServer()
+    }
+
+    /**
+     * 询问主人是否允许改写宿主配置，同意后写入并启动回环端口。
+     *
+     * 三个入口：设置里切到「桌宠弹窗」、看板「启用桌宠弹窗」按钮、已装过时直接走修复。
+     * 必须在 EDT 调用（会弹对话框）。
+     *
+     * @return true 表示通道已就绪
+     */
+    fun requestHookInstall(): Boolean {
+        val settings = PetSettings.getInstance()
+        // 已经装过（老用户升级上来的）：不再问一遍，直接补齐端口
+        if (CodeBuddyHookInstaller.isInstalled()) {
+            settings.cbHookConsent = CbHookConsent.APPROVED
+            val ok = ensureHookServer()
+            ApprovalChannel.resetHookBroken()
+            if (!ok) {
+                PetNotifier.notify(
+                    PetNotifier.Level.WARN,
+                    "桌宠弹窗通道没起来",
+                    "回环端口被占用或配置不可写，确认仍走 CodeBuddy 原生弹框",
+                )
+            }
+            return ok
+        }
+        val backupTip = if (CodeBuddyHookInstaller.hasBackup()) {
+            "原配置备份已存在（${CodeBuddyHookInstaller.backupFile().toAbsolutePath()}），会一直留着。"
+        } else {
+            "写入前会先把原文件备份成 settings.json.pet-bak，之后可在看板「撤销写入」撤掉。"
+        }
+        val message = "桌宠弹窗需要往 CodeBuddy 的配置里加一条 PreToolUse hook：\n" +
+            CodeBuddyHookInstaller.settingsFile().toAbsolutePath().toString() + "\n\n" +
+            "$backupTip\n" +
+            "只增加桌宠自己这一条，主人原有的 hooks 与插件设置一个字都不动。\n" +
+            "选「以后再说」就不写，确认仍交给 CodeBuddy 原生弹框或页面代点。"
+        val yes = Messages.showYesNoDialog(
+            message,
+            "启用桌宠弹窗确认",
+            "写入并备份",
+            "以后再说",
+            Messages.getQuestionIcon(),
+        )
+        if (yes != Messages.YES) {
+            settings.cbHookConsent = CbHookConsent.DECLINED
+            // 主人自己的选择，不再重复报警；只把通道判为不可用，让页面代点接管
+            ApprovalChannel.markHookUnavailable()
+            return false
+        }
+        settings.cbHookConsent = CbHookConsent.APPROVED
+        val ok = ensureHookServer()
+        if (ok) {
+            ApprovalChannel.resetHookBroken()
+            PetNotifier.notify(
+                PetNotifier.Level.SUCCESS,
+                "桌宠弹窗通道已启用",
+                "CodeBuddy 下次需要确认时，桌宠会弹出气泡等主人裁决",
+            )
+        } else {
+            PetNotifier.notify(
+                PetNotifier.Level.WARN,
+                "桌宠弹窗通道没启用",
+                "找不到 node 或配置不可写，确认仍走 CodeBuddy 原生弹框",
+            )
+        }
+        return ok
+    }
+
+    /** 释放脚本 + 写入配置 + 起回环端口；任何一步失败都退回原生确认框 */
+    private fun ensureHookServer(): Boolean {
+        if (hookServer?.isRunning == true) return true
+        if (!CodeBuddyHookInstaller.ensureInstalled()) {
+            log.info("CodeBuddy hook 未就绪（缺少 node 或配置不可写），确认请求继续走原生流程")
+            return false
+        }
         val server = HookApprovalServer { decideHookApproval(it) }
-        if (server.start()) hookServer = server
+        if (!server.start()) return false
+        hookServer = server
+        return true
     }
 
     private fun stopHookServer() {
@@ -567,7 +670,8 @@ class PetService : Disposable {
      * hook 线程调用（不是 EDT）：阻塞等主人裁决。
      *
      * 返回 [ApprovalDecision.PASSTHROUGH] 的分支都是「不干预」：
-     * 通道未启用 / 敏感调用（凭证、扣费、对外分发、摘要截断）/ 桌宠不在 / 主人没点。
+     * 通道未启用 / 敏感调用（凭证、扣费、对外分发、摘要截断）/ 宿主 SafetyRule 必拦 /
+     * 桌宠不在 / 主人没点。
      *
      * 危险命令不再硬性人工：由 `cbApprovalDanger` 决定——
      * 「自动放行」直接代办，「问，超时没人管就放行」等气泡超时后代办，
@@ -580,21 +684,55 @@ class PetService : Disposable {
         // 敏感类（凭证 / 扣费 / 对外分发 / 摘要截断）永远人工，连策略都不看
         val manualOnly = HookApprovalRules.isSensitive(request)
         val destructive = !manualOnly && HookApprovalRules.isDestructive(request)
+        // 这条确认属于哪个项目、哪个对话：优先按 sessionId 反查，cwd 只作兜底
+        val resolved = SessionContext.of(request.sessionId, request.transcriptPath)
+        val fallback = CbEventCenter.resolveWhere(request.cwd)
+        val proj = resolved?.project?.takeIf { it.isNotBlank() } ?: fallback.first
+        val ws = resolved?.workspace?.takeIf { it.isNotBlank() } ?: fallback.second
+        // 标题优先用这条会话自己的名字；索引还没写进这条会话时，按 workspace 现读当前对话
+        val title = resolved?.title?.takeIf { it.isNotBlank() }
+            ?: if (ws.isNotBlank()) CbEventCenter.titleOf(ws) else ""
+        // 项目、标题都可能只认出一半：认不全就只显示认得的那部分，别把空的拼进去
+        val where = when {
+            proj.isNotBlank() && title.isNotBlank() -> "$proj · $title"
+            proj.isNotBlank() -> proj
+            else -> title
+        }
+        // 宿主 SafetyRule 会在 hook 之后再拦一次（实测日志 `Safety rule triggered despite hook presence`,
+        // `fromHook: undefined`），hook 返回 allow 也逃不掉它的原生三选一框。这类命令再弹桌宠气泡
+        // 只会让主人点两遍，所以直接让位：不代点、不弹气泡，提醒交给日志通道的「危险命令」兜底。
+        if (!manualOnly && HookApprovalRules.isHostSafety(request)) {
+            PetAuditLog.approval(
+                source = "hook", auto = false, kind = "hostSafety", via = "passthrough",
+                label = request.toolName, what = request.detail,
+                project = proj, sessionId = request.sessionId,
+                danger = HookApprovalRules.isDestructive(request),
+            )
+            return ApprovalDecision.PASSTHROUGH
+        }
         if (!manualOnly) {
             if (destructive && settings.cbApprovalDanger == CbDangerPolicy.AUTO) {
                 // 危险命令代放：WARN 提示 + 计入今日代点，主人必须能察觉
-                CbEventCenter.onHookAutoApproval(request.toolName, request.detail, danger = true)
+                CbEventCenter.onHookAutoApproval(
+                    request.toolName, request.detail, danger = true,
+                    project = proj, workspace = ws, sessionTitle = title,
+                )
                 return ApprovalDecision.ALLOW
             }
             if (!destructive && settings.cbApprovalNormal == CbNormalPolicy.ALLOW) {
                 // 默认放行同样是代点：桌宠提示 + 计入今日代点次数，主人要能感觉到它又替自己点了
-                CbEventCenter.onHookAutoApproval(request.toolName, request.detail)
+                CbEventCenter.onHookAutoApproval(
+                    request.toolName, request.detail,
+                    project = proj, workspace = ws, sessionTitle = title,
+                )
                 return ApprovalDecision.ALLOW
             }
         }
-        // 危险命令「问，超时没人管就放行」：气泡超时视为同意；敏感类永远不适用
-        val dangerTimeoutAllow =
-            destructive && settings.cbApprovalDanger == CbDangerPolicy.ASK_THEN_ALLOW
+        // 「问，超时没人管就放行」两类命令都要生效：以前只给危险命令，
+        // 普通命令选了这一档实际却不会代点，跟设置里写的对不上
+        val normalTimeoutAllow = !manualOnly && !destructive &&
+            settings.cbApprovalNormal == CbNormalPolicy.ASK_THEN_ALLOW
+        val dangerTimeoutAllow = destructive && settings.cbApprovalDanger == CbDangerPolicy.ASK_THEN_ALLOW
         val answer = approvalBubble().ask(
             request,
             { w.characterBounds() },
@@ -602,14 +740,19 @@ class PetService : Disposable {
             // 视觉强调只给「一直人工」的敏感类；危险但策略为 ASK 时仍按朱红卡展示，
             // 所以这里把危险也算进 risky，避免主人以为危险卡是普通确认
             manualOnly || destructive,
-            dangerTimeoutAllow,
+            normalTimeoutAllow || dangerTimeoutAllow,
+            // 会话索引查询放在这条 hook 线程上，别让 EDT 去扫盘
+            where,
         )
         return when (answer) {
             "allow" -> ApprovalDecision.ALLOW
             "deny" -> ApprovalDecision.DENY
             APPROVAL_ANSWER_TIMEOUT -> {
-                // 超时代办同样按危险级留痕
-                CbEventCenter.onHookAutoApproval(request.toolName, request.detail, danger = true)
+                // 超时代办按实际级别留痕：危险命令才标 danger，普通命令用普通文案
+                CbEventCenter.onHookAutoApproval(
+                    request.toolName, request.detail,
+                    danger = destructive, project = proj, workspace = ws, sessionTitle = title,
+                )
                 ApprovalDecision.ALLOW
             }
             else -> ApprovalDecision.PASSTHROUGH

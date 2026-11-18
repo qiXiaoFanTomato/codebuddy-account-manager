@@ -2,24 +2,24 @@ package dev.codebuddy.account.pet
 
 import com.intellij.ui.components.JBLabel
 import com.intellij.util.ui.JBUI
-import dev.codebuddy.account.ui.AccountUiColors
-import dev.codebuddy.account.ui.AccountUiType
+import dev.codebuddy.account.ui.tokens.AccountUiColors
+import dev.codebuddy.account.ui.tokens.AccountUiType
 import java.awt.BasicStroke
 import java.awt.Color
 import java.awt.Dimension
 import java.awt.FlowLayout
 import java.awt.Font
+import java.awt.geom.RoundRectangle2D
 import java.awt.Graphics
 import java.awt.Graphics2D
 import java.awt.GraphicsEnvironment
 import java.awt.Point
 import java.awt.Rectangle
 import java.awt.RenderingHints
-import java.awt.geom.RoundRectangle2D
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import javax.swing.BorderFactory
 import javax.swing.BoxLayout
 import javax.swing.JButton
@@ -28,13 +28,16 @@ import javax.swing.JWindow
 import javax.swing.SwingUtilities
 import javax.swing.Timer
 
+
+
 /** 气泡超时无人裁决的返回标记：只有调用方允许「超时放行」时才会出现 */
 internal const val APPROVAL_ANSWER_TIMEOUT = "timeout"
 
 /**
  * 桌宠确认气泡：CodeBuddy 通过 hook 把「要不要执行」抛过来时，在角色上方弹一张卡片，
- * 主人点「允许 / 拒绝」即完成裁决；超时自动收起，默认把决定权交回 CodeBuddy 原生确认框
- * （危险命令选「问，超时没人管就放行」时改为超时按同意处理）。
+ * 主人点「允许 / 拒绝」即完成裁决；超时自动收起，默认**什么都不做**——
+ * 不点同意也不点拒绝，命令留在 CodeBuddy 确认框里等主人自己处理；
+ * 只有策略选了「问，超时没人管就放行」时才改为超时按同意处理。
  *
  * 与 [PetSpeechBubble] 的区别：这里必须能接收点击，所以窗口可获焦、置顶、不自动消失
  * （只在倒计时结束时收起），并且**同一时刻只处理一个请求**。
@@ -52,6 +55,13 @@ class PetApprovalBubble {
     private val titleLabel = JBLabel().apply {
         font = AccountUiType.ui(AccountUiType.title, Font.BOLD)
         foreground = AccountUiColors.textPrimary
+        alignmentX = java.awt.Component.LEFT_ALIGNMENT
+    }
+
+    /** 这条确认属于哪个项目、哪个对话：主人多开时最容易认错 */
+    private val whereLabel = JBLabel().apply {
+        font = AccountUiType.ui(AccountUiType.micro)
+        foreground = AccountUiColors.textMuted
         alignmentX = java.awt.Component.LEFT_ALIGNMENT
     }
     private val detailLabel = JBLabel().apply {
@@ -96,6 +106,7 @@ class PetApprovalBubble {
         panel.border = JBUI.Borders.empty(12, 16, 12, 14)
         panel.isOpaque = false
         panel.add(chipLabel)
+        panel.add(whereLabel)
         panel.add(titleLabel)
         panel.add(javax.swing.Box.createVerticalStrut(JBUI.scale(6)))
         panel.add(detailLabel)
@@ -120,8 +131,9 @@ class PetApprovalBubble {
      * 阻塞等待裁决。调用方是 hook 服务线程，不能是 EDT。
      *
      * @param risky 危险 / 敏感调用：样式加重
-     * @param timeoutAllows 超时无人裁决时是否算「同意执行」；只能给危险策略「问，超时没人管就放行」用，
-     *        敏感类（凭证 / 扣费 / 对外分发）永远传 false
+     * @param timeoutAllows 超时无人裁决时是否算「同意执行」；普通命令与危险命令各自的
+     *        「问，超时没人管就放行」都传 true，敏感类（凭证 / 扣费 / 对外分发）永远传 false
+     * @param where 项目 + 对话标题，由调用方在非 EDT 线程算好（这里只负责显示）
      * @return "allow" / "deny"；超时返回 [APPROVAL_ANSWER_TIMEOUT]（仅 [timeoutAllows] 时），
      *         其余无裁决（含异常、气泡没弹出来）返回 null，调用方应转为 passthrough
      */
@@ -131,6 +143,7 @@ class PetApprovalBubble {
         timeoutMs: Int,
         risky: Boolean = false,
         timeoutAllows: Boolean = false,
+        where: String = "",
     ): String? =
         synchronized(lock) {
             val waitMs = timeoutMs.coerceAtLeast(MIN_TIMEOUT_MS)
@@ -145,7 +158,7 @@ class PetApprovalBubble {
             }
             try {
                 SwingUtilities.invokeAndWait {
-                    present(request, anchor(), waitMs, risky, timeoutAllows, finish)
+                    present(request, anchor(), waitMs, risky, timeoutAllows, where, finish)
                 }
             } catch (_: Exception) {
                 return null
@@ -162,6 +175,7 @@ class PetApprovalBubble {
         timeoutMs: Int,
         risky: Boolean,
         timeoutAllows: Boolean,
+        where: String,
         finish: (String?) -> Unit,
     ) {
         countdownTimer?.stop()
@@ -170,6 +184,9 @@ class PetApprovalBubble {
         panel.warning = risky
 
         chipLabel.text = if (risky) "CodeBuddy · 危险操作" else "CodeBuddy · 请求确认"
+        // 多开 / 多对话时最容易认错：先标出「在哪个项目、哪个对话里」（文案由调用方算好）
+        whereLabel.text = if (where.isBlank()) "" else "在「$where」里"
+        whereLabel.isVisible = where.isNotBlank()
         titleLabel.text = escape(request.toolName.ifBlank { "未知工具" })
         titleLabel.foreground = if (risky) AccountUiColors.seal else AccountUiColors.textPrimary
         val full = request.detail.trim()
@@ -231,10 +248,14 @@ class PetApprovalBubble {
 
     private fun updateHint() {
         val seconds = ((remainingMs + 999) / 1000).coerceAtLeast(0)
+        // 一律说清「时间到了之后到底会不会替主人点」，不写「交回原生确认」这种看不出结论的话
         hintLabel.text = when {
-            autoAllowOnTimeout -> "${seconds} 秒后没人管就自动同意执行（记一次代点）"
-            riskyMode -> "${seconds} 秒后交回 CodeBuddy 原生确认（不会自动执行）"
-            else -> "${seconds} 秒后自动收起，交回 CodeBuddy 原生确认"
+            // 危险命令按钮是「同意执行」，文案跟着按钮走，避免主人以为是普通同意
+            autoAllowOnTimeout && riskyMode ->
+                "${seconds} 秒内不点，我就替主人点「同意执行」（记一次代点）"
+            autoAllowOnTimeout -> "${seconds} 秒内不点，我就替主人点「同意」（记一次代点）"
+            riskyMode -> "${seconds} 秒后收起，不替主人点；命令一直等主人自己确认"
+            else -> "${seconds} 秒后收起，不替主人点；主人在 CodeBuddy 里自己点"
         }
     }
 

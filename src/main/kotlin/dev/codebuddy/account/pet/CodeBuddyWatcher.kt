@@ -1,21 +1,25 @@
 package dev.codebuddy.account.pet
 
-import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.diagnostic.logger
+import com.intellij.openapi.Disposable
 import java.io.RandomAccessFile
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
-import java.time.LocalDate
 import java.time.format.DateTimeFormatter
+import java.time.LocalDate
+import java.time.LocalDateTime
+import java.time.ZoneId
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
+
+
 
 /**
  * CodeBuddy 运行日志监控：把「等你确认 / 这轮结束 / 这轮没跑顺」翻译成桌宠提示。
@@ -29,7 +33,9 @@ import java.util.concurrent.atomic.AtomicBoolean
  *  - 已确认：  [call_xxx]  收到用户确认，进入流式执行状态
  *  - 一轮结束：[BaseAgent:craft] [id]  notifyAllStepsEnd, totalSteps: N, ... isMaxStepLimit: false ...
  *
- * 只读增量：每个文件记录已读偏移量与未完成的半行，首轮直接从文件末尾开始，不回放历史日志。
+ * 只读增量：每个文件记录已读偏移量与未完成的半行。首轮从末尾往前回溯 [TAIL_BACKFILL_BYTES]，
+ * 只补 [BACKFILL_FRESH_MS] 内写入的行（用于进程刚启动时接住紧邻的确认 / 拦截事件），
+ * 更早的历史日志不回放。
  * 日志文案不是公开契约，因此这里只作**兜底通道**：主通道是 [CbWebObserver] 的页面 DOM 观察，
  * 两路事件在 [CbEventCenter] 汇合去重，任一路认出弹窗 / 限流 / 中断都能提示，避免漏提示。
  * 任何异常都不影响主流程。
@@ -41,8 +47,17 @@ class CodeBuddyWatcher : Disposable {
 
     private val log = logger<CodeBuddyWatcher>()
 
-    /** 单个日志文件的读取进度；[carry] 保存尚未凑齐换行的尾部字节，避免半行被整行丢弃 */
-    private class FileState(var offset: Long, var carry: ByteArray = ByteArray(0))
+    /**
+     * 单个日志文件的读取进度；[carry] 保存尚未凑齐换行的尾部字节，避免半行被整行丢弃。
+     *
+     * [backfillUntil] 是首次建基线时的文件长度：偏移还在它之前，说明这一轮读的是回溯段，
+     * 段内行要按日志时间戳过时效（见 [isStaleForBackfill]），读完即清零。
+     */
+    private class FileState(
+        var offset: Long,
+        var carry: ByteArray = ByteArray(0),
+        var backfillUntil: Long = 0L,
+    )
 
     /**
      * 日志文件对应的项目：文件名 `<项目名>__<workspaceHash>.log`。
@@ -62,6 +77,8 @@ class CodeBuddyWatcher : Disposable {
         val at: Long,
         /** 被判定为危险操作（危险命令 / 安全规则拦截）时不自动同意 */
         val dangerous: Boolean = false,
+        /** 日志文件名里解析出的 workspace hash：提示要按它取对话标题，别按项目名猜 */
+        val workspace: String = "",
     ) {
         /** 是否已提示过主人 */
         var notified: Boolean = false
@@ -116,7 +133,7 @@ class CodeBuddyWatcher : Disposable {
             size > MAX_HANDLED_KEYS
     }
 
-    /** 启动监控（幂等）；重新启动会重建基线，不补发启动前的历史事件 */
+    /** 启动监控（幂等）；重新启动会重建基线，只回补最后 [TAIL_BACKFILL_BYTES] 内、一分钟以内的行 */
     fun start() = startInternal(onlyMetrics = false)
 
     /** 只采集吞吐样本（状态栏读数用）：不判确认、不代点、不自动继续 */
@@ -200,7 +217,8 @@ class CodeBuddyWatcher : Disposable {
         val interruptActive = !onlyMetrics &&
             (settings.cbProgressNoticeEnabled || settings.cbAutoContinueEnabled)
         // 三个通道互斥：桌宠弹窗接管时，页面代点与日志补刀一律让位，避免同一个确认被处理两次
-        val pageActive = settings.cbApprovalMode == CbApprovalMode.PAGE
+        // 通道按可用性让位：宿主不执行 hook 时，选定「桌宠弹窗」也由页面代点顶上
+        val pageActive = ApprovalChannel.effective(settings) == CbApprovalMode.PAGE
         // 页面「直接放行」已经接管时，超时补刀不再重复点同一个按钮
         val noDisturbActive =
             pageActive && settings.cbApprovalNormal == CbNormalPolicy.ALLOW && CbWebObserver.isConnected()
@@ -266,15 +284,19 @@ class CodeBuddyWatcher : Disposable {
         }
         val state = synchronized(states) {
             states.getOrPut(key) {
-                // 首次见到该文件：从末尾开始，只关注新写入的内容
-                FileState(size)
+                // 首次见到该文件：从末尾往前回溯一小段，避免刚启动（含 IDE 重启）时漏掉
+                // 紧邻的「等主人确认」/「宿主安全规则拦截」事件；回溯段内的行按时间戳过时效
+                val start = (size - TAIL_BACKFILL_BYTES).coerceAtLeast(0)
+                FileState(start, backfillUntil = if (start > 0) size else 0L)
             }
         }
         if (size < state.offset) {
-            // 文件被重建 / 截断
+            // 文件被重建 / 截断：整段重读，此时不再按回溯段的时效过滤
             state.offset = 0
             state.carry = ByteArray(0)
+            state.backfillUntil = 0L
         }
+        val backfill = state.backfillUntil > 0 && state.offset < state.backfillUntil
         if (size <= state.offset) return
 
         val limit = (size - state.offset).coerceAtMost(MAX_BYTES_PER_TICK.toLong()).toInt()
@@ -308,11 +330,31 @@ class CodeBuddyWatcher : Disposable {
         // 不再截断行数：一次写入超过上限时，中间的行也不能丢
         for (line in text.lineSequence()) {
             if (line.isBlank()) continue
+            // 回溯段只补「刚刚发生」的事件，旧行直接丢弃，避免重启后重播几分钟前的提示
+            if (backfill && isStaleForBackfill(line)) continue
             try {
                 handleLine(project, line, approveOn, progressOn, autoAllowNotice)
             } catch (_: Exception) {
                 // 单行解析失败忽略
             }
+        }
+        if (backfill && state.offset >= state.backfillUntil) state.backfillUntil = 0L
+    }
+
+    /**
+     * 回溯段的行是否已经过期：日志时间是本机本地时间，比 [BACKFILL_FRESH_MS] 更早的一律丢；
+     * 解析不出时间戳的也丢（宁可少补一条，也不把旧提醒当成新事件）。
+     */
+    private fun isStaleForBackfill(line: String): Boolean {
+        val raw = LINE_TS.find(line)?.groupValues?.get(1) ?: return true
+        return try {
+            val at = LocalDateTime.parse(raw, LINE_TIME_FORMAT)
+                .atZone(ZoneId.systemDefault())
+                .toInstant()
+                .toEpochMilli()
+            System.currentTimeMillis() - at > BACKFILL_FRESH_MS
+        } catch (_: Exception) {
+            true
         }
     }
 
@@ -333,6 +375,12 @@ class CodeBuddyWatcher : Disposable {
         // 最近使用的模型名：限流与吞吐文案都靠它补全，日志比页面文本更可靠
         MODEL_NAME.find(line)?.groupValues?.get(1)?.let { model ->
             synchronized(states) { recentModel[projectName] = model to now }
+        }
+
+        // 宿主对 PreToolUse 的 hook 配置计数：0 说明它没读到我们写的 hook，
+        // 由 [ApprovalChannel] 决定是否让位到页面代点
+        HOOK_CONFIG_COUNT.find(line)?.groupValues?.get(1)?.toIntOrNull()?.let {
+            ApprovalChannel.onPreToolUseConfigCount(it)
         }
 
         // 工具执行同样说明这一轮还在跑：刷新最后活动时间，长工具不会中途掉成「空闲」
@@ -377,7 +425,10 @@ class CodeBuddyWatcher : Disposable {
             }
             val command = COMMAND_TEXT.find(line)?.groupValues?.get(1)
             if (allowed && !command.isNullOrBlank()) {
-                CbEventCenter.onLogAutoApproval("命令", oneLine(command, MAX_COMMAND_CHARS))
+                CbEventCenter.onLogAutoApproval(
+                    "命令", oneLine(command, MAX_COMMAND_CHARS),
+                    project = projectName, workspace = project.key,
+                )
             }
             return
         }
@@ -410,7 +461,8 @@ class CodeBuddyWatcher : Disposable {
                         val key = "danger:$projectName:${now / 2_000L}"
                         if (!pending.containsKey(key)) {
                             pending[key] = PendingAsk(
-                                projectName, "危险命令：" + oneLine(cmd, MAX_COMMAND_CHARS), now, dangerous = true,
+                                projectName, "危险命令：" + oneLine(cmd, MAX_COMMAND_CHARS), now,
+                                dangerous = true, workspace = project.key,
                             )
                         }
                     }
@@ -431,7 +483,11 @@ class CodeBuddyWatcher : Disposable {
             synchronized(states) {
                 orphanAsks.remove(projectName)
                 val duplicated = pending.values.any { it.project == projectName && now - it.at < 5_000L }
-                if (!duplicated) pending[id] = PendingAsk(projectName, describe(projectName, line), now, dangerous)
+                if (!duplicated) {
+                    pending[id] = PendingAsk(
+                        projectName, describe(projectName, line), now, dangerous, workspace = project.key,
+                    )
+                }
             }
             return
         }
@@ -578,18 +634,25 @@ class CodeBuddyWatcher : Disposable {
         }
         if (injected) {
             CbEventCenter.countAutoApproval()
+            // 代点提示带上项目与对话标题：多开时才知道刚才替主人点的是哪一条
+            val workspace = ask.workspace.ifBlank { CbEventCenter.resolveWhere(ask.project).second }
+            val where = CbEventCenter.whereText(ask.project, workspace).ifBlank { ask.project }
+            PetApprovalHistory.record(
+                project = ask.project, title = CbEventCenter.titleOf(workspace), tool = "页面代点",
+                what = ask.what, auto = true, danger = ask.dangerous, source = "log",
+            )
             if (ask.dangerous) {
                 // 危险命令代点必须比普通代点更显眼：WARN 级、标题直接说明是危险操作
                 PetNotifier.notify(
                     PetNotifier.Level.WARN,
                     "危险命令：我先替主人点了同意",
-                    "「${ask.project}」${ask.what}（等了 $minutes 分钟）",
+                    "「$where」${ask.what}（等了 $minutes 分钟）",
                 )
             } else {
                 PetNotifier.notify(
                     PetNotifier.Level.INFO,
                     "我先替主人点了同意",
-                    "「${ask.project}」${ask.what}（等了 $minutes 分钟）",
+                    "「$where」${ask.what}（等了 $minutes 分钟）",
                 )
             }
         } else {
@@ -603,7 +666,7 @@ class CodeBuddyWatcher : Disposable {
 
     private fun showAsk(ask: PendingAsk) {
         // 与页面 DOM 通道共用去重：谁先认出弹窗谁提示，不会重复打扰主人
-        CbEventCenter.onLogApproval(ask.project, ask.what, ask.dangerous)
+        CbEventCenter.onLogApproval(ask.project, ask.what, ask.dangerous, ask.workspace)
     }
 
     private fun clearAsks() {
@@ -689,12 +752,27 @@ class CodeBuddyWatcher : Disposable {
     companion object {
         private val DATE_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd")
 
+        /** 日志行首时间戳：`[2026-11-18 09:24:45.657]`，只取到秒（回溯时效判定够用） */
+        private val LINE_TS = Regex("^\\[(\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2})")
+        private val LINE_TIME_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
+
         /** 轮询间隔：日志是实时追加的，2 秒足够且开销可忽略 */
         private const val POLL_INTERVAL_MS = 2_000L
         private const val FIRST_DELAY_MS = 3_000L
 
         /** 单次单文件最多读取的字节数 */
         private const val MAX_BYTES_PER_TICK = 512 * 1024
+
+        /**
+         * 首次建基线时从文件末尾往前回溯的字节数。
+         *
+         * 进程刚启动（含 IDE 重启）时若直接从末尾开始，紧邻启动的「宿主安全规则拦截」等事件
+         * 会整条漏掉；回溯 64KB 能覆盖数十行，配合 [BACKFILL_FRESH_MS] 保证只补最近事件。
+         */
+        private const val TAIL_BACKFILL_BYTES = 64 * 1024
+
+        /** 回溯段内行的时间戳时效：超过它的视为旧事件，不重播 */
+        private const val BACKFILL_FRESH_MS = 60_000L
 
         /** 尚未凑齐换行的尾部字节上限（超长单行日志保护） */
         private const val MAX_CARRY_BYTES = 64 * 1024
@@ -786,6 +864,17 @@ class CodeBuddyWatcher : Disposable {
             "收到用户确认|收到用户拒绝|用户拒绝执行|用户已确认|用户取消|user confirmed|user rejected|confirmed by user|" +
                 // 新版同一批日志里紧跟「第一阶段已确认」，说明这次并不会真的等主人点
                 "skipping second confirmation",
+            RegexOption.IGNORE_CASE,
+        )
+
+        /**
+         * 宿主加载到的 PreToolUse hook 数量：`[HookExecutor]  Got N hook config(s) for event PreToolUse`。
+         *
+         * N=0 且脚本久未被调用，说明我们写的 hook 配置没被宿主读进去，
+         * 由 [ApprovalChannel] 判定是否让位到页面代点。
+         */
+        private val HOOK_CONFIG_COUNT = Regex(
+            "Got (\\d+) hook config\\(s\\) for event PreToolUse",
             RegexOption.IGNORE_CASE,
         )
         private val MODEL_ID = Regex(

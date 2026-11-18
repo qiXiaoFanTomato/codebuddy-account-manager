@@ -8,6 +8,8 @@ import java.nio.file.Path
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 
+
+
 /**
  * workspace hash -> 可读项目名。
  *
@@ -188,6 +190,29 @@ object ProjectResolver {
 
     /** 项目绝对路径 -> history 目录名 hash（状态栏按项目精确匹配会话用） */
     fun hashOf(projectPath: String): String = workspaceHash(projectPath)
+
+    /** workspace hash -> 项目名；只在 recentProjects.xml 里登记过的项目才认得 */
+    fun nameOf(workspace: String): String? {
+        if (workspace.isBlank()) return null
+        return try {
+            knownProjects()[workspace]?.name
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    /** 项目名 -> workspace hash：页面通道与日志兜底只给项目名时用它精确对回会话目录 */
+    fun workspaceOfName(name: String): String? {
+        val target = name.trim()
+        if (target.isEmpty()) return null
+        return try {
+            knownProjects().entries
+                .firstOrNull { it.value.name.equals(target, ignoreCase = true) }
+                ?.key
+        } catch (_: Throwable) {
+            null
+        }
+    }
 
     /** history 目录名口径：路径转正斜杠为反斜杠、盘符小写，再取 UTF-8 的 MD5 十六进制小写串 */
     private fun workspaceHash(rawPath: String): String {
