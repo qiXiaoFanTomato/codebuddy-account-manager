@@ -5,6 +5,10 @@ import com.intellij.openapi.components.PersistentStateComponent
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.State
 import com.intellij.openapi.components.Storage
+import dev.codebuddy.account.ui.AccountSortMode
+import dev.codebuddy.account.ui.views.DashboardCardId
+
+
 
 /**
  * 插件通用设置。
@@ -86,8 +90,16 @@ class AccountSettings : PersistentStateComponent<AccountSettings.State> {
         var modelQuotaAlertedKeys: MutableList<String> = mutableListOf(),
         /** 看板已隐藏的卡片（DashboardCardId.name），可从「管理卡片」恢复 */
         var dashboardHiddenCards: MutableList<String> = mutableListOf(),
-        /** 看板卡片顺序（DashboardCardId.name），缺省按枚举声明顺序 */
+        /** 看板卡片顺序（DashboardCardId.name），缺省按重要级别派生 */
         var dashboardCardOrder: MutableList<String> = mutableListOf(),
+        /**
+         * 是否手动改过看板布局。
+         *
+         * false 时看板走代码里的默认布局（按重要级别排序 + 只展开核心 / 重要卡片），
+         * 一旦拖动 / 增删 / 恢复默认，就把当时的默认布局落库为基线并置 true，
+         * 此后完全以这份记录为准，不再随默认规则变化而重置用户的排布。
+         */
+        var dashboardLayoutCustomized: Boolean = false,
         /** 账号面板当前视图（dashboard / list / quota）：工具窗重建后恢复 */
         var uiViewMode: String = "dashboard",
         /** 账号排序模式（AccountSortMode.name） */
@@ -219,13 +231,30 @@ class AccountSettings : PersistentStateComponent<AccountSettings.State> {
     val hiddenDashboardCards: Set<String>
         get() = myState.dashboardHiddenCards.toSet()
 
+    /** 看板布局是否已被手动改过；false 时由看板侧套用默认布局 */
+    val isDashboardLayoutCustomized: Boolean
+        get() = myState.dashboardLayoutCustomized
+
+    /**
+     * 以当前生效布局为基线开启手动布局。
+     *
+     * 首次拖动 / 增删前必须先调用：否则只落了一条顺序记录，
+     * 隐藏列表仍是空表，默认收起的卡片会被误当成「已展开」重新出现在看板上。
+     */
+    fun customizeDashboardLayout(order: List<String>, hidden: List<String>) {
+        if (myState.dashboardLayoutCustomized) return
+        myState.dashboardCardOrder = order.toMutableList()
+        myState.dashboardHiddenCards = hidden.toMutableList()
+        myState.dashboardLayoutCustomized = true
+    }
+
     /** 显示 / 隐藏某张看板卡片 */
     fun setDashboardCardVisible(cardId: String, visible: Boolean) {
         val hidden = myState.dashboardHiddenCards
         if (visible) hidden.remove(cardId) else if (cardId !in hidden) hidden.add(cardId)
     }
 
-    /** 卡片顺序（卡片名列表，空表示按默认顺序） */
+    /** 卡片顺序（卡片名列表，空表示走默认顺序） */
     val dashboardCardOrder: List<String>
         get() = myState.dashboardCardOrder.toList()
 
@@ -234,10 +263,11 @@ class AccountSettings : PersistentStateComponent<AccountSettings.State> {
         myState.dashboardCardOrder = order.toMutableList()
     }
 
-    /** 清空看板布局覆盖，恢复默认（隐藏的卡片全部回来，顺序回默认） */
+    /** 清空看板布局覆盖，回到默认布局（按重要级别排序 + 只展开核心 / 重要卡片） */
     fun resetDashboardLayout() {
         myState.dashboardHiddenCards = mutableListOf()
         myState.dashboardCardOrder = mutableListOf()
+        myState.dashboardLayoutCustomized = false
     }
 
     // ---------------------------------------------------------------

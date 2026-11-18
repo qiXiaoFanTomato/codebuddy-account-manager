@@ -1,29 +1,44 @@
-package dev.codebuddy.account.ui
+package dev.codebuddy.account.ui.views
 
 import com.intellij.util.ui.JBUI
+import dev.codebuddy.account.ui.components.AccountUiKit
+import dev.codebuddy.account.ui.components.CardActionBar
+import dev.codebuddy.account.ui.components.CardMetrics
+import dev.codebuddy.account.ui.components.FullWidthColumn
+import dev.codebuddy.account.ui.components.RoundedCard
+import dev.codebuddy.account.ui.foundation.Jelly
+import dev.codebuddy.account.ui.foundation.JellyValue
+import dev.codebuddy.account.ui.foundation.WrapGridLayout
+import dev.codebuddy.account.ui.tokens.AccountUiColors
+import dev.codebuddy.account.ui.tokens.AccountUiRadius
+import dev.codebuddy.account.ui.tokens.AccountUiSpacing
+import dev.codebuddy.account.ui.tokens.AccountUiType
+import dev.codebuddy.account.ui.tokens.baseLabelFont
 import java.awt.BasicStroke
 import java.awt.Component
 import java.awt.Container
 import java.awt.Cursor
+import java.awt.datatransfer.DataFlavor
+import java.awt.datatransfer.StringSelection
+import java.awt.datatransfer.Transferable
 import java.awt.Dimension
+import java.awt.event.MouseAdapter
+import java.awt.event.MouseEvent
+import java.awt.event.MouseMotionAdapter
 import java.awt.FlowLayout
 import java.awt.Font
+import java.awt.geom.RoundRectangle2D
 import java.awt.Graphics
 import java.awt.Graphics2D
 import java.awt.LayoutManager
 import java.awt.Point
 import java.awt.RenderingHints
-import java.awt.datatransfer.DataFlavor
-import java.awt.datatransfer.StringSelection
-import java.awt.datatransfer.Transferable
-import java.awt.event.MouseAdapter
-import java.awt.event.MouseEvent
-import java.awt.event.MouseMotionAdapter
-import java.awt.geom.RoundRectangle2D
 import javax.swing.JComponent
 import javax.swing.JPanel
 import javax.swing.SwingUtilities
 import javax.swing.TransferHandler
+
+
 
 /** 跨列数取该值时占满整行 */
 const val DASHBOARD_SPAN_FULL: Int = 0
@@ -37,33 +52,67 @@ const val DASHBOARD_SPAN_FULL: Int = 0
 const val DASHBOARD_CARD_ACTION_KEY: String = "codebuddy.dashboardCardAction"
 
 /**
- * 看板卡片标识：决定标题文案与「管理卡片」菜单里的名字。
+ * 卡片的重要级别：默认顺序与默认可见范围都由它决定。
  *
- * 声明顺序即看板的默认排列顺序：今日消耗积分与关键指标左右并排占满首行
- * （设计稿里今日消耗积分整宽，看板布局要求改为与关键指标并排），
- * 其余半宽卡片顺次换行；插件自有卡片排在后面，可通过「管理卡片」隐藏。
+ * 划分口径（三项都满足才进上一级）：
+ * 1. 是否会阻断当前使用（额度 / 限流 → 直接影响能否继续请求）；
+ * 2. 是否有时效（到期、签到当天有效）；
+ * 3. 用户是否需要据此做决策（切号 / 充值 / 放行）。
+ *
+ * [defaultVisible] 为 false 的级别不进首屏，卡片仍可从「＋ 添加卡片」加回来。
  */
-enum class DashboardCardId(val title: String) {
-    HERO("今日消耗积分"),
-    KPI("关键指标"),
-    CHECKIN("今日签到"),
-    MODEL_QUOTA("模型限额"),
-    RATE_LIMIT("模型频率限制"),
-    RANKING("额度排行"),
-    EXPIRING("到期看板"),
-    SCHEDULER("智能调度"),
-    USAGE("消耗明细"),
-    GROWTH_PLAN("成长计划与活跃"),
-    GROWTH("成长中心"),
-    ASSISTANT("增强助手"),
-    EVENTS("事件记录"),
-    ACTIVITY("对话活跃"),
-    STATUS("数据状态"),
-    GUIDE("使用说明"),
+enum class CardPriority(val level: Int, val label: String, val defaultVisible: Boolean) {
+    /** 核心：首屏必看，异常即阻断 */
+    P0(0, "核心", true),
+
+    /** 重要：需要本周内处理，积压会变成问题 */
+    P1(1, "重要", true),
+
+    /** 辅助：自动化与运营状态，配置稳定后低频查看 */
+    P2(2, "辅助", false),
+
+    /** 参考：一次性阅读或排障用，不需要常驻 */
+    P3(3, "参考", false),
+}
+
+/**
+ * 看板卡片标识：决定标题文案、重要级别与「管理卡片」菜单里的名字。
+ *
+ * 默认排列顺序 = 按 [CardPriority] 升序（同级维持声明顺序），
+ * 所以声明顺序只在同一级别内起作用，跨级别由重要级别说话：
+ * 今日消耗积分与关键指标是仅有的两张 P0，左右并排占满首行；
+ * 其余半宽卡片顺次换行；辅助 / 参考级卡片默认收起。
+ */
+enum class DashboardCardId(val title: String, val priority: CardPriority) {
+    HERO("今日消耗积分", CardPriority.P0),
+    KPI("关键指标", CardPriority.P0),
+    MODEL_QUOTA("模型限额", CardPriority.P1),
+    RATE_LIMIT("模型频率限制", CardPriority.P1),
+    EXPIRING("到期看板", CardPriority.P1),
+    RANKING("额度排行", CardPriority.P1),
+    CHECKIN("今日签到", CardPriority.P1),
+    USAGE("消耗明细", CardPriority.P1),
+    SCHEDULER("智能调度", CardPriority.P2),
+    GROWTH_PLAN("成长计划与活跃", CardPriority.P2),
+    GROWTH("成长中心", CardPriority.P2),
+    ASSISTANT("增强助手", CardPriority.P2),
+    EVENTS("事件记录", CardPriority.P2),
+    ACTIVITY("对话活跃", CardPriority.P2),
+    STATUS("数据状态", CardPriority.P3),
+    GUIDE("使用说明", CardPriority.P3),
     ;
 
     companion object {
         fun of(name: String): DashboardCardId? = DashboardCardId.values().firstOrNull { it.name == name }
+
+        /** 默认顺序：重要级别升序，同级按声明顺序（sortedBy 稳定） */
+        val defaultOrder: List<String> = values().sortedBy { it.priority.level }.map { it.name }
+
+        /** 默认收起：非 [CardPriority.defaultVisible] 的级别 */
+        val defaultHidden: List<String> = values().filter { !it.priority.defaultVisible }.map { it.name }
+
+        /** 菜单 / 提示里展示的名字：标题 + 级别 */
+        fun labelOf(id: DashboardCardId): String = "${id.title}（${id.priority.label}）"
     }
 }
 
@@ -206,106 +255,6 @@ class DashboardCardGridLayout(
 }
 
 /**
- * 可换行的横向流式布局：按可用宽度逐个摆放，放不下就换行。
- *
- * 按钮行专用的轻量布局。首选尺寸按上一次布局的可用宽度估算换行行数，
- * 所以窄卡片里的多枚胶囊按钮不会被挤到卡片外面。
- */
-class FlowWrapLayout(
-    private val hgap: Int,
-    private val vgap: Int,
-) : LayoutManager {
-
-    private var lastAvailable: Int = 0
-
-    override fun addLayoutComponent(name: String?, comp: Component?) = Unit
-
-    override fun removeLayoutComponent(comp: Component?) = Unit
-
-    override fun layoutContainer(parent: Container) {
-        synchronized(parent.treeLock) {
-            val insets = parent.insets
-            val available = (parent.width - insets.left - insets.right).coerceAtLeast(0)
-            if (available > 0 && available != lastAvailable) {
-                lastAvailable = available
-                // 宽度变化会影响换行行数 → 让卡片重算高度
-                SwingUtilities.invokeLater { parent.revalidate() }
-            }
-            val limit = if (available > 0) available else Int.MAX_VALUE
-
-            // 先按换行分组，再逐行摆放：同一行里的按钮 / 输入框高度不同，
-            // 统一在行内垂直居中，避免顶部对齐造成的参差
-            val visible = (0 until parent.componentCount)
-                .map { parent.getComponent(it) }
-                .filter { it.isVisible }
-
-            val rows = mutableListOf<MutableList<Component>>()
-            var current = mutableListOf<Component>()
-            var x = 0
-            for (comp in visible) {
-                val w = comp.preferredSize.width
-                if (x > 0 && x + w > limit) {
-                    rows.add(current)
-                    current = mutableListOf()
-                    x = 0
-                }
-                current.add(comp)
-                x += w + hgap
-            }
-            if (current.isNotEmpty()) rows.add(current)
-
-            var y = insets.top
-            for (rowItems in rows) {
-                val rowHeight = rowItems.maxOf { it.preferredSize.height }
-                var cx = 0
-                for (comp in rowItems) {
-                    val size = comp.preferredSize
-                    comp.setBounds(
-                        insets.left + cx,
-                        y + (rowHeight - size.height) / 2,
-                        size.width,
-                        size.height,
-                    )
-                    cx += size.width + hgap
-                }
-                y += rowHeight + vgap
-            }
-        }
-    }
-
-    override fun preferredLayoutSize(parent: Container): Dimension {
-        synchronized(parent.treeLock) {
-            val insets = parent.insets
-            val limit = lastAvailable.takeIf { it > 0 } ?: Int.MAX_VALUE
-
-            var x = 0
-            var height = 0
-            var rowHeight = 0
-            var maxWidth = 0
-            for (i in 0 until parent.componentCount) {
-                val comp = parent.getComponent(i)
-                if (!comp.isVisible) continue
-                val size = comp.preferredSize
-                if (x > 0 && x + size.width > limit) {
-                    height += rowHeight + vgap
-                    maxWidth = maxOf(maxWidth, x - hgap)
-                    x = 0
-                    rowHeight = 0
-                }
-                x += size.width + hgap
-                rowHeight = maxOf(rowHeight, size.height)
-            }
-            height += rowHeight
-            maxWidth = maxOf(maxWidth, (x - hgap).coerceAtLeast(0))
-            val width = if (lastAvailable > 0) lastAvailable else maxWidth
-            return Dimension(insets.left + insets.right + width, insets.top + insets.bottom + height)
-        }
-    }
-
-    override fun minimumLayoutSize(parent: Container): Dimension = preferredLayoutSize(parent)
-}
-
-/**
  * 看板卡片外壳：素墨卡片 + 标题栏（可选）+ 内容区。
  *
  * 编辑能力由外壳统一提供，且只在 [setEditing] 打开编辑模式后可用，业务侧只管往 [body] 里塞内容：
@@ -390,13 +339,13 @@ class DashboardCard(
                 editControls += remove
                 headerActions.add(remove)
             }
-            val header = SectionHeader(title, subtitle, headerActions)
+            val header = AccountUiKit.sectionHeader(title, subtitle, headerActions)
             // 标题栏高度固定：卡片被档位拉高时多出来的空间留给内容，不能被标题栏吞掉
             header.maximumSize = Dimension(Int.MAX_VALUE, header.preferredSize.height)
             add(header)
             // 标题与内容之间用细线分隔，卡片的「表头 / 内容」两段一眼可分
             add(javax.swing.Box.createVerticalStrut(JBUI.scale(AccountUiSpacing.sm)))
-            add(HairLine())
+            add(AccountUiKit.divider())
             add(javax.swing.Box.createVerticalStrut(JBUI.scale(AccountUiSpacing.md)))
         }
         add(body)

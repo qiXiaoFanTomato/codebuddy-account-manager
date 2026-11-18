@@ -1,4 +1,4 @@
-package dev.codebuddy.account.ui
+package dev.codebuddy.account.ui.views
 
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.ui.components.JBScrollPane
@@ -9,9 +9,15 @@ import dev.codebuddy.account.growth.GrowthTracker
 import dev.codebuddy.account.history.ActivityFeed
 import dev.codebuddy.account.history.HistoryActivity
 import dev.codebuddy.account.model.CredentialSnapshot
+import dev.codebuddy.account.pet.ApprovalChannel
+import dev.codebuddy.account.pet.ApprovalHistoryDialog
 import dev.codebuddy.account.pet.CbApprovalMode
 import dev.codebuddy.account.pet.CbEventCenter
+import dev.codebuddy.account.pet.CbHookConsent
 import dev.codebuddy.account.pet.CbWebObserver
+import dev.codebuddy.account.pet.CodeBuddyHookInstaller
+import dev.codebuddy.account.pet.PetApprovalHistory
+import dev.codebuddy.account.pet.PetNotifier
 import dev.codebuddy.account.pet.PetService
 import dev.codebuddy.account.pet.PetSettings
 import dev.codebuddy.account.quota.QuotaPackage
@@ -23,19 +29,44 @@ import dev.codebuddy.account.service.AccountSettings
 import dev.codebuddy.account.service.AutoRefreshService
 import dev.codebuddy.account.service.QuotaAlertSettings
 import dev.codebuddy.account.service.QuotaScheduler
+import dev.codebuddy.account.ui.components.AccountUiKit
+import dev.codebuddy.account.ui.components.ActionPill
+import dev.codebuddy.account.ui.components.CardHeadline
+import dev.codebuddy.account.ui.components.CardList
+import dev.codebuddy.account.ui.components.CardMetrics
+import dev.codebuddy.account.ui.components.CardNotice
+import dev.codebuddy.account.ui.components.CardRow
+import dev.codebuddy.account.ui.components.Chip
+import dev.codebuddy.account.ui.components.FullWidthColumn
+import dev.codebuddy.account.ui.components.HeroCard
+import dev.codebuddy.account.ui.components.HeroPanel
+import dev.codebuddy.account.ui.components.JellyButton
+import dev.codebuddy.account.ui.components.JellyButtonVariant
+import dev.codebuddy.account.ui.components.KpiTile
+import dev.codebuddy.account.ui.components.QuotaBar
+import dev.codebuddy.account.ui.components.QuotaCardUi
+import dev.codebuddy.account.ui.components.RoundedCard
+import dev.codebuddy.account.ui.components.SectionHeader
+import dev.codebuddy.account.ui.foundation.Easing
+import dev.codebuddy.account.ui.foundation.Tween
+import dev.codebuddy.account.ui.foundation.WrapGridLayout
+import dev.codebuddy.account.ui.tokens.AccountUiColors
+import dev.codebuddy.account.ui.tokens.AccountUiSpacing
+import dev.codebuddy.account.ui.tokens.AccountUiType
+import dev.codebuddy.account.ui.tokens.baseLabelFont
+import dev.codebuddy.account.usage.formatCredit
 import dev.codebuddy.account.usage.ModelQuotaRuleState
 import dev.codebuddy.account.usage.ModelQuotaTracker
 import dev.codebuddy.account.usage.UsageRecord
 import dev.codebuddy.account.usage.UsageTodayTracker
-import dev.codebuddy.account.usage.formatCredit
 import java.awt.*
 import java.awt.event.HierarchyEvent
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
+import java.time.format.DateTimeFormatter
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
-import java.time.format.DateTimeFormatter
 import javax.swing.*
 
 /**
@@ -46,7 +77,10 @@ import javax.swing.*
  * 卡片高度自适应：不低于 2×2 基准高度，列表超出 2×2 容量时自己长高到 2×4 的高度（不封顶），
  * 同一行内对齐到该行最高的一张，不需要高度的卡片不会被旁边的长卡拖高。
  *
- * 卡片的可见性与顺序记在 [AccountSettings]，重开工具窗仍是用户排过的样子。
+ * 看板是工具窗的默认页：用户没排过卡片时，顺序由 [CardPriority] 决定（P0 核心 → P1 重要），
+ * 默认只展开这两级，P2 辅助 / P3 参考从「＋ 添加卡片」按需加回；
+ * 一旦拖动 / 增删 / 恢复默认，就把当时的布局落库为基线，此后以 [AccountSettings] 的记录为准，
+ * 重开工具窗仍是用户排过的样子。
  *
  * 除账号 / 额度数据外，这里也承载 CodeBuddy 运行态（限流、成长计划、观察代点、事件记录、
  * 对话活跃）：原先的「CodeBuddy 增强助手」窗口已删除，同一功能点只在这套卡片里出现一次。
@@ -125,7 +159,7 @@ class DashboardPanel(
      * 所以这里复用同一个组件，由 [heroStrip] 原地更新数值与指标；
      * 每次刷新重建组件会让动画从头再滚一遍。
      */
-    private val usageHero = HeroPanel(
+    private val usageHero = AccountUiKit.hero(
         // 标题交给卡片外壳的标题栏，这里不再重复一行标题
         title = "",
         value = "—",
@@ -293,7 +327,7 @@ class DashboardPanel(
     /** 按当前顺序 / 可见性重建网格（不触发数据刷新） */
     private fun rebuildGrid() {
         if (lastSaved.isEmpty()) return
-        val hidden = settings.hiddenDashboardCards
+        val hidden = effectiveHidden()
         grid.removeAll()
         for (name in effectiveCardOrder()) {
             val id = DashboardCardId.of(name) ?: continue
@@ -319,11 +353,32 @@ class DashboardPanel(
         card.dragHandle.transferHandler = handler
     }
 
-    /** 当前生效的卡片顺序：设置里为准，新增卡片按枚举顺序补到末尾 */
+    /**
+     * 当前生效的卡片顺序。
+     *
+     * 未自定义过布局时走 [DashboardCardId.defaultOrder]（按重要级别排序），
+     * 这是看板作为默认页的初始展示顺序；用户拖动过之后以设置里的记录为准，
+     * 新版本新增的卡片统一按默认顺序补到末尾，不会插到用户排好的卡片中间。
+     */
     private fun effectiveCardOrder(): List<String> {
-        val saved = settings.dashboardCardOrder.filter { DashboardCardId.of(it) != null }
-        val known = saved.toSet()
-        return saved + DashboardCardId.values().map { it.name }.filter { it !in known }
+        val saved = if (settings.isDashboardLayoutCustomized) {
+            settings.dashboardCardOrder.filter { DashboardCardId.of(it) != null }
+        } else {
+            emptyList()
+        }
+        val base = saved.ifEmpty { DashboardCardId.defaultOrder }
+        val known = base.toSet()
+        return base + DashboardCardId.defaultOrder.filter { it !in known }
+    }
+
+    /** 当前生效的隐藏集合：未自定义过布局时只展开核心 / 重要卡片 */
+    private fun effectiveHidden(): Set<String> =
+        if (settings.isDashboardLayoutCustomized) settings.hiddenDashboardCards else DashboardCardId.defaultHidden.toSet()
+
+    /** 首次改动布局前，把当前生效布局落库为基线，避免默认收起的卡片被误当成展开 */
+    private fun ensureLayoutBaseline() {
+        if (settings.isDashboardLayoutCustomized) return
+        settings.customizeDashboardLayout(effectiveCardOrder(), effectiveHidden().toList())
     }
 
     /**
@@ -333,6 +388,7 @@ class DashboardPanel(
      */
     private fun moveCard(from: String, to: String, after: Boolean) {
         if (from == to) return
+        ensureLayoutBaseline()
         val order = effectiveCardOrder().toMutableList()
         if (!order.remove(from)) return
         val index = order.indexOf(to)
@@ -380,7 +436,8 @@ class DashboardPanel(
 
     /** 添加 = 把隐藏的内置卡片放回看板；新卡片走入场动画，其余卡片 FLIP 让位 */
     private fun addCardWithAnimation(id: DashboardCardId) {
-        if (id.name !in settings.hiddenDashboardCards) return
+        if (id.name !in effectiveHidden()) return
+        ensureLayoutBaseline()
         settings.setDashboardCardVisible(id.name, true)
         AccountEvents.fireDashboardLayoutChanged(this@DashboardPanel)
         rebuildWithTransition(entering = id.name)
@@ -395,6 +452,7 @@ class DashboardPanel(
             grid.repaint()
         })
         tween.onEnd = {
+            ensureLayoutBaseline()
             settings.setDashboardCardVisible(id.name, false)
             AccountEvents.fireDashboardLayoutChanged(this@DashboardPanel)
             rebuildWithTransition()
@@ -467,7 +525,7 @@ class DashboardPanel(
         val actions = JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(6), 0)).apply { isOpaque = false }
 
         lateinit var add: JellyButton
-        add = JellyButton(
+        add = AccountUiKit.button(
             "＋ 添加卡片",
             JellyButtonVariant.SECONDARY,
             null,
@@ -477,7 +535,7 @@ class DashboardPanel(
         addButton = add
         actions.add(add)
 
-        val manage = JellyButton(
+        val manage = AccountUiKit.button(
             if (editMode) "完成编辑" else "管理卡片",
             JellyButtonVariant.SECONDARY,
             null,
@@ -488,17 +546,23 @@ class DashboardPanel(
         return actions
     }
 
-    /** 编辑模式下的「添加卡片」：列出所有已隐藏卡片，末项可一键恢复默认布局 */
+    /**
+     * 编辑模式下的「添加卡片」：列出所有已隐藏卡片，末项可一键恢复默认布局。
+     *
+     * 列表按默认顺序（重要级别）排列并标注级别，让「哪些是被收起的辅助卡片」一目了然。
+     */
     private fun showAddCardMenu(anchor: JComponent) {
         val menu = JPopupMenu()
-        val hidden = settings.hiddenDashboardCards
-        val candidates = DashboardCardId.values().filter { it.name in hidden }
+        val hidden = effectiveHidden()
+        val candidates = DashboardCardId.defaultOrder
+            .mapNotNull { DashboardCardId.of(it) }
+            .filter { it.name in hidden }
         if (candidates.isEmpty()) {
             menu.add(JMenuItem("全部卡片已在看板中").apply { isEnabled = false })
         } else {
-            menu.add(JMenuItem("添加到看板").apply { isEnabled = false })
+            menu.add(JMenuItem("添加到看板（按重要级别排序）").apply { isEnabled = false })
             for (id in candidates) {
-                menu.add(JMenuItem(id.title).apply {
+                menu.add(JMenuItem(DashboardCardId.labelOf(id)).apply {
                     addActionListener { addCardWithAnimation(id) }
                 })
             }
@@ -564,8 +628,8 @@ class DashboardPanel(
                 value = if (rows.isEmpty()) "—" else "${"%.0f".format(percent)}%",
                 sub = if (rows.isEmpty()) "尚未查询" else "剩余 ${num(remain)} / ${num(size)} $unit",
                 color = if (rows.isEmpty()) AccountUiColors.textFaint else QuotaCardUi.percentColor(percent),
-                tip = "点击查看额度明细",
-                onClick = onOpenQuotaDetail,
+                tip = "点击查看用量统计（积分 / 调用趋势）",
+                onClick = onOpenUsageStats,
             )
         )
         row.add(
@@ -600,7 +664,7 @@ class DashboardPanel(
         tip: String,
         onClick: () -> Unit,
     ): JComponent {
-        val card = KpiTile(title, value, sub, color)
+        val card = AccountUiKit.kpi(title, value, sub, color)
         // 高度交给 KpiTile 按「标签 / 数值 / 说明」三行内容计算，固定 92dp 会裁掉说明文字
         card.alignmentX = Component.LEFT_ALIGNMENT
         installCardClick(card, tip, onClick)
@@ -672,17 +736,17 @@ class DashboardPanel(
         val models = st.byModel()
         val section = FullWidthColumn()
         section.add(
-            SectionHeader(
+            AccountUiKit.sectionHeader(
                 "今日各模型消耗",
                 subtitle = if (st.loaded && models.isNotEmpty()) "共 ${models.size} 个模型 · 按积分降序" else null,
             )
         )
         section.add(Box.createVerticalStrut(JBUI.scale(CardMetrics.rowGap)))
         section.add(
-            CardList(
+            AccountUiKit.cardList(
                 rows = models.map { m ->
                     val name = m.model.ifBlank { "未知模型" }
-                    CardRow(
+                    AccountUiKit.cardRow(
                         name = name,
                         value = formatCredit(m.credit),
                         tag = AccountUiKit.statusTag("${m.count} 次", AccountUiColors.textMuted),
@@ -732,7 +796,7 @@ class DashboardPanel(
 
         val allDone = st.checkedCount == st.items.size
         card.body.add(
-            CardHeadline(
+            AccountUiKit.cardHeadline(
                 value = "${st.checkedCount}/${st.items.size}",
                 unit = "个账号已签到",
                 tone = if (allDone) AccountUiColors.success else AccountUiColors.textPrimary,
@@ -741,7 +805,7 @@ class DashboardPanel(
         )
         card.body.add(Box.createVerticalStrut(JBUI.scale(CardMetrics.blockGap)))
         card.body.add(
-            CardList(
+            AccountUiKit.cardList(
                 rows = st.items.map { checkinRow(it) },
                 capacity = card.listRows,
                 overflowText = { "另有 $it 个账号未展示" },
@@ -770,7 +834,7 @@ class DashboardPanel(
         }
 
         val failed = item.failed
-        return CardRow(
+        return AccountUiKit.cardRow(
             name = item.displayName,
             value = if (failed != null) "—" else "",
             tag = AccountUiKit.statusTag(statusText, statusColor),
@@ -821,7 +885,7 @@ class DashboardPanel(
         }
 
         card.body.add(
-            CardHeadline(
+            AccountUiKit.cardHeadline(
                 value = "${st.activeCount}/${st.total}",
                 unit = "个账号今日已活跃",
                 tone = if (st.activeCount == st.total) AccountUiColors.success else AccountUiColors.textPrimary,
@@ -834,7 +898,7 @@ class DashboardPanel(
         )
         card.body.add(Box.createVerticalStrut(JBUI.scale(CardMetrics.blockGap)))
         card.body.add(
-            CardList(
+            AccountUiKit.cardList(
                 rows = st.items.map { growthPlanRow(it) },
                 capacity = card.listRows,
                 overflowText = { "另有 $it 个账号未展示" },
@@ -864,7 +928,7 @@ class DashboardPanel(
             streak != null -> "连登 ${streak.days} 天"
             else -> "—"
         }
-        return CardRow(
+        return AccountUiKit.cardRow(
             name = item.displayName,
             value = value,
             tag = AccountUiKit.statusTag(statusText, statusColor),
@@ -921,7 +985,7 @@ class DashboardPanel(
         }
 
         card.body.add(
-            CardHeadline(
+            AccountUiKit.cardHeadline(
                 value = "${st.claimedTasks}/${st.totalTasks}",
                 unit = "个任务已完成",
                 trailing = if (st.claimableTasks > 0) {
@@ -933,7 +997,7 @@ class DashboardPanel(
         )
         card.body.add(Box.createVerticalStrut(JBUI.scale(CardMetrics.blockGap)))
         card.body.add(
-            CardList(
+            AccountUiKit.cardList(
                 rows = st.items.map { growthRow(it) },
                 capacity = card.listRows,
                 overflowText = { "另有 $it 个账号未展示" },
@@ -959,7 +1023,7 @@ class DashboardPanel(
         val doing = item.tasks.firstOrNull {
             it.state == GrowthService.TaskState.ACCEPTED || it.state == GrowthService.TaskState.IN_PROGRESS
         }
-        return CardRow(
+        return AccountUiKit.cardRow(
             name = item.displayName,
             value = when {
                 item.error != null -> "查询失败"
@@ -996,6 +1060,21 @@ class DashboardPanel(
         card.actions.addAction("快捷短语", "管理常用短语并发送到 CodeBuddy 输入框", ghost = true) {
             onOpenPhrases()
         }
+        // 宿主配置的启用 / 修复 / 恢复都从这一行操作：没装时是「启用」，装过是「修复结构」
+        val hookInstalled = CodeBuddyHookInstaller.isInstalled()
+        card.actions.addAction(
+            if (hookInstalled) "修复确认配置" else "启用桌宠弹窗",
+            if (hookInstalled) "把 hook 配置迁移到 CodeBuddy 认的 hooks 结构" else "征得同意后写入 hook，写入前自动备份",
+            ghost = true,
+        ) {
+            if (hookInstalled) repairHookConfig() else requestHookInstall()
+        }
+        // 已经写入过才给撤销入口：只删自家 hook 条目，其它配置不动
+        if (hookInstalled) {
+            card.actions.addAction("撤销写入", "删掉插件的 hook 条目，其它配置保持原样", ghost = true) {
+                revokeHookConfig()
+            }
+        }
 
         val recent = CbEventCenter.recentEvents()
         val approvals = recent.count { it.type == "approval" }
@@ -1007,7 +1086,7 @@ class DashboardPanel(
         val connected = CbWebObserver.isConnected()
 
         card.body.add(
-            CardHeadline(
+            AccountUiKit.cardHeadline(
                 value = if (connected) "已连接" else "未连接",
                 unit = "页面观察通道",
                 tone = if (connected) AccountUiColors.success else AccountUiColors.warning,
@@ -1023,7 +1102,7 @@ class DashboardPanel(
         )
         card.body.add(Box.createVerticalStrut(JBUI.scale(CardMetrics.blockGap)))
         card.body.add(
-            CardList(
+            AccountUiKit.cardList(
                 rows = petSwitchRows(),
                 capacity = card.listRows,
                 overflowText = { "另有 $it 项开关未展示" },
@@ -1054,13 +1133,15 @@ class DashboardPanel(
      * 看板不再放开关，避免同一个字段两处 UI 各写各的。
      */
     private fun approvalSummaryRow(pet: PetSettings): JComponent {
-        val text = when (pet.cbApprovalMode) {
+        val base = when (pet.cbApprovalMode) {
             CbApprovalMode.NONE -> "确认处理：不干预（只提醒）"
             CbApprovalMode.PAGE ->
                 "确认处理：页面代点 · 普通${pet.cbApprovalNormal.label} · 危险${pet.cbApprovalDanger.label}"
             CbApprovalMode.HOOK ->
                 "确认处理：桌宠弹窗 · 普通${pet.cbApprovalNormal.label} · 危险${pet.cbApprovalDanger.label}"
         }
+        // 通道失效时把「实际由谁接管」写在同一行，避免主人以为设置没生效
+        val text = ApprovalChannel.statusText(pet)?.let { "$base · $it" } ?: base
         return JLabel(text).apply {
             font = baseLabelFont().deriveFont(Font.PLAIN, AccountUiType.label)
             foreground = AccountUiColors.textMuted
@@ -1069,6 +1150,82 @@ class DashboardPanel(
             maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(CardMetrics.rowHeight))
             toolTipText = "在「桌宠设置 → CodeBuddy 确认」里修改"
         }
+    }
+
+    /**
+     * 一键修复 hook 配置位置。
+     *
+     * 早期版本把 `PreToolUse` 写在 `settings.json` 顶层，宿主不认（日志恒为 0 config），
+     * 这里把它迁到 `hooks` 下；清掉失效判定后由 [CodeBuddyWatcher] 在下次工具调用时核验。
+     */
+    private fun repairHookConfig() {
+        val ok = try {
+            CodeBuddyHookInstaller.repairStructure()
+        } catch (_: Throwable) {
+            false
+        }
+        if (!ok) {
+            PetNotifier.notify(
+                PetNotifier.Level.ERROR,
+                "确认配置没修好",
+                "settings.json 无法解析，或本机没有 node；这次没有改动任何配置",
+            )
+            return
+        }
+        ApprovalChannel.resetHookBroken()
+        PetNotifier.notify(
+            PetNotifier.Level.SUCCESS,
+            "确认配置已修复",
+            "hook 已写入 hooks 结构，下次工具调用自动核验；仍不生效会再提示主人",
+        )
+        update()
+    }
+
+    /** 看板入口：征得同意后写入宿主配置并启动通道（同意对话在 [PetService.requestHookInstall] 里） */
+    private fun requestHookInstall() {
+        val pet = PetSettings.getInstance()
+        val ok = try {
+            PetService.getInstance().requestHookInstall()
+        } catch (_: Throwable) {
+            false
+        }
+        if (!ok) return
+        // 按钮语义就是「用桌宠弹窗处理确认」：同步把处理方式切过来，否则 hook 装了也不用于裁决
+        pet.cbApprovalMode = CbApprovalMode.HOOK
+        PetService.getInstance().applySettings()
+        update()
+    }
+
+    /**
+     * 撤销插件写入的 hook：只删自家条目，其它配置保持原样。
+     *
+     * 不整文件覆盖备份，是因为备份可能比当前配置旧，覆盖会把主人后来新增的
+     * 插件 / skills 设置一起回滚。撤销后把同意状态改回拒绝，避免下一轮同步又写回去；
+     * 想重新启用时点上方的「启用桌宠弹窗」。
+     */
+    private fun revokeHookConfig() {
+        if (!CodeBuddyHookInstaller.revoke()) {
+            PetNotifier.notify(
+                PetNotifier.Level.ERROR,
+                "撤销没成功",
+                "settings.json 无法解析或写回失败，这次没有改动任何配置",
+            )
+            return
+        }
+        PetSettings.getInstance().cbHookConsent = CbHookConsent.DECLINED
+        ApprovalChannel.markHookUnavailable()
+        PetService.getInstance().applySettings()
+        val tail = if (CodeBuddyHookInstaller.hasBackup()) {
+            "原始备份仍在：${CodeBuddyHookInstaller.backupFile().toAbsolutePath()}"
+        } else {
+            "没有找到原始备份文件"
+        }
+        PetNotifier.notify(
+            PetNotifier.Level.SUCCESS,
+            "已撤销写入",
+            "只删掉了插件那条 hook，其它配置保持原样。$tail",
+        )
+        update()
     }
 
     private fun switchRow(label: String, checked: Boolean, toggle: (Boolean) -> Unit): JComponent {
@@ -1109,44 +1266,79 @@ class DashboardPanel(
     // 2.58 事件记录
     // ---------------------------------------------------------------
 
-    /** 事件记录：观察通道与日志汇合后的最近事件，含「是否由桌宠代劳」 */
+    /**
+     * 事件记录：卡片只做今日概览与入口，详细查询在 [ApprovalHistoryDialog] 里。
+     *
+     * 数据来自磁盘账本 `approval-history.jsonl`，跨重启可查；
+     * 时间区间与项目筛选放在详情窗口，卡片上不再挤一排控件。
+     */
     private fun fillEventsCard(card: DashboardCard) {
-        card.actions.addAction("刷新", "重新读取最近事件", primary = true) { update() }
-        card.actions.addAction("清空记录", "清空事件记录", ghost = true) {
+        card.actions.addAction("查看详细", "按时间区间与项目查询代点记录", primary = true) {
+            ApprovalHistoryDialog().show()
+        }
+        card.actions.addAction("清空最近事件", "只清内存里的事件列表，磁盘账本保留", ghost = true) {
             CbEventCenter.clearEvents()
             update()
         }
 
-        val events = CbEventCenter.recentEvents()
+        val todayStart = LocalDate.now().atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
+        val todayEntries = approvalEntries(todayStart, System.currentTimeMillis(), "", PREVIEW_ROWS)
+        val autos = todayEntries.count { it.auto }
+        val failed = todayEntries.count { it.result == "fail" }
         card.body.add(
             CardNotice(
-                if (events.isEmpty()) {
-                    "还没有观察到权限弹窗 / 限流 / 中断事件。"
+                if (todayEntries.isEmpty()) {
+                    "今天还没有代点或待确认记录；账本存在本地，点「查看详细」可按时间与项目查历史。"
                 } else {
-                    "最近 ${events.size} 条 · 时间 / 类型 / 标题"
+                    "今日 ${todayEntries.size} 条 · 代点 $autos 次 · 失败 $failed 条 · 点「查看详细」按时间与项目查询"
                 }
             )
         )
         card.body.add(Box.createVerticalStrut(JBUI.scale(CardMetrics.rowGap)))
         card.body.add(
-            CardList(
-                rows = events.map { eventRow(it) },
-                capacity = card.listRows,
-                overflowText = { "另有 $it 条事件未展示" },
+            AccountUiKit.cardList(
+                rows = todayEntries.map { approvalRow(it) },
+                capacity = PREVIEW_ROWS,
+                emptyText = "今天没有记录",
+                overflowText = { "另有 $it 条，点「查看详细」" },
             )
         )
     }
 
-    private fun eventRow(e: CbEventCenter.EventRecord): JComponent = CardRow(
-        name = "${e.timeText} ${e.title}",
-        value = "",
-        valueWidthDp = 0,
-        tag = AccountUiKit.statusTag(
-            if (e.auto) "${e.typeLabel} · 代劳" else e.typeLabel,
-            if (e.auto) AccountUiColors.brass else AccountUiColors.textMuted,
-        ),
-        tooltip = "${e.timeText} ${e.typeLabel} ${e.title}：${e.detail}",
-    )
+    /** 读一段时间的账本；读失败当空列表，不影响卡片其它部分 */
+    private fun approvalEntries(from: Long, to: Long, project: String, limit: Int): List<PetApprovalHistory.Entry> =
+        try {
+            PetApprovalHistory.query(from, to, project, limit)
+        } catch (_: Throwable) {
+            emptyList()
+        }
+
+    private fun approvalRow(e: PetApprovalHistory.Entry): JComponent {
+        val time = APPROVAL_TIME.format(Instant.ofEpochMilli(e.at))
+        val who = listOf(e.project, e.title).filter { it.isNotBlank() }
+            .joinToString(" · ").ifBlank { "未知项目" }
+        val what = e.what.replace(Regex("\\s+"), " ").trim()
+        val kind = if (e.auto) "代点" else "待确认"
+        val tone = when (e.result) {
+            "ok" -> AccountUiColors.success
+            "fail" -> AccountUiColors.warning
+            "pending" -> AccountUiColors.brass
+            else -> AccountUiColors.textMuted
+        }
+        return AccountUiKit.cardRow(
+            name = "$time · $kind · $who · $what",
+            value = "",
+            valueWidthDp = 0,
+            tag = AccountUiKit.statusTag(e.resultLabel, tone),
+            tooltip = buildString {
+                append("$time · $kind · $who\n$what")
+                if (e.resultText.isNotBlank()) append("\n结果：${e.resultText}")
+                append("\n来源：${e.source}")
+            },
+        )
+    }
+
+
 
     // ---------------------------------------------------------------
     // 2.59 对话活跃
@@ -1170,7 +1362,7 @@ class DashboardPanel(
         card.body.add(CardNotice("最近 ${activityItems.size} 个对话 · 摘要取「主人」之后的正文"))
         card.body.add(Box.createVerticalStrut(JBUI.scale(CardMetrics.rowGap)))
         card.body.add(
-            CardList(
+            AccountUiKit.cardList(
                 rows = activityItems.map { activityRow(it) },
                 capacity = card.listRows,
                 overflowText = { "另有 $it 个对话未展示" },
@@ -1178,7 +1370,7 @@ class DashboardPanel(
         )
     }
 
-    private fun activityRow(item: ActivityFeed.Item): JComponent = CardRow(
+    private fun activityRow(item: ActivityFeed.Item): JComponent = AccountUiKit.cardRow(
         name = item.excerpt.ifBlank { item.title },
         value = "",
         valueWidthDp = 0,
@@ -1206,7 +1398,7 @@ class DashboardPanel(
             else -> AccountUiColors.success
         }
         card.body.add(
-            CardHeadline(
+            AccountUiKit.cardHeadline(
                 value = headline,
                 tone = color,
                 valueFont = baseLabelFont().deriveFont(Font.BOLD, AccountUiType.title),
@@ -1260,7 +1452,7 @@ class DashboardPanel(
                 AccountUiKit.valueText(timeFmt.format(Instant.ofEpochMilli(st.lastSwitchAt)), AccountUiColors.textMuted),
             )
         }
-        card.body.add(CardList(rows, card.listRows, overflowText = { "另有 $it 项" }))
+        card.body.add(AccountUiKit.cardList(rows, card.listRows, overflowText = { "另有 $it 项" }))
 
         card.body.add(Box.createVerticalStrut(JBUI.scale(CardMetrics.rowGap)))
         card.body.add(
@@ -1288,7 +1480,7 @@ class DashboardPanel(
         val labels = saved.associate { it.accountKey to it.displayName }
 
         card.body.add(
-            CardHeadline(
+            AccountUiKit.cardHeadline(
                 value = if (st.loaded) formatCredit(st.totalCredit) else "—",
                 unit = "credits",
                 tone = if (st.loaded) AccountUiColors.textPrimary else AccountUiColors.textMuted,
@@ -1317,7 +1509,7 @@ class DashboardPanel(
 
         card.body.add(Box.createVerticalStrut(JBUI.scale(CardMetrics.blockGap)))
         card.body.add(
-            CardList(
+            AccountUiKit.cardList(
                 rows = st.latestWithAccount(24).map { (accountKey, record) ->
                     usageRow(labels[accountKey] ?: accountKey.take(8), record)
                 },
@@ -1358,7 +1550,7 @@ class DashboardPanel(
 
         // 一条规则约占 3 行：名称行 + 进度条 + 间距，按档位容量裁剪规则条数
         card.body.add(
-            CardList(
+            AccountUiKit.cardList(
                 rows = st.rules.map { modelQuotaBlock(it, st.periodLabel) },
                 capacity = (card.listRows / 3).coerceAtLeast(1),
                 overflowText = { "另有 $it 条限额规则未展示" },
@@ -1391,7 +1583,7 @@ class DashboardPanel(
 
         val block = FullWidthColumn()
         block.add(
-            CardRow(
+            AccountUiKit.cardRow(
                 name = modelName,
                 value = "${formatCredit(rule.used)} / ${formatCredit(rule.limit)}",
                 tag = AccountUiKit.statusTag(statusText, statusColor),
@@ -1414,7 +1606,7 @@ class DashboardPanel(
             )
         )
         block.add(Box.createVerticalStrut(JBUI.scale(AccountUiSpacing.xs)))
-        block.add(QuotaBar(rule.remainPercent).apply { alignmentX = Component.LEFT_ALIGNMENT })
+        block.add(AccountUiKit.progressBar(rule.remainPercent).apply { alignmentX = Component.LEFT_ALIGNMENT })
 
         val exceeded = rule.exceededAccounts
         if (exceeded.isNotEmpty()) {
@@ -1479,7 +1671,7 @@ class DashboardPanel(
         val blocked = limits.count { it.resetAt <= 0L || it.resetAt > now }
         val nearest = limits.map { it.resetAt }.filter { it > 0L }.minOrNull()
         card.body.add(
-            CardHeadline(
+            AccountUiKit.cardHeadline(
                 value = blocked.toString(),
                 unit = if (blocked > 0) "个模型受限" else "个模型受限（已到解封时间）",
                 tone = if (blocked > 0) AccountUiColors.danger else AccountUiColors.success,
@@ -1495,7 +1687,7 @@ class DashboardPanel(
 
         val rows = limits.map { limit -> limit to rateLimitRow(limit) }
         card.body.add(
-            CardList(
+            AccountUiKit.cardList(
                 rows = rows.map { it.second },
                 capacity = card.listRows,
                 overflowText = { "另有 $it 条限制记录未展示" },
@@ -1516,7 +1708,7 @@ class DashboardPanel(
         }
     }
 
-    private fun rateLimitRow(limit: CbEventCenter.ModelLimit): CardRow = CardRow(
+    private fun rateLimitRow(limit: CbEventCenter.ModelLimit): CardRow = AccountUiKit.cardRow(
         name = limit.model,
         value = limit.remaining(),
         tag = AccountUiKit.statusTag(limit.kind, AccountUiColors.danger),
@@ -1532,7 +1724,7 @@ class DashboardPanel(
     private fun usageRow(accountLabel: String, record: UsageRecord): JComponent {
         val time = clock(record.requestTime)
         val model = record.model.ifBlank { "-" }
-        return CardRow(
+        return AccountUiKit.cardRow(
             name = "$time · $accountLabel",
             value = formatCredit(record.credit),
             tag = AccountUiKit.fieldPill(model, AccountUiColors.textSecondary),
@@ -1567,7 +1759,7 @@ class DashboardPanel(
             )
 
         card.body.add(
-            CardList(
+            AccountUiKit.cardList(
                 rows = ordered.map { (s, q) -> rankRow(s, q, s.accountKey == active?.accountKey) },
                 capacity = card.listRows,
                 overflowText = { "另有 $it 个账号未展示" },
@@ -1583,11 +1775,11 @@ class DashboardPanel(
             ok == null || ok.packages.isEmpty() -> "无套餐" to AccountUiColors.textMuted
             else -> "${"%.0f".format(ok.usableRemainPercent)}%" to QuotaCardUi.percentColor(ok.usableRemainPercent)
         }
-        val row = CardRow(
+        val row = AccountUiKit.cardRow(
             name = s.displayName,
             value = value,
             tag = if (active) {
-                Chip("当前", AccountUiColors.accentFill, AccountUiColors.onAccentFill)
+                AccountUiKit.chip("当前", AccountUiColors.accentFill, AccountUiColors.onAccentFill)
             } else {
                 null
             },
@@ -1657,7 +1849,7 @@ class DashboardPanel(
         }
 
         card.body.add(
-            CardList(
+            AccountUiKit.cardList(
                 rows = groups.values.sortedBy { it.nearest }.map { expiringRow(it, now) },
                 capacity = card.listRows,
                 overflowText = { "另有 $it 类未展示" },
@@ -1672,7 +1864,7 @@ class DashboardPanel(
             days <= 3 -> AccountUiColors.warning
             else -> AccountUiColors.textMuted
         }
-        val row = CardRow(
+        val row = AccountUiKit.cardRow(
             name = group.label,
             value = "${num(group.remain)} / ${num(group.size)} ${group.unit}",
             tag = AccountUiKit.fieldPill(if (days <= 0) "<1 天" else "$days 天", chipColor),
@@ -1731,7 +1923,7 @@ class DashboardPanel(
         kv("告警阈值", "$threshold%", tip = "低额度提醒阈值，可在设置中调整")
         kv("认证域", domainText, tip = domainText)
 
-        card.body.add(CardList(rows, card.listRows, overflowText = { "另有 $it 项" }))
+        card.body.add(AccountUiKit.cardList(rows, card.listRows, overflowText = { "另有 $it 项" }))
     }
 
     private fun usageStatusText(): String {
@@ -1770,9 +1962,8 @@ class DashboardPanel(
         val rounded = card as? RoundedCard
         val hero = card as? HeroCard
         rounded?.let {
+            // 整块可点击：hover 只提亮底色一档
             if (it.hoverFill == null) it.hoverFill = AccountUiColors.cardHoverBg
-            // 整块可点击才给按压回弹，纯展示卡片不响应
-            it.pressFeedback = true
         }
 
         fun hover(value: Boolean) {
@@ -1876,6 +2067,12 @@ class DashboardPanel(
     private companion object {
         const val SEVEN_DAYS_MS = 7L * 86_400_000L
         const val THIRTY_DAYS_MS = 30L * 86_400_000L
+
+        /** 事件卡只展示今天最近的几条，剩下的交给「查看详细」 */
+        const val PREVIEW_ROWS = 4
+
+        /** 代点记录行首的时间格式 */
+        val APPROVAL_TIME: DateTimeFormatter = DateTimeFormatter.ofPattern("MM-dd HH:mm").withZone(ZoneId.systemDefault())
 
         /** 吞吐样本有效期：超过半小时不再展示，避免看到过期的旧速度 */
         const val USAGE_SAMPLE_TTL_MS = 30L * 60_000L
