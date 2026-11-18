@@ -1,4 +1,4 @@
-package dev.codebuddy.account.ui
+package dev.codebuddy.account.ui.views
 
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.ui.components.JBScrollPane
@@ -7,6 +7,16 @@ import dev.codebuddy.account.model.CredentialSnapshot
 import dev.codebuddy.account.quota.QuotaSummary
 import dev.codebuddy.account.service.AccountEvents
 import dev.codebuddy.account.service.AccountLibrary
+import dev.codebuddy.account.ui.components.AccountChoice
+import dev.codebuddy.account.ui.components.AccountUiKit
+import dev.codebuddy.account.ui.components.JellyButton
+import dev.codebuddy.account.ui.components.JellyButtonVariant
+import dev.codebuddy.account.ui.components.QuotaAccountCard
+import dev.codebuddy.account.ui.foundation.WrapGridLayout
+import dev.codebuddy.account.ui.tokens.AccountUiColors
+import dev.codebuddy.account.ui.tokens.AccountUiSpacing
+import dev.codebuddy.account.ui.tokens.AccountUiType
+import dev.codebuddy.account.ui.tokens.baseLabelFont
 import java.awt.BorderLayout
 import java.awt.Component
 import java.awt.Dimension
@@ -17,8 +27,10 @@ import javax.swing.JComboBox
 import javax.swing.JComponent
 import javax.swing.JLabel
 import javax.swing.JPanel
-import javax.swing.ScrollPaneConstants
 import javax.swing.Scrollable
+import javax.swing.ScrollPaneConstants
+
+
 
 /**
  * 内嵌的「额度明细」视图：一个账号一张 `.quota-card`，卡片内按套餐分组折叠细项。
@@ -34,7 +46,7 @@ class QuotaView : JPanel(BorderLayout()) {
     private val accountCombo = JComboBox<AccountChoice>()
 
     private val refreshBtn: JellyButton =
-        JellyButton("刷新额度", JellyButtonVariant.SECONDARY, null, "重新查询额度") { doRefresh() }
+        AccountUiKit.button("刷新额度", JellyButtonVariant.SECONDARY, null, "重新查询额度") { doRefresh() }
 
     /** 视图标题右侧的汇总读数（由主面板放进 `.view-head`） */
     val metaLabel: JLabel = JLabel("正在读取额度…").apply {
@@ -47,7 +59,7 @@ class QuotaView : JPanel(BorderLayout()) {
         WrapGridLayout(
             JBUI.scale(AccountUiSpacing.gridGap),
             JBUI.scale(AccountUiSpacing.gridGap),
-            JBUI.scale(AccountUiSpacing.gridMinColumnWidth),
+            JBUI.scale(AccountUiSpacing.quotaGridMinColumnWidth),
         )
     ), Scrollable {
         override fun getPreferredScrollableViewportSize(): Dimension = preferredSize

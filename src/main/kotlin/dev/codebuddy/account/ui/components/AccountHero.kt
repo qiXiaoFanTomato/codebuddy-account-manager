@@ -1,17 +1,27 @@
-package dev.codebuddy.account.ui
+package dev.codebuddy.account.ui.components
 
 import com.intellij.util.ui.JBUI
+import dev.codebuddy.account.ui.foundation.Easing
+import dev.codebuddy.account.ui.foundation.Jelly
+import dev.codebuddy.account.ui.foundation.JellyClock
+import dev.codebuddy.account.ui.foundation.JellyMaterial
+import dev.codebuddy.account.ui.foundation.JellyValue
+import dev.codebuddy.account.ui.foundation.ViewportTrigger
+import dev.codebuddy.account.ui.tokens.AccountUiColors
+import dev.codebuddy.account.ui.tokens.AccountUiRadius
+import dev.codebuddy.account.ui.tokens.AccountUiSpacing
+import dev.codebuddy.account.ui.tokens.AccountUiType
 import java.awt.BorderLayout
 import java.awt.Color
 import java.awt.Component
 import java.awt.Dimension
 import java.awt.Font
+import java.awt.geom.Rectangle2D
+import java.awt.geom.RoundRectangle2D
 import java.awt.Graphics
 import java.awt.Graphics2D
 import java.awt.GridLayout
 import java.awt.RenderingHints
-import java.awt.geom.Rectangle2D
-import java.awt.geom.RoundRectangle2D
 import java.util.Locale
 import javax.swing.Box
 import javax.swing.BoxLayout
@@ -19,6 +29,8 @@ import javax.swing.JComponent
 import javax.swing.JLabel
 import javax.swing.JPanel
 import javax.swing.Timer
+
+
 
 /**
  * 数字滚动：把 "1,234 个" 拆成前缀 / 数字 / 后缀，动画期间只滚动数字部分。
@@ -246,13 +258,11 @@ open class HeroCard(
             if (w <= 0f || h <= 0f) return
             val a = JBUI.scale(arc).toFloat()
             val shape = RoundRectangle2D.Float(0.5f, 0.5f, w - 1f, h - 1f, a, a)
-            Jelly.paintShadow(g2, shape, 0.8f + 0.2f * hover.value.toFloat())
-            Jelly.paintBody(g2, shape, AccountUiColors.cardBg, JellyMaterial.FLAT)
-            Jelly.paintEdge(
-                g2, shape,
-                if (hover.value > 0.05) AccountUiColors.borderActive else AccountUiColors.border,
-                1f,
-            )
+            Jelly.paintShadow(g2, shape, 0.8f)
+            // hover 只提亮一档底色，落影与描边保持不动
+            val base = Jelly.mix(AccountUiColors.cardBg, AccountUiColors.cardHoverBg, hover.value.toFloat())
+            Jelly.paintBody(g2, shape, base, JellyMaterial.FLAT)
+            Jelly.paintEdge(g2, shape, AccountUiColors.border, 1f)
         } finally {
             g2.dispose()
         }
@@ -620,9 +630,9 @@ class HeroPanel(
     /** 主数值：自绘，数值变化时从旧值滚到新值 */
     private val creditValue = AnimatedCreditValue()
 
-    /** 单位文本：等宽小字，与黄铜读数同一基线 */
+    /** 单位文本：数字走等宽、中文（点 / 次 / 积分）自动回退界面字体 */
     private val unitLabel = FixedWidthLabel(unit.orEmpty()).apply {
-        font = AccountUiType.mono(AccountUiType.label, Font.PLAIN)
+        font = AccountUiType.forText(unit.orEmpty(), AccountUiType.label, Font.PLAIN)
         foreground = AccountUiColors.textMuted
     }
 

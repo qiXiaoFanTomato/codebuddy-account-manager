@@ -1,9 +1,9 @@
-package dev.codebuddy.account.ui
+package dev.codebuddy.account.ui.views
 
 import com.intellij.openapi.options.Configurable
-import com.intellij.ui.TitledSeparator
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBScrollPane
+import com.intellij.ui.TitledSeparator
 import com.intellij.util.ui.FormBuilder
 import com.intellij.util.ui.JBUI
 import dev.codebuddy.account.checkin.CheckinTracker
@@ -12,6 +12,12 @@ import dev.codebuddy.account.service.AccountEvents
 import dev.codebuddy.account.service.AccountSettings
 import dev.codebuddy.account.service.MultiInstanceCoordinator
 import dev.codebuddy.account.service.QuotaAlertSettings
+import dev.codebuddy.account.ui.components.ThemeSwatchIcon
+import dev.codebuddy.account.ui.statusbar.CodeBuddyStatusBarWidget
+import dev.codebuddy.account.ui.statusbar.StatusBarSupport
+import dev.codebuddy.account.ui.tokens.AccentTheme
+import dev.codebuddy.account.ui.tokens.AccountUiColors
+import dev.codebuddy.account.ui.tokens.UiThemeEvents
 import dev.codebuddy.account.usage.ModelQuotaPeriod
 import java.awt.BorderLayout
 import java.awt.Component
@@ -27,6 +33,8 @@ import javax.swing.JPanel
 import javax.swing.JSpinner
 import javax.swing.JTextField
 import javax.swing.SpinnerNumberModel
+
+
 
 /**
  * 设置页：Settings → Tools → CodeBuddy 账号管理器。

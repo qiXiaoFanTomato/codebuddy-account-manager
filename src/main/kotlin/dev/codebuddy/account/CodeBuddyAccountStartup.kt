@@ -6,6 +6,9 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.startup.StartupActivity
 import dev.codebuddy.account.service.AccountLibrary
 import dev.codebuddy.account.service.AutoRefreshService
+import dev.codebuddy.account.ui.tokens.AccountUiColors
+
+
 
 /**
  * 项目打开时启动后台服务。
@@ -23,7 +26,7 @@ class CodeBuddyAccountStartup : StartupActivity.DumbAware {
 
         try {
             // 0.1 恢复上次选择的界面色调（主色相关字段在启动时就位）
-            dev.codebuddy.account.ui.AccountUiColors.loadPersistedTheme()
+            dev.codebuddy.account.ui.tokens.AccountUiColors.loadPersistedTheme()
 
             // 0. 检查上次切换是否被 IDEA 覆盖
             checkPendingSwitch()

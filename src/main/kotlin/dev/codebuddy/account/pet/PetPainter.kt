@@ -1,17 +1,20 @@
 package dev.codebuddy.account.pet
 
 import com.intellij.util.ui.JBUI
-import dev.codebuddy.account.ui.AccountUiColors
+import com.intellij.ui.scale.JBUIScale
+import dev.codebuddy.account.ui.tokens.AccountUiColors
 import java.awt.BasicStroke
 import java.awt.Dimension
 import java.awt.Font
-import java.awt.Graphics2D
-import java.awt.GraphicsEnvironment
-import java.awt.RenderingHints
 import java.awt.geom.AffineTransform
 import java.awt.geom.Ellipse2D
 import java.awt.geom.QuadCurve2D
 import java.awt.geom.RoundRectangle2D
+import java.awt.Graphics2D
+import java.awt.GraphicsEnvironment
+import java.awt.RenderingHints
+
+
 
 /**
  * 桌宠形象：档案柜精灵（纯 Swing 绘制，不依赖任何外部素材）。
@@ -50,12 +53,12 @@ object PetPainter {
         val bounds = PetAnimationLibrary.bounds
         if (bounds.width > 0 && bounds.height > 0) {
             return Dimension(
-                JBUI.scale(bounds.width * f).toInt().coerceAtLeast(24),
-                JBUI.scale(bounds.height * f).toInt().coerceAtLeast(24),
+                JBUIScale.scale(bounds.width * f).toInt().coerceAtLeast(24),
+                JBUIScale.scale(bounds.height * f).toInt().coerceAtLeast(24),
             )
         }
-        val w = JBUI.scale(BASE_W * f).toInt().coerceAtLeast(24)
-        val h = JBUI.scale(BASE_H * f).toInt().coerceAtLeast(24)
+        val w = JBUIScale.scale(BASE_W * f).toInt().coerceAtLeast(24)
+        val h = JBUIScale.scale(BASE_H * f).toInt().coerceAtLeast(24)
         return Dimension(w, h)
     }
 

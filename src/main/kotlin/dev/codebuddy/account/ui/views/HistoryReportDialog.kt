@@ -1,14 +1,14 @@
-package dev.codebuddy.account.ui
+package dev.codebuddy.account.ui.views
 
 import com.intellij.notification.NotificationType
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.DialogWrapper
-import com.intellij.ui.SearchTextField
 import com.intellij.ui.components.ActionLink
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBScrollPane
+import com.intellij.ui.SearchTextField
 import com.intellij.ui.table.JBTable
 import com.intellij.util.ui.JBUI
 import dev.codebuddy.account.git.GitReportPrompt
@@ -19,6 +19,18 @@ import dev.codebuddy.account.history.ReportBucket
 import dev.codebuddy.account.history.ReportDimension
 import dev.codebuddy.account.history.ReportEntry
 import dev.codebuddy.account.hotswap.CodeBuddyBridge
+import dev.codebuddy.account.ui.components.AccountUiKit
+import dev.codebuddy.account.ui.components.DialogTopBar
+import dev.codebuddy.account.ui.components.FullWidthColumn
+import dev.codebuddy.account.ui.components.FullWidthRow
+import dev.codebuddy.account.ui.components.JellyButton
+import dev.codebuddy.account.ui.components.JellyButtonVariant
+import dev.codebuddy.account.ui.components.RoundedCard
+import dev.codebuddy.account.ui.components.SegmentedTabs
+import dev.codebuddy.account.ui.foundation.AccountTableStyle
+import dev.codebuddy.account.ui.tokens.AccountUiColors
+import dev.codebuddy.account.ui.tokens.AccountUiRadius
+import dev.codebuddy.account.ui.tokens.AccountUiType
 import java.awt.*
 import java.awt.datatransfer.StringSelection
 import java.awt.event.MouseAdapter
@@ -49,16 +61,16 @@ class HistoryReportDialog(
     private val accountLabels: Map<String, String>,
 ) : DialogWrapper(project) {
 
-    private val rangeTabs = SegmentedTabs(listOf("今日日报", "本周周报"), 0) { onRangeChanged() }
+    private val rangeTabs = AccountUiKit.segmented(listOf("今日日报", "本周周报"), 0) { onRangeChanged() }
     private val dimCombo = JComboBox<ReportDimension>()
     private val refreshBtn: JComponent =
-        JellyButton("重新统计", JellyButtonVariant.SECONDARY, null, "重新扫描本机历史会话") { reload(forceScan = true) }
-    private val genBtn: JComponent = JellyButton(
+        AccountUiKit.button("重新统计", JellyButtonVariant.SECONDARY, null, "重新扫描本机历史会话") { reload(forceScan = true) }
+    private val genBtn: JComponent = AccountUiKit.button(
         "用 CodeBuddy 生成", JellyButtonVariant.PRIMARY, null,
         "复制短指令到剪贴板，由 CodeBuddy 自行读取 git 提交记录并区分本人 / 他人提交",
     ) { generateInCodeBuddy() }
     private val copyBtn: JComponent =
-        JellyButton("复制 Markdown", JellyButtonVariant.SECONDARY, null, "复制当前报告") { copyMarkdown() }
+        AccountUiKit.button("复制 Markdown", JellyButtonVariant.SECONDARY, null, "复制当前报告") { copyMarkdown() }
     private val statusLabel = JBLabel("准备中…")
     private val titleLabel = JBLabel("")
     private val searchField = SearchTextField(false)
@@ -149,7 +161,7 @@ class HistoryReportDialog(
         right.add(copyBtn)
         controlRow.add(right, BorderLayout.EAST)
 
-        val top = DialogTopBar("CodeBuddy 对话日报 / 周报", "", controlRow)
+        val top = AccountUiKit.dialogTopBar("CodeBuddy 对话日报 / 周报", "", controlRow)
         topBar = top
 
         val kpiWrap = JPanel(BorderLayout()).apply {

@@ -1,4 +1,4 @@
-package dev.codebuddy.account.ui
+package dev.codebuddy.account.ui.views
 
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
@@ -9,12 +9,12 @@ import com.intellij.openapi.fileChooser.FileSaverDescriptor
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.DialogWrapper
 import com.intellij.openapi.ui.Messages
-import com.intellij.ui.SearchTextField
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBList
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBTextArea
 import com.intellij.ui.components.JBTextField
+import com.intellij.ui.SearchTextField
 import com.intellij.util.ui.JBUI
 import dev.codebuddy.account.credential.CredentialPaths
 import dev.codebuddy.account.history.ConversationArchive
@@ -22,6 +22,14 @@ import dev.codebuddy.account.history.HistoryReader
 import dev.codebuddy.account.history.ProjectResolver
 import dev.codebuddy.account.scan.ScanProgress
 import dev.codebuddy.account.scan.ScanSummary
+import dev.codebuddy.account.ui.components.AccountChoice
+import dev.codebuddy.account.ui.components.AccountUiKit
+import dev.codebuddy.account.ui.components.DialogTopBar
+import dev.codebuddy.account.ui.components.JellyButton
+import dev.codebuddy.account.ui.components.JellyButtonVariant
+import dev.codebuddy.account.ui.tokens.AccountUiColors
+import dev.codebuddy.account.ui.tokens.AccountUiType
+import dev.codebuddy.account.ui.tokens.baseLabelFont
 import java.awt.*
 import java.awt.datatransfer.StringSelection
 import java.awt.event.MouseAdapter
@@ -31,15 +39,15 @@ import java.nio.file.Files
 import java.nio.file.InvalidPathException
 import java.nio.file.Path
 import java.nio.file.Paths
+import java.time.format.DateTimeFormatter
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.ZoneId
-import java.time.format.DateTimeFormatter
 import java.util.Calendar
-import java.util.Date
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
+import java.util.Date
 import javax.swing.*
 import javax.swing.event.DocumentEvent
 import javax.swing.event.DocumentListener
@@ -171,7 +179,8 @@ class HistoryDialog(
         contentArea.isEditable = false
         contentArea.lineWrap = true
         contentArea.wrapStyleWord = true
-        contentArea.font = Font(Font.MONOSPACED, Font.PLAIN, JBUI.scale(12))
+        // 扫描日志以中文为主：强制等宽字族会渲染成方框，统一走界面字体
+        contentArea.font = AccountUiType.ui(AccountUiType.label)
         contentArea.border = JBUI.Borders.empty(8)
 
         loadingLabel.foreground = AccountUiColors.textMuted
@@ -221,7 +230,7 @@ class HistoryDialog(
         accountRow.add(accountCombo)
         accountRow.add(JBLabel("分组"))
         accountRow.add(groupCombo)
-        val top = DialogTopBar("CodeBuddy 历史对话", "", accountRow)
+        val top = AccountUiKit.dialogTopBar("CodeBuddy 历史对话", "", accountRow)
         topBar = top
 
         // 左侧：筛选 + 列表
@@ -317,7 +326,7 @@ class HistoryDialog(
 
     private fun buildActionBar(): JPanel {
         val bar = JPanel(FlowLayout(FlowLayout.LEFT, 6, 4))
-        importBtn = JellyButton(
+        importBtn = AccountUiKit.button(
             "导入到当前账号",
             JellyButtonVariant.PRIMARY,
             null,
@@ -348,7 +357,7 @@ class HistoryDialog(
     }
 
     private fun iconButton(text: String, action: () -> Unit): JComponent =
-        JellyButton(text, JellyButtonVariant.SECONDARY, null, text, action)
+        AccountUiKit.button(text, JellyButtonVariant.SECONDARY, null, text, action)
 
     override fun createActions(): Array<Action> = arrayOf(cancelAction)
 

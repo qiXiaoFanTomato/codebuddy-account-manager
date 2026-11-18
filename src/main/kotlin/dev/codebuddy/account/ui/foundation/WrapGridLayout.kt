@@ -1,9 +1,11 @@
-package dev.codebuddy.account.ui
+package dev.codebuddy.account.ui.foundation
 
 import java.awt.Component
 import java.awt.Container
 import java.awt.Dimension
 import java.awt.LayoutManager
+
+
 
 /**
  * 自适应网格布局：按可用宽度计算列数，每列等宽，行高取该行最高的卡片。

@@ -1,10 +1,20 @@
-package dev.codebuddy.account.ui
+package dev.codebuddy.account.ui.components
 
 import com.intellij.util.ui.JBUI
 import dev.codebuddy.account.model.CredentialSnapshot
 import dev.codebuddy.account.quota.QuotaGroup
 import dev.codebuddy.account.quota.QuotaPackage
 import dev.codebuddy.account.quota.QuotaSummary
+import dev.codebuddy.account.ui.foundation.Easing
+import dev.codebuddy.account.ui.foundation.FlowWrapLayout
+import dev.codebuddy.account.ui.foundation.Jelly
+import dev.codebuddy.account.ui.foundation.JellyMaterial
+import dev.codebuddy.account.ui.foundation.JellyValue
+import dev.codebuddy.account.ui.tokens.AccountUiColors
+import dev.codebuddy.account.ui.tokens.AccountUiRadius
+import dev.codebuddy.account.ui.tokens.AccountUiSpacing
+import dev.codebuddy.account.ui.tokens.AccountUiType
+import dev.codebuddy.account.ui.tokens.baseLabelFont
 import java.awt.*
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
@@ -22,8 +32,8 @@ object QuotaCardUi {
     /** 名称超过该长度截断（卡片宽度有限） */
     private const val NAME_LIMIT = 24
 
-    fun shortName(name: String): String =
-        if (name.length <= NAME_LIMIT) name else name.take(NAME_LIMIT - 1) + "…"
+    fun shortName(name: String, limit: Int = NAME_LIMIT): String =
+        if (name.length <= limit) name else name.take(limit - 1) + "…"
 
     fun fmt(v: Double): String = QuotaPackage.fmt(v)
 
@@ -37,8 +47,8 @@ object QuotaCardUi {
 /**
  * 卡片容器：纯色底 + 1px 描边 + 单层落影，子组件纵向排列。
  *
- * hover 只提亮底色与描边，不做缩放 / 位移变形——位移会让密集列表在
- * 鼠标扫过时抖动，且对表格类信息没有收益。
+ * hover 只把底色提亮一档，不动落影、不动描边、不位移不缩放（档案柜铁律：
+ * 界面是纸，不是可以拿起来的控件）。密集列表在鼠标扫过时因此不抖动。
  *
  * @param elevated true 时绘制落影（仅外层卡片使用，内层块保持平面，
  * 避免阴影叠加显脏）
@@ -66,9 +76,6 @@ open class RoundedCard(
     /** 描边宽度 */
     var strokeWidth: Float = 1f
 
-    /** 是否启用按压回弹（仅整块可点击的卡片开启，避免纯展示卡片被误触） */
-    var pressFeedback: Boolean = false
-
     /**
      * 档案卡索引 tab：非空时在卡片左上角压一枚墨蓝小标签（当前激活 / 索引卡分类）。
      *
@@ -88,13 +95,10 @@ open class RoundedCard(
 
     private var hovering = false
 
-    /** 抬起进度：0 贴地，1 完全抬起（果冻被拿起的观感） */
+    /** hover 进度：0 原色，1 完全提亮一档（补间只改底色，不改几何） */
     private val lift = JellyValue(this, 0.0)
 
-    /** 按压进度：1 表示鼠标按下，卡片轻微下沉 */
-    private val press = JellyValue(this, 0.0)
-
-    /** 由点击辅助方法调用，切换 hover 底色与抬起动画 */
+    /** 由点击辅助方法调用，切换 hover 底色 */
     fun setHovering(value: Boolean) {
         if (hovering == value) return
         hovering = value
@@ -110,25 +114,6 @@ open class RoundedCard(
         isOpaque = false
         layout = BoxLayout(this, BoxLayout.Y_AXIS)
         alignmentX = Component.LEFT_ALIGNMENT
-
-        // 按压回弹：按下立刻下沉，松开用回弹曲线弹回
-        addMouseListener(object : MouseAdapter() {
-            override fun mousePressed(e: MouseEvent) {
-                if (!pressFeedback) return
-                press.animateTo(1.0, 90, { t -> Easing.outCubic(t) })
-            }
-
-            override fun mouseReleased(e: MouseEvent) {
-                if (!pressFeedback) return
-                press.animateTo(0.0, 260, { t -> Easing.outBack(t) })
-            }
-
-            override fun mouseExited(e: MouseEvent) {
-                if (pressFeedback && press.value > 0.01) {
-                    press.animateTo(0.0, 200, { t -> Easing.outBack(t) })
-                }
-            }
-        })
     }
 
     /** 纵向 BoxLayout 里宽度要撑满，高度按内容 */
@@ -143,7 +128,6 @@ open class RoundedCard(
             if (w <= 2f || h <= 2f) return
 
             val liftValue = lift.value.toFloat()
-            val pressValue = press.value.toFloat()
             val shape = if (pill) {
                 Jelly.pill(0.5f, 0.5f, w - 1f, h - 1f)
             } else {
@@ -151,16 +135,15 @@ open class RoundedCard(
             }
 
             if (elevated) {
-                // 抬起时影子更深，按下时收一点
-                Jelly.paintShadow(g2, shape, 0.65f + 1.0f * liftValue - 0.2f * pressValue)
+                // 落影固定：档案卡是贴在纸面上的，hover 不会让它浮起来
+                Jelly.paintShadow(g2, shape, 0.65f)
             }
 
-            // 底色按抬起进度平滑过渡，避免 hover 时整块突变
+            // 底色按 hover 进度平滑提亮一档，整块不突变
             val base = hoverFill?.let { Jelly.mix(fill, it, liftValue) } ?: fill
             Jelly.paintBody(g2, shape, base, material)
 
-            val edge = accentStroke
-                ?: if (liftValue > 0.05f) Jelly.mix(stroke, AccountUiColors.ink, liftValue) else stroke
+            val edge = accentStroke ?: stroke
             Jelly.paintEdge(g2, shape, edge, strokeWidth)
             paintTab(g2)
         } finally {
@@ -490,14 +473,24 @@ class QuotaGroupCard(
     }
 
     private fun buildHeader(): JComponent {
-        val header = FullWidthRow()
+        val header = FullWidthColumn()
 
-        val left = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(4), 0)).apply { isOpaque = false }
-        left.add(JLabel("●").apply {
-            font = font.deriveFont(Font.PLAIN, AccountUiType.micro)
-            foreground = if (group.usableCount > 0) AccountUiColors.success else AccountUiColors.textFaint
-        })
-        left.add(JLabel(group.name).apply {
+        // 标题行按卡片宽度换行：BorderLayout 的 WEST 不收缩，
+        // 窄卡片里会把「用量 / 百分比」压在套餐名上，这里换成可换行流式布局
+        val left = JPanel(FlowWrapLayout(JBUI.scale(AccountUiSpacing.xs), JBUI.scale(AccountUiSpacing.xs)))
+            .apply {
+                isOpaque = false
+                alignmentX = Component.LEFT_ALIGNMENT
+            }
+        // 状态双通道：圆点 + 文案，不只靠颜色区分「有可用包 / 已用完」
+        val usable = group.usableCount > 0
+        left.add(
+            StatusTag(
+                if (usable) "可用" else "已用完",
+                if (usable) AccountUiColors.success else AccountUiColors.textFaint,
+            )
+        )
+        left.add(JLabel(QuotaCardUi.shortName(group.name, GROUP_NAME_LIMIT)).apply {
             font = font.deriveFont(Font.BOLD, AccountUiType.body)
             foreground = AccountUiColors.textPrimary
             toolTipText = group.name
@@ -509,8 +502,11 @@ class QuotaGroupCard(
                 AccountUiColors.textMuted,
             )
         )
+        header.add(left)
 
-        val right = JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(4), 0)).apply { isOpaque = false }
+        // 读数行独立一行、右对齐：宽度不足时只影响本行，不会与套餐名重叠
+        val metaRow = FullWidthRow()
+        val right = JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(AccountUiSpacing.xs), 0)).apply { isOpaque = false }
         val usageLabel = "${group.usageText()} ${group.unit}".trim()
         right.add(JLabel(usageLabel).apply {
             font = AccountUiType.forText(usageLabel, AccountUiType.label)
@@ -521,9 +517,9 @@ class QuotaGroupCard(
             foreground = QuotaCardUi.percentColor(group.remainPercent)
         })
         right.add(arrow)
-
-        header.add(left, BorderLayout.WEST)
-        header.add(right, BorderLayout.EAST)
+        metaRow.add(right, BorderLayout.EAST)
+        header.add(Box.createVerticalStrut(JBUI.scale(AccountUiSpacing.xxs)))
+        header.add(metaRow)
         return header
     }
 
@@ -556,6 +552,11 @@ class QuotaGroupCard(
         }
         repaint()
     }
+
+    private companion object {
+        /** 组名截断上限：窄卡片里再长的套餐名也不越过卡片边界（完整名走 tooltip） */
+        const val GROUP_NAME_LIMIT = 18
+    }
 }
 
 /**
@@ -582,7 +583,7 @@ class QuotaAccountCard(
 
         val brief = summary
         when {
-            brief == null -> add(hint("尚未查询额度，点击上方「刷新额度」获取"))
+            brief == null -> add(hint("尚未查询额度"))
             brief.error != null -> add(hint("查询失败：${brief.error}"))
             brief.packages.isEmpty() -> add(hint("接口未返回任何套餐"))
             else -> {
@@ -598,17 +599,23 @@ class QuotaAccountCard(
     }
 
     private fun buildTitle(): JComponent {
-        val row = FullWidthRow(BorderLayout(JBUI.scale(8), 0))
+        val column = FullWidthColumn()
 
-        val left = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(4), 0)).apply { isOpaque = false }
-        left.add(JLabel(snapshot.displayName).apply {
+        // 身份行：名称 + 标签，按卡片宽度换行（对应 HTML `.quota-head` 的 flex-wrap），
+        // 不用 BorderLayout.WEST —— WEST 宽度等于内容宽度，窄卡片会与右侧读数重叠
+        val tags = JPanel(FlowWrapLayout(JBUI.scale(AccountUiSpacing.xs), JBUI.scale(AccountUiSpacing.xs)))
+            .apply {
+                isOpaque = false
+                alignmentX = Component.LEFT_ALIGNMENT
+            }
+        tags.add(JLabel(snapshot.displayName).apply {
             font = font.deriveFont(Font.BOLD, AccountUiType.title)
             foreground = AccountUiColors.textPrimary
         })
         if (active) {
-            left.add(Chip("当前", AccountUiColors.accentSoft, AccountUiColors.accent))
+            tags.add(Chip("当前", AccountUiColors.accentSoft, AccountUiColors.accent))
         }
-        left.add(
+        tags.add(
             Chip(
                 if (snapshot.type.equals("enterprise", true)) "企业" else "个人",
                 if (snapshot.type.equals("enterprise", true)) AccountUiColors.tagEnterpriseBg
@@ -617,13 +624,14 @@ class QuotaAccountCard(
                 else AccountUiColors.tagPersonalFg,
             )
         )
-        left.add(
+        tags.add(
             Chip(
                 snapshot.domainHost.ifBlank { "—" },
                 AccountUiColors.tagDomainBg,
                 AccountUiColors.tagDomainFg,
             )
         )
+        column.add(tags)
 
         val valid = summary?.takeIf { it.error == null && it.packages.isNotEmpty() }
         val percent = valid?.usableRemainPercent
@@ -632,15 +640,18 @@ class QuotaAccountCard(
         val sumText =
             if (valid == null) "—"
             else "总剩余 ${fmt(valid.usableRemain)} / ${fmt(valid.usableSize)} $unit · ${"%.0f".format(percent ?: 0.0)}%"
-        val right = JLabel(sumText).apply {
+        val sum = JLabel(sumText).apply {
             font = AccountUiType.forText(sumText, AccountUiType.label)
             foreground = if (percent == null) AccountUiColors.textFaint else QuotaCardUi.percentColor(percent)
             horizontalAlignment = SwingConstants.RIGHT
+            toolTipText = sumText
         }
-
-        row.add(left, BorderLayout.WEST)
-        row.add(right, BorderLayout.EAST)
-        return row
+        // 读数独立一行右对齐：宽度不足只挤压本行，不会覆盖上面的标签
+        val sumRow = FullWidthRow(BorderLayout())
+        sumRow.add(sum, BorderLayout.EAST)
+        column.add(Box.createVerticalStrut(JBUI.scale(AccountUiSpacing.xxs)))
+        column.add(sumRow)
+        return column
     }
 
     private fun fmt(v: Double): String = AccountUiKit.formatNumber(v)

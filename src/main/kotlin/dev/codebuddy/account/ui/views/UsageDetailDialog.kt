@@ -1,4 +1,4 @@
-package dev.codebuddy.account.ui
+package dev.codebuddy.account.ui.views
 
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
@@ -10,15 +10,25 @@ import com.intellij.ui.table.JBTable
 import com.intellij.util.concurrency.AppExecutorUtil
 import com.intellij.util.ui.JBUI
 import dev.codebuddy.account.service.AccountLibrary
+import dev.codebuddy.account.ui.components.AccountChoice
+import dev.codebuddy.account.ui.components.AccountUiKit
+import dev.codebuddy.account.ui.components.DialogTopBar
+import dev.codebuddy.account.ui.components.FullWidthColumn
+import dev.codebuddy.account.ui.components.JellyButton
+import dev.codebuddy.account.ui.components.JellyButtonVariant
+import dev.codebuddy.account.ui.foundation.AccountTableStyle
+import dev.codebuddy.account.ui.tokens.AccountUiColors
+import dev.codebuddy.account.ui.tokens.AccountUiSpacing
+import dev.codebuddy.account.ui.tokens.AccountUiType
+import dev.codebuddy.account.usage.formatCredit
 import dev.codebuddy.account.usage.ModelQuotaTracker
 import dev.codebuddy.account.usage.UsagePage
 import dev.codebuddy.account.usage.UsageRecord
 import dev.codebuddy.account.usage.UsageStats
-import dev.codebuddy.account.usage.formatCredit
 import java.awt.*
 import java.time.LocalDate
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.TimeUnit
 import javax.swing.*
 import javax.swing.table.AbstractTableModel
 import javax.swing.table.DefaultTableCellRenderer
@@ -42,7 +52,7 @@ class UsageDetailDialog(private val project: Project) : DialogWrapper(project) {
     private val accountCombo = JComboBox<AccountChoice>()
     private val rangeCombo = JComboBox(RANGE_CHOICES).apply { selectedItem = RANGE_CHOICES[1] }
     private val refreshBtn: JellyButton =
-        JellyButton("刷新", JellyButtonVariant.PRIMARY, null, "重新拉取消耗明细") { load() }
+        AccountUiKit.button("刷新", JellyButtonVariant.PRIMARY, null, "重新拉取消耗明细") { load() }
     private val statusLabel = JBLabel("")
     private val summaryTitle = JBLabel("尚未查询消耗明细")
     private val summaryModels = JBLabel("")
@@ -50,13 +60,13 @@ class UsageDetailDialog(private val project: Project) : DialogWrapper(project) {
         layout = BoxLayout(this, BoxLayout.Y_AXIS)
         isOpaque = false
     }
-    private val prevBtn: JComponent = JellyButton("上一页", JellyButtonVariant.SECONDARY, null, "上一页") {
+    private val prevBtn: JComponent = AccountUiKit.button("上一页", JellyButtonVariant.SECONDARY, null, "上一页") {
         if (pageIndex > 1) {
             pageIndex--
             renderPage()
         }
     }
-    private val nextBtn: JComponent = JellyButton("下一页", JellyButtonVariant.SECONDARY, null, "下一页") {
+    private val nextBtn: JComponent = AccountUiKit.button("下一页", JellyButtonVariant.SECONDARY, null, "下一页") {
         if (pageIndex < pageCount()) {
             pageIndex++
             renderPage()
@@ -84,6 +94,10 @@ class UsageDetailDialog(private val project: Project) : DialogWrapper(project) {
         summaryTitle.foreground = AccountUiColors.textPrimary
         summaryModels.foreground = AccountUiColors.textMuted
         modelQuotaPanel.foreground = AccountUiColors.textMuted
+        // BoxLayout 子项默认居中，会把汇总文字挤到栏中间、左侧留出空白块，统一左对齐
+        summaryTitle.alignmentX = Component.LEFT_ALIGNMENT
+        summaryModels.alignmentX = Component.LEFT_ALIGNMENT
+        modelQuotaPanel.alignmentX = Component.LEFT_ALIGNMENT
         statusLabel.foreground = AccountUiColors.textMuted
         pageLabel.foreground = AccountUiColors.textMuted
         AccountUiKit.styleCombo(accountCombo) { (it as? AccountChoice)?.label ?: "" }
@@ -129,12 +143,11 @@ class UsageDetailDialog(private val project: Project) : DialogWrapper(project) {
         filterRow.add(rangeCombo)
         filterRow.add(refreshBtn)
 
-        val top = DialogTopBar("CodeBuddy 消耗明细", "", filterRow)
+        val top = AccountUiKit.dialogTopBar("CodeBuddy 消耗明细", "", filterRow)
         topBar = top
 
-        val summary = JPanel()
-        summary.layout = BoxLayout(summary, BoxLayout.Y_AXIS)
-        summary.isOpaque = false
+        // FullWidthColumn：宽度撑满 + 高度按内容，否则 BoxLayout 里只会占首选宽度、居中露出一块空白
+        val summary = FullWidthColumn()
         summary.border = JBUI.Borders.empty(8, 12)
         summary.add(summaryTitle)
         summary.add(Box.createVerticalStrut(JBUI.scale(AccountUiSpacing.xs)))
@@ -142,8 +155,7 @@ class UsageDetailDialog(private val project: Project) : DialogWrapper(project) {
         summary.add(Box.createVerticalStrut(JBUI.scale(2)))
         summary.add(modelQuotaPanel)
 
-        val topBox = JPanel()
-        topBox.layout = BoxLayout(topBox, BoxLayout.Y_AXIS)
+        val topBox = FullWidthColumn()
         topBox.background = AccountUiColors.panelBg
         topBox.add(top)
         topBox.add(summary)
@@ -380,6 +392,7 @@ class UsageDetailDialog(private val project: Project) : DialogWrapper(project) {
                 )
             }).apply {
                 foreground = if (exceed) AccountUiColors.danger else AccountUiColors.textMuted
+                alignmentX = Component.LEFT_ALIGNMENT
             })
         }
         modelQuotaPanel.revalidate()

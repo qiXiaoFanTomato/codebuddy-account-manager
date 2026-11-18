@@ -1,8 +1,10 @@
-package dev.codebuddy.account.ui
+package dev.codebuddy.account.ui.statusbar
 
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.wm.impl.status.widget.StatusBarWidgetsManager
+
+
 
 /**
  * 状态栏 widget 的动态启用 / 停用。

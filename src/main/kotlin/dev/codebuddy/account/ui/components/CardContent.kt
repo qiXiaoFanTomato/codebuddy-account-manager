@@ -1,17 +1,28 @@
-package dev.codebuddy.account.ui
+package dev.codebuddy.account.ui.components
 
 import com.intellij.util.ui.JBUI
+import dev.codebuddy.account.ui.foundation.FlowWrapLayout
+import dev.codebuddy.account.ui.foundation.Jelly
+import dev.codebuddy.account.ui.foundation.JellyValue
+import dev.codebuddy.account.ui.tokens.AccountUiColors
+import dev.codebuddy.account.ui.tokens.AccountUiRadius
+import dev.codebuddy.account.ui.tokens.AccountUiSpacing
+import dev.codebuddy.account.ui.tokens.AccountUiType
+import dev.codebuddy.account.ui.tokens.baseLabelFont
 import java.awt.BorderLayout
 import java.awt.Color
 import java.awt.Component
 import java.awt.Container
 import java.awt.Dimension
+import java.awt.event.ComponentAdapter
+import java.awt.event.ComponentEvent
+import java.awt.event.MouseAdapter
+import java.awt.event.MouseEvent
 import java.awt.Font
+import java.awt.FontMetrics
 import java.awt.Graphics
 import java.awt.Graphics2D
 import java.awt.RenderingHints
-import java.awt.event.MouseAdapter
-import java.awt.event.MouseEvent
 import javax.swing.Box
 import javax.swing.BoxLayout
 import javax.swing.JComponent
@@ -19,6 +30,8 @@ import javax.swing.JLabel
 import javax.swing.JPanel
 import javax.swing.SwingConstants
 import javax.swing.SwingUtilities
+
+
 
 /**
  * 卡片内容排版工具箱。
@@ -50,7 +63,7 @@ object CardMetrics {
      * 卡片基准高度（dp）：也就是 2×2 的高度，所有卡片的最低高度。
      *
      * 卡片不再手动切档：内容装得下就停在基准高度；
-     * 装不下由卡片自己长高（[DashboardCard.getPreferredSize]），
+     * 装不下由卡片自己长高（DashboardCard.getPreferredSize），
      * 列表再多也只在 [maxListRows] 行内展开，超出的折「另有 N 项」。
      */
     const val baseCardHeight = 292
@@ -316,4 +329,113 @@ class CardNotice(text: String, tone: Color = AccountUiColors.textFaint) : JLabel
     }
 
     override fun getMaximumSize(): Dimension = Dimension(Int.MAX_VALUE, preferredSize.height)
+}
+
+/**
+ * 可折行的提示块：长文案按可用宽度折成多行，不做尾部省略。
+ *
+ * 卡片宽度有限，刷新失败原因这类文案（「凭据已失效（HTTP 401），请切换该账号或重新登录」）
+ * 一行放不下：截断会把处置建议裁掉，用户只能靠悬停 tooltip 才知道要重新登录。
+ * 这里按卡片实际宽度折行，全文常驻可见，完整文案仍挂在 tooltip 上兜底。
+ */
+class WrappedNotice(
+    private val text: String,
+    tone: Color = AccountUiColors.seal,
+) : JComponent() {
+
+    private val lineGap = JBUI.scale(1)
+
+    /** 上一次算出的首选高度：宽度变化导致折行行数变化时用它判断要不要重新布局 */
+    private var lastPreferredHeight = -1
+
+    init {
+        isOpaque = false
+        alignmentX = Component.LEFT_ALIGNMENT
+        font = baseLabelFont().deriveFont(Font.PLAIN, AccountUiType.caption)
+        foreground = tone
+        toolTipText = text
+        addComponentListener(object : ComponentAdapter() {
+            override fun componentResized(e: ComponentEvent) {
+                // BoxLayout 只按首选高度排布：宽度变了行数可能变，高度必须重算
+                if (heightFor(width) != lastPreferredHeight) revalidate()
+            }
+        })
+    }
+
+    /** JComponent 默认无字体，兜底后再交给绘制与度量 */
+    override fun getFont(): Font = super.getFont() ?: baseLabelFont()
+
+    override fun getPreferredSize(): Dimension {
+        val w = wrapWidth()
+        lastPreferredHeight = heightFor(w)
+        return Dimension(minOf(getFontMetrics(font).stringWidth(text), w), lastPreferredHeight)
+    }
+
+    override fun getMaximumSize(): Dimension = Dimension(Int.MAX_VALUE, preferredSize.height)
+
+    override fun paintComponent(g: Graphics) {
+        val g2 = g.create() as Graphics2D
+        try {
+            Jelly.textHints(g2)
+            g2.font = font
+            g2.color = foreground
+            val fm = g2.fontMetrics
+            var y = fm.ascent
+            for (line in wrapLines(text, fm, width.coerceAtLeast(1))) {
+                g2.drawString(line, 0, y)
+                y += fm.height + lineGap
+            }
+        } finally {
+            g2.dispose()
+        }
+    }
+
+    private fun heightFor(widthPx: Int): Int {
+        val fm = getFontMetrics(font)
+        val lines = wrapLines(text, fm, widthPx)
+        if (lines.isEmpty()) return 0
+        return lines.size * fm.height + (lines.size - 1) * lineGap
+    }
+
+    /**
+     * 折行宽度：自身宽度优先；首次测量时内容区还没布局，
+     * 向上找已由网格定宽的卡片（祖先），减去它的左右内边距。
+     */
+    private fun wrapWidth(): Int {
+        if (width > 0) return width
+        var c: Container? = parent
+        while (c != null) {
+            if (c.width > 0) {
+                val insets = c.insets
+                return (c.width - insets.left - insets.right).coerceAtLeast(JBUI.scale(80))
+            }
+            c = c.parent
+        }
+        return JBUI.scale(AccountUiSpacing.gridMinColumnWidth - 2 * AccountUiSpacing.cardPadH)
+    }
+
+    /** 按像素宽度贪心折行；中文逐字断，行首不留收尾标点 */
+    private fun wrapLines(text: String, fm: FontMetrics, widthPx: Int): List<String> {
+        if (text.isEmpty()) return emptyList()
+        val lines = mutableListOf<String>()
+        val line = StringBuilder()
+        var lineWidth = 0
+        for (ch in text) {
+            val w = fm.charWidth(ch)
+            if (line.isNotEmpty() && lineWidth + w > widthPx && ch !in CLOSING) {
+                lines.add(line.toString())
+                line.setLength(0)
+                lineWidth = 0
+            }
+            line.append(ch)
+            lineWidth += w
+        }
+        if (line.isNotEmpty()) lines.add(line.toString())
+        return lines
+    }
+
+    private companion object {
+        /** 不允许出现在行首的收尾标点 */
+        const val CLOSING = "，。、；：！？）】」』》%…·"
+    }
 }

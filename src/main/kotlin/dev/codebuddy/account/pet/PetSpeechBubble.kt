@@ -2,20 +2,22 @@ package dev.codebuddy.account.pet
 
 import com.intellij.ui.components.JBLabel
 import com.intellij.util.ui.JBUI
-import dev.codebuddy.account.ui.AccountUiColors
-import dev.codebuddy.account.ui.AccountUiType
+import dev.codebuddy.account.ui.tokens.AccountUiColors
+import dev.codebuddy.account.ui.tokens.AccountUiType
 import java.awt.BasicStroke
 import java.awt.Color
 import java.awt.Font
+import java.awt.geom.RoundRectangle2D
 import java.awt.Graphics
 import java.awt.Graphics2D
 import java.awt.GraphicsEnvironment
 import java.awt.Point
 import java.awt.Rectangle
 import java.awt.RenderingHints
-import java.awt.geom.RoundRectangle2D
 import javax.swing.JWindow
 import javax.swing.Timer
+
+
 
 /**
  * 碎碎念气泡：只在桌宠上方冒一句台词，没有任何按钮。

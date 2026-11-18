@@ -233,9 +233,9 @@
         <applicationConfigurable parentId="tools"
                                  id="dev.codebuddy.account.settings"
                                  displayName="CodeBuddy 账号管理器"
-                                 instance="dev.codebuddy.account.ui.AccountSettingsConfigurable"/>
+                                 instance="dev.codebuddy.account.ui.views.AccountSettingsConfigurable"/>
         <statusBarWidgetFactory id="CodeBuddyAccountWidget"
-                                implementation="dev.codebuddy.account.ui.CodeBuddyStatusBarWidgetFactory"/>
+                                implementation="dev.codebuddy.account.ui.statusbar.CodeBuddyStatusBarWidgetFactory"/>
     </extensions>
 
     <actions>

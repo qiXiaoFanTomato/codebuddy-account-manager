@@ -1,20 +1,27 @@
-package dev.codebuddy.account.ui
+package dev.codebuddy.account.ui.components
 
 import com.intellij.util.ui.JBUI
+import dev.codebuddy.account.ui.tokens.AccountUiColors
+import dev.codebuddy.account.ui.tokens.AccountUiSpacing
+import dev.codebuddy.account.ui.tokens.AccountUiType
+import dev.codebuddy.account.ui.tokens.baseLabelFont
+import java.awt.BasicStroke
 import java.awt.BorderLayout
 import java.awt.Color
 import java.awt.Component
 import java.awt.Dimension
 import java.awt.FlowLayout
 import java.awt.Font
+import java.awt.geom.Rectangle2D
 import java.awt.Graphics
 import java.awt.Graphics2D
-import java.awt.geom.Rectangle2D
 import javax.swing.Box
 import javax.swing.BoxLayout
 import javax.swing.JComponent
 import javax.swing.JLabel
 import javax.swing.JPanel
+
+
 
 /** 1px 横向分隔线：宽度撑满，颜色弱于边框 */
 class HairLine(private val color: Color = AccountUiColors.divider) : JComponent() {
@@ -173,6 +180,37 @@ class UiHint(text: String) : JLabel(text) {
         alignmentX = Component.LEFT_ALIGNMENT
         font = baseLabelFont().deriveFont(Font.PLAIN, AccountUiType.caption)
         foreground = AccountUiColors.textFaint
+    }
+}
+
+/**
+ * 品牌标记：白框 + 朱红点，对应设计稿的 `.brand-mark`。
+ *
+ * 深墨标题栏专用，尺寸固定 18dp。
+ */
+class BrandMark : JComponent() {
+
+    private val side = JBUI.scale(18)
+
+    init {
+        isOpaque = false
+        preferredSize = Dimension(side, side)
+        minimumSize = preferredSize
+        maximumSize = preferredSize
+    }
+
+    override fun paintComponent(g: Graphics) {
+        val g2 = g.create() as Graphics2D
+        try {
+            g2.color = AccountUiColors.onInk
+            g2.stroke = BasicStroke(2f)
+            g2.draw(Rectangle2D.Float(1f, 1f, (side - 2).toFloat(), (side - 2).toFloat()))
+            g2.color = AccountUiColors.seal
+            val dot = (side / 3).toFloat()
+            g2.fill(Rectangle2D.Float((side - dot) / 2f, (side - dot) / 2f, dot, dot))
+        } finally {
+            g2.dispose()
+        }
     }
 }
 

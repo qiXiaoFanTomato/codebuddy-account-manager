@@ -1,4 +1,4 @@
-package dev.codebuddy.account.ui
+package dev.codebuddy.account.ui.views
 
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.project.Project
@@ -11,6 +11,19 @@ import dev.codebuddy.account.quota.QuotaSummary
 import dev.codebuddy.account.quota.QuotaTime
 import dev.codebuddy.account.service.AccountEvents
 import dev.codebuddy.account.service.AccountLibrary
+import dev.codebuddy.account.ui.components.AccountChoice
+import dev.codebuddy.account.ui.components.AccountUiKit
+import dev.codebuddy.account.ui.components.DialogTopBar
+import dev.codebuddy.account.ui.components.JellyButton
+import dev.codebuddy.account.ui.components.JellyButtonVariant
+import dev.codebuddy.account.ui.components.QuotaAccountCard
+import dev.codebuddy.account.ui.components.QuotaBar
+import dev.codebuddy.account.ui.components.RoundedCard
+import dev.codebuddy.account.ui.components.SectionHeader
+import dev.codebuddy.account.ui.tokens.AccountUiColors
+import dev.codebuddy.account.ui.tokens.AccountUiRadius
+import dev.codebuddy.account.ui.tokens.AccountUiSpacing
+import dev.codebuddy.account.ui.tokens.AccountUiType
 import java.awt.*
 import javax.swing.*
 
@@ -36,11 +49,11 @@ class QuotaDetailDialog(
     private val accountCombo = JComboBox<AccountChoice>()
     private val overviewTitle = JBLabel("正在读取额度…")
     private val overviewSub = JBLabel("")
-    private val overviewBar = QuotaBar(0.0)
+    private val overviewBar = AccountUiKit.progressBar(0.0)
     private val bodyPanel = JPanel()
     private val statusLabel = JBLabel("")
     private val refreshBtn: JellyButton =
-        JellyButton("刷新额度", JellyButtonVariant.PRIMARY, null, "重新查询额度") { doRefresh() }
+        AccountUiKit.button("刷新额度", JellyButtonVariant.PRIMARY, null, "重新查询额度") { doRefresh() }
     private lateinit var topBar: DialogTopBar
 
     private var suppressCombo = false
@@ -85,7 +98,7 @@ class QuotaDetailDialog(
         }
         filterRow.add(refreshBtn)
 
-        val top = DialogTopBar(dialogTitle(), "", filterRow)
+        val top = AccountUiKit.dialogTopBar(dialogTitle(), "", filterRow)
         topBar = top
 
         val scroll = AccountUiKit.styleScroll(JBScrollPane(bodyPanel)).apply {
@@ -194,9 +207,6 @@ class QuotaDetailDialog(
             if (nearest != null) {
                 append("　|　最近到期：${nearest.displayGroup}（${QuotaTime.remainingText(nearest.expireMillis)}）")
             }
-            if (summaries.isEmpty()) {
-                append("　|　点击「刷新额度」从接口获取")
-            }
         }
         overviewBar.percent = percent
 
@@ -284,7 +294,7 @@ class QuotaDetailDialog(
         card.alignmentX = Component.LEFT_ALIGNMENT
         card.border = JBUI.Borders.empty(AccountUiSpacing.cardPadV, AccountUiSpacing.cardPadH)
 
-        card.add(SectionHeader("额度总览"))
+        card.add(AccountUiKit.sectionHeader("额度总览"))
         card.add(Box.createVerticalStrut(JBUI.scale(AccountUiSpacing.sm)))
         card.add(overviewTitle)
         card.add(Box.createVerticalStrut(JBUI.scale(2)))

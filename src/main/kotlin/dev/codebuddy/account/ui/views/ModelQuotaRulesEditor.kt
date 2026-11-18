@@ -1,12 +1,14 @@
-package dev.codebuddy.account.ui
+package dev.codebuddy.account.ui.views
 
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.table.JBTable
 import com.intellij.util.ui.JBUI
+import dev.codebuddy.account.ui.foundation.AccountTableStyle
+import dev.codebuddy.account.ui.tokens.AccountUiColors
+import dev.codebuddy.account.usage.formatCredit
 import dev.codebuddy.account.usage.ModelCatalogService
 import dev.codebuddy.account.usage.ModelQuotaRule
 import dev.codebuddy.account.usage.ModelQuotaTracker
-import dev.codebuddy.account.usage.formatCredit
 import java.awt.BorderLayout
 import java.awt.Component
 import java.awt.Dimension
@@ -21,6 +23,8 @@ import javax.swing.JTable
 import javax.swing.ListSelectionModel
 import javax.swing.SpinnerNumberModel
 import javax.swing.table.AbstractTableModel
+
+
 
 /**
  * 模型限额规则编辑面板（设置页使用）。

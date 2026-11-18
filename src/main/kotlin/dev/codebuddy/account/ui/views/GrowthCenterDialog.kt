@@ -1,4 +1,4 @@
-package dev.codebuddy.account.ui
+package dev.codebuddy.account.ui.views
 
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
@@ -16,6 +16,17 @@ import dev.codebuddy.account.pet.CbEventCenter
 import dev.codebuddy.account.pet.PetSettings
 import dev.codebuddy.account.service.AccountLibrary
 import dev.codebuddy.account.service.AccountSettings
+import dev.codebuddy.account.ui.components.AccountUiKit
+import dev.codebuddy.account.ui.components.HairLine
+import dev.codebuddy.account.ui.components.JellyButton
+import dev.codebuddy.account.ui.components.JellyButtonVariant
+import dev.codebuddy.account.ui.components.RoundedCard
+import dev.codebuddy.account.ui.foundation.FlowWrapLayout
+import dev.codebuddy.account.ui.foundation.Jelly
+import dev.codebuddy.account.ui.tokens.AccountUiColors
+import dev.codebuddy.account.ui.tokens.AccountUiRadius
+import dev.codebuddy.account.ui.tokens.AccountUiSpacing
+import dev.codebuddy.account.ui.tokens.AccountUiType
 import java.awt.BasicStroke
 import java.awt.BorderLayout
 import java.awt.Color
@@ -23,17 +34,17 @@ import java.awt.Component
 import java.awt.Cursor
 import java.awt.Desktop
 import java.awt.Dimension
+import java.awt.event.MouseAdapter
+import java.awt.event.MouseEvent
 import java.awt.FlowLayout
 import java.awt.Font
 import java.awt.Graphics
 import java.awt.Graphics2D
 import java.awt.RenderingHints
-import java.awt.event.MouseAdapter
-import java.awt.event.MouseEvent
 import java.net.URI
+import java.time.format.DateTimeFormatter
 import java.time.Instant
 import java.time.ZoneId
-import java.time.format.DateTimeFormatter
 import javax.swing.Action
 import javax.swing.Box
 import javax.swing.BoxLayout
@@ -45,6 +56,8 @@ import javax.swing.JPanel
 import javax.swing.ScrollPaneConstants
 import javax.swing.SwingConstants
 import javax.swing.SwingUtilities
+
+
 
 /**
  * 成长计划窗口：1:1 复刻 WorkDaddy 成长中心「成长计划」页。
@@ -302,7 +315,7 @@ class GrowthCenterDialog(private val project: Project?) : DialogWrapper(project,
         var first = true
         for (item in state.items) {
             for (task in item.tasks) {
-                if (!first) card.add(HairLine())
+                if (!first) card.add(AccountUiKit.divider())
                 first = false
                 card.add(taskRow(item, task, multiAccount))
             }
@@ -468,11 +481,11 @@ class GrowthCenterDialog(private val project: Project?) : DialogWrapper(project,
         // 按账号逐行展示：多账号时只看第一个账号的状态，会与底部巡检结果对不上
         var first = true
         for (item in rows) {
-            if (!first) card.add(HairLine())
+            if (!first) card.add(AccountUiKit.divider())
             first = false
             card.add(travelRow(item))
         }
-        card.add(HairLine())
+        card.add(AccountUiKit.divider())
         card.add(
             infoRow(
                 name = "待抽奖",
@@ -603,7 +616,7 @@ class GrowthCenterDialog(private val project: Project?) : DialogWrapper(project,
         }
         var first = true
         for (tier in tiers) {
-            if (!first) card.add(HairLine())
+            if (!first) card.add(AccountUiKit.divider())
             first = false
             card.add(tierRow(tier, entry?.days ?: 0))
         }
@@ -732,7 +745,7 @@ class GrowthCenterDialog(private val project: Project?) : DialogWrapper(project,
     }
 
     private fun actionButton(text: String, onClick: () -> Unit): JComponent =
-        JellyButton(text, JellyButtonVariant.SECONDARY, null, text, onClick)
+        AccountUiKit.button(text, JellyButtonVariant.SECONDARY, null, text, onClick)
 
     /** 当前选中账号（空集合 = 全部账号） */
     private fun selectedKeys(): Set<String> {
@@ -872,31 +885,14 @@ class GrowthCenterDialog(private val project: Project?) : DialogWrapper(project,
     // 局部组件：白卡 / 圆点 / 绿色描边按钮 / 统计格
     // ---------------------------------------------------------------
 
-    /** 白色圆角卡片：对应截图里的 `.card` */
-    private class PlanCard : JPanel() {
+    /** 白色圆角卡片：统一走档案卡外壳，不再自绘一份卡底 */
+    private class PlanCard : RoundedCard(
+        AccountUiColors.cardBg,
+        AccountUiColors.border,
+        AccountUiRadius.card,
+    ) {
         init {
-            isOpaque = false
-            layout = BoxLayout(this, BoxLayout.Y_AXIS)
-            alignmentX = Component.LEFT_ALIGNMENT
-            border = JBUI.Borders.empty(14, 16)
-        }
-
-        override fun paintComponent(g: Graphics) {
-            val g2 = g.create() as Graphics2D
-            try {
-                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-                val shape = Jelly.round(
-                    0.5f, 0.5f, (width - 1).toFloat(), (height - 1).toFloat(),
-                    JBUI.scale(8).toFloat(),
-                )
-                g2.color = AccountUiColors.cardBg
-                g2.fill(shape)
-                g2.color = AccountUiColors.chartBorder
-                g2.draw(shape)
-            } finally {
-                g2.dispose()
-            }
-            super.paintComponent(g)
+            border = JBUI.Borders.empty(AccountUiSpacing.cardPadV, AccountUiSpacing.cardPadH)
         }
 
         override fun getMaximumSize(): Dimension = Dimension(Int.MAX_VALUE, preferredSize.height)
@@ -942,7 +938,8 @@ class GrowthCenterDialog(private val project: Project?) : DialogWrapper(project,
             val g2 = g.create() as Graphics2D
             try {
                 g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-                g2.color = Color(0xA9B4AC)
+                // 装饰点没有状态语义，取最弱文本色，不引入新 token
+                g2.color = AccountUiColors.textFaint
                 val d = JBUI.scale(7)
                 g2.fillOval(0, (height - d) / 2, d, d)
             } finally {

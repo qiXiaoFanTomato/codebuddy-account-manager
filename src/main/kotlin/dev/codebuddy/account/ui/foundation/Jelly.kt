@@ -1,26 +1,30 @@
-package dev.codebuddy.account.ui
+package dev.codebuddy.account.ui.foundation
 
+import dev.codebuddy.account.ui.tokens.AccountUiColors
+import dev.codebuddy.account.ui.tokens.AccountUiRadius
 import java.awt.BasicStroke
 import java.awt.Color
+import java.awt.event.ComponentEvent
+import java.awt.event.ComponentListener
+import java.awt.event.HierarchyEvent
+import java.awt.event.HierarchyListener
 import java.awt.FontMetrics
+import java.awt.geom.AffineTransform
+import java.awt.geom.RoundRectangle2D
 import java.awt.Graphics2D
 import java.awt.Rectangle
 import java.awt.RenderingHints
 import java.awt.Shape
 import java.awt.Toolkit
-import java.awt.event.ComponentEvent
-import java.awt.event.ComponentListener
-import java.awt.event.HierarchyEvent
-import java.awt.event.HierarchyListener
-import java.awt.geom.AffineTransform
-import java.awt.geom.RoundRectangle2D
 import java.util.Locale
+import javax.swing.event.ChangeEvent
+import javax.swing.event.ChangeListener
 import javax.swing.JComponent
 import javax.swing.JViewport
 import javax.swing.SwingUtilities
 import javax.swing.Timer
-import javax.swing.event.ChangeEvent
-import javax.swing.event.ChangeListener
+
+
 
 /**
  * 表面绘制与动画基础设施。

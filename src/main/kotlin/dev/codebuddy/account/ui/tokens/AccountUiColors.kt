@@ -1,4 +1,4 @@
-package dev.codebuddy.account.ui
+package dev.codebuddy.account.ui.tokens
 
 import com.intellij.ide.util.PropertiesComponent
 import com.intellij.openapi.application.ApplicationManager
@@ -9,6 +9,8 @@ import com.intellij.util.ui.JBUI
 import java.awt.Color
 import java.awt.Font
 import javax.swing.UIManager
+
+
 
 /**
  * 界面配色集中定义。
@@ -621,6 +623,14 @@ object AccountUiSpacing {
 
     /** 网格卡片最小列宽：与 plugin-ui.html 的 minmax(330px, 1fr) 一致 */
     const val gridMinColumnWidth = 330
+
+    /**
+     * 额度明细网格的最小列宽。
+     *
+     * 额度卡首行要放「账号名 + 状态/类型/域名标签 + 剩余读数」，内容比账号档案卡更多；
+     * 沿用 [gridMinColumnWidth] 会挤成三列导致标签与读数换行过多，这里单独放宽。
+     */
+    const val quotaGridMinColumnWidth = 420
 
     /** Hero 指标条内边距 */
     const val heroPadV = 14

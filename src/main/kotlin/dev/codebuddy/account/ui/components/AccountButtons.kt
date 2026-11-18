@@ -1,29 +1,40 @@
-package dev.codebuddy.account.ui
+package dev.codebuddy.account.ui.components
 
 import com.intellij.util.ui.JBUI
+import dev.codebuddy.account.ui.foundation.Easing
+import dev.codebuddy.account.ui.foundation.Jelly
+import dev.codebuddy.account.ui.foundation.JellyMaterial
+import dev.codebuddy.account.ui.foundation.JellyValue
+import dev.codebuddy.account.ui.tokens.AccountUiColors
+import dev.codebuddy.account.ui.tokens.AccountUiRadius
+import dev.codebuddy.account.ui.tokens.AccountUiSpacing
+import dev.codebuddy.account.ui.tokens.AccountUiType
+import dev.codebuddy.account.ui.tokens.baseLabelFont
 import java.awt.BasicStroke
 import java.awt.BorderLayout
 import java.awt.Color
 import java.awt.Component
 import java.awt.Cursor
 import java.awt.Dimension
-import java.awt.Font
-import java.awt.Graphics
-import java.awt.Graphics2D
-import java.awt.Point
-import java.awt.RenderingHints
 import java.awt.event.ActionEvent
 import java.awt.event.FocusAdapter
 import java.awt.event.FocusEvent
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
+import java.awt.Font
 import java.awt.geom.Rectangle2D
+import java.awt.Graphics
+import java.awt.Graphics2D
+import java.awt.Point
+import java.awt.RenderingHints
 import javax.swing.AbstractAction
 import javax.swing.Icon
 import javax.swing.JComponent
 import javax.swing.JLabel
 import javax.swing.JPanel
 import javax.swing.KeyStroke
+
+
 
 /**
  * 按钮：圆角矩形，悬停只提亮底色，不做位移与回弹。
@@ -373,6 +384,7 @@ class DialogTopBar(
     init {
         // 账本式顶栏：抽屉面纸 + 2px 墨蓝底线（不铺深墨，避免外部传入的控件文字读不清）
         background = AccountUiColors.surfaceBg
+        alignmentX = Component.LEFT_ALIGNMENT
         border = JBUI.Borders.compound(
             JBUI.Borders.customLine(AccountUiColors.ink, 0, 0, 2, 0),
             JBUI.Borders.empty(AccountUiSpacing.md, AccountUiSpacing.cardPadH)
@@ -405,6 +417,9 @@ class DialogTopBar(
         subtitleLabel.text = subtitle ?: ""
         subtitleLabel.isVisible = !subtitle.isNullOrBlank()
     }
+
+    /** BoxLayout 里横向撑满：抽屉底色与墨蓝底线必须横贯整个弹窗，高度仍按内容 */
+    override fun getMaximumSize(): Dimension = Dimension(Int.MAX_VALUE, preferredSize.height)
 }
 
 

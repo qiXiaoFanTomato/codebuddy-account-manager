@@ -2,26 +2,27 @@ package dev.codebuddy.account.pet
 
 import com.intellij.util.ui.JBUI
 import dev.codebuddy.account.quota.QuotaSummary
-import dev.codebuddy.account.ui.AccountUiColors
-import dev.codebuddy.account.ui.AccountUiSpacing
-import dev.codebuddy.account.ui.AccountUiType
-import dev.codebuddy.account.ui.JellyButton
-import dev.codebuddy.account.ui.JellyButtonVariant
+import dev.codebuddy.account.ui.components.JellyButton
+import dev.codebuddy.account.ui.components.JellyButtonVariant
+import dev.codebuddy.account.ui.components.QuotaBar
+import dev.codebuddy.account.ui.tokens.AccountUiColors
+import dev.codebuddy.account.ui.tokens.AccountUiSpacing
+import dev.codebuddy.account.ui.tokens.AccountUiType
 import java.awt.BasicStroke
 import java.awt.Color
 import java.awt.Component
 import java.awt.Dimension
+import java.awt.event.MouseAdapter
+import java.awt.event.MouseEvent
 import java.awt.FlowLayout
 import java.awt.Font
+import java.awt.geom.RoundRectangle2D
 import java.awt.Graphics
 import java.awt.Graphics2D
 import java.awt.GraphicsEnvironment
 import java.awt.Point
 import java.awt.Rectangle
 import java.awt.RenderingHints
-import java.awt.event.MouseAdapter
-import java.awt.event.MouseEvent
-import java.awt.geom.RoundRectangle2D
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -31,6 +32,8 @@ import javax.swing.JLabel
 import javax.swing.JPanel
 import javax.swing.JWindow
 import javax.swing.Timer
+
+
 
 /**
  * 桌宠气泡：展示当前账号余额（含实时刷新入口）与两个跳转入口。
@@ -157,7 +160,7 @@ class PetBubble(
         } else if (quota == null) {
             percentLabel.text = "—"
             percentLabel.foreground = AccountUiColors.textMuted
-            summaryLabel.text = "尚未获取额度，点击「刷新」查询"
+            summaryLabel.text = "尚未获取额度"
             summaryLabel.foreground = AccountUiColors.textMuted
             bar.percent = 0.0
             groupLabel1.isVisible = false

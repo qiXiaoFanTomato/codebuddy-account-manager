@@ -1,17 +1,27 @@
-package dev.codebuddy.account.ui
+package dev.codebuddy.account.ui.components
 
 import com.intellij.icons.AllIcons
 import com.intellij.util.ui.JBUI
 import dev.codebuddy.account.model.CredentialSnapshot
 import dev.codebuddy.account.quota.QuotaGroup
 import dev.codebuddy.account.quota.QuotaSummary
+import dev.codebuddy.account.ui.foundation.Easing
+import dev.codebuddy.account.ui.foundation.FlowWrapLayout
+import dev.codebuddy.account.ui.foundation.Jelly
+import dev.codebuddy.account.ui.foundation.JellyMaterial
+import dev.codebuddy.account.ui.foundation.JellyValue
+import dev.codebuddy.account.ui.tokens.AccountUiColors
+import dev.codebuddy.account.ui.tokens.AccountUiRadius
+import dev.codebuddy.account.ui.tokens.AccountUiSpacing
+import dev.codebuddy.account.ui.tokens.AccountUiType
+import dev.codebuddy.account.ui.tokens.baseLabelFont
 import java.awt.*
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import java.awt.geom.RoundRectangle2D
+import java.time.format.DateTimeFormatter
 import java.time.Instant
 import java.time.ZoneId
-import java.time.format.DateTimeFormatter
 import javax.swing.*
 
 /** 卡片底部操作 */
@@ -132,13 +142,27 @@ class AccountGridCard(
                 AccountUiColors.tagDomainFg,
             )
         )
-        val tokenOk = !snapshot.isRefreshTokenExpired
+        // 服务端已明确拒绝该凭据（401/403）时，本地过期时间仍可能是未来：
+        // 只看本地时间会显示绿色「Token 有效」，与刷新结果自相矛盾 —— 以接口结论为准。
+        val rejectedByServer = quota?.lastError?.let { isCredentialRejected(it) } == true
+        val tokenText = when {
+            rejectedByServer -> "Token 失效"
+            snapshot.isRefreshTokenExpired -> "Token 过期"
+            else -> "Token 有效"
+        }
+        val tokenOk = tokenText == "Token 有效"
         tags.add(
             Chip(
-                if (tokenOk) "Token 有效" else "Token 过期",
+                tokenText,
                 if (tokenOk) AccountUiColors.tagSuccessBg else AccountUiColors.sealSoft,
                 if (tokenOk) AccountUiColors.success else AccountUiColors.seal,
-            )
+            ).apply {
+                toolTipText = when {
+                    rejectedByServer -> "接口已拒绝该凭据：${quota?.lastError}"
+                    tokenOk -> "本地凭据未过期（refresh token 未到期）"
+                    else -> "本地 refresh token 已过期，请重新登录"
+                }
+            }
         )
         textCol.add(tags)
 
@@ -223,7 +247,7 @@ class AccountGridCard(
             return column
         }
         if (summary.error != null) {
-            column.add(hint("查询失败：${summary.error}"))
+            column.add(AccountUiKit.wrappedNotice("查询失败：${summary.error}"))
             return column
         }
         if (summary.packages.isEmpty()) {
@@ -259,8 +283,22 @@ class AccountGridCard(
         column.add(numberRow)
 
         val fetchedAt = summary.fetchedAt.takeIf { it > 0 } ?: snapshot.importedAt
+        val staleError = summary.lastError
+        // 本次刷新失败但缓存仍保留上次成功的数据：必须显式标出，
+        // 否则卡片看起来仍是「正常 + 刚刚刷新」，掩盖凭据失效
+        if (summary.isStale && staleError != null) {
+            // 失败原因是可操作信息（「请切换该账号或重新登录」），按卡片宽度折行全文显示，
+            // 不能像套餐名那样截断，否则用户只看到半句、还得悬停才能看到该怎么做
+            column.add(AccountUiKit.wrappedNotice("刷新失败：$staleError"))
+        }
         column.add(
-            JLabel("剩余额度 ${"%.0f".format(percent)}% · 刷新于 ${TIME_FMT.format(Instant.ofEpochMilli(fetchedAt))}").apply {
+            JLabel(
+                if (summary.isStale) {
+                    "显示上次成功的数据（${TIME_FMT.format(Instant.ofEpochMilli(fetchedAt))}）"
+                } else {
+                    "剩余额度 ${"%.0f".format(percent)}% · 刷新于 ${TIME_FMT.format(Instant.ofEpochMilli(fetchedAt))}"
+                }
+            ).apply {
                 alignmentX = Component.LEFT_ALIGNMENT
                 font = AccountUiType.ui(AccountUiType.caption)
                 foreground = AccountUiColors.textSecondary
@@ -300,7 +338,7 @@ class AccountGridCard(
             }
 
             summary.error != null -> {
-                column.add(hint("查询失败：${summary.error}"))
+                column.add(AccountUiKit.wrappedNotice("查询失败：${summary.error}"))
                 return column
             }
 
@@ -394,6 +432,10 @@ class AccountGridCard(
         /** 临期判定窗口：7 天（与看板「7 天内到期」指标同一口径） */
         const val SOON_MS = 7L * 24 * 60 * 60 * 1000
 
+        /** 服务端是否明确拒绝该凭据（QuotaService 401/403 的失败文案） */
+        fun isCredentialRejected(error: String): Boolean =
+            error.contains("401") || error.contains("403") || error.contains("凭据已失效")
+
         val DATE_FMT: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd").withZone(ZoneId.systemDefault())
         val TIME_FMT: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm").withZone(ZoneId.systemDefault())
     }
@@ -445,7 +487,15 @@ class QuotaGroupStrip(private val group: QuotaGroup) :
             foreground = AccountUiColors.textPrimary
             toolTipText = group.name
         })
-        left.add(Chip("(${group.packages.size})", AccountUiColors.itemBg, AccountUiColors.textMuted))
+        // 状态双通道：竖条颜色之外再给文案，色弱用户也能判断是否还有可用额度
+        val usable = group.usableCount > 0
+        left.add(
+            Chip(
+                if (usable) "${group.packages.size} 条 · 可用" else "${group.packages.size} 条 · 已用完",
+                if (usable) AccountUiColors.tagSuccessBg else AccountUiColors.sealSoft,
+                if (usable) AccountUiColors.success else AccountUiColors.seal,
+            )
+        )
 
         val right = JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(3), 0)).apply { isOpaque = false }
         right.add(JLabel(formatUsage()).apply {
@@ -567,15 +617,7 @@ class GlyphBadge(
                     0f, 0f, box.toFloat(), box.toFloat(), arcSize.toFloat(), arcSize.toFloat()
                 )
             )
-            // 果冻高光：字标同样带一点顶部反光
-            g2.color = Color(255, 255, 255, 40)
-            g2.fill(
-                RoundRectangle2D.Float(
-                    JBUI.scale(2).toFloat(), JBUI.scale(2).toFloat(),
-                    (box - JBUI.scale(4)).toFloat(), (box * 0.36f).toFloat(),
-                    JBUI.scale(4).toFloat(), JBUI.scale(4).toFloat()
-                )
-            )
+            // 档案柜：字标是纸上的印章，不画体积高光
             g2.font = font
             g2.color = fg
             val fm = g2.fontMetrics
@@ -599,11 +641,8 @@ class IconTile(
 
     private val side: Int = JBUI.scale(24)
 
-    /** hover 弹起动画进度 */
+    /** hover 底色渐显进度（只改底色，不弹跳） */
     private val lift = JellyValue(this, 0.0)
-
-    /** 按下进度：1 表示按住，胶囊下沉 1px */
-    private val press = JellyValue(this, 0.0)
 
     init {
         isOpaque = false
@@ -616,21 +655,15 @@ class IconTile(
 
         addMouseListener(object : MouseAdapter() {
             override fun mouseEntered(e: MouseEvent) {
-                lift.animateTo(1.0, 170, { t -> Easing.outBack(t) })
+                lift.animateTo(1.0, 170, { t -> Easing.outCubic(t) })
             }
 
             override fun mouseExited(e: MouseEvent) {
                 lift.animateTo(0.0, 220, { t -> Easing.outCubic(t) })
-                press.animateTo(0.0, 200, { t -> Easing.outBack(t) })
-            }
-
-            override fun mousePressed(e: MouseEvent) {
-                if (isEnabled) press.animateTo(1.0, 80)
             }
 
             override fun mouseReleased(e: MouseEvent) {
                 if (!isEnabled) return
-                press.animateTo(0.0, 260, { t -> Easing.outBack(t) })
                 if (contains(e.point)) fire()
             }
         })
@@ -706,7 +739,7 @@ private class AvatarBadge(name: String) : JComponent() {
             g2.color = fill
             g2.fill(java.awt.geom.Rectangle2D.Float(0f, 0f, side.toFloat(), side.toFloat()))
             g2.font = font
-            g2.color = Color.WHITE
+            g2.color = AccountUiColors.onInk
             val fm = g2.fontMetrics
             g2.drawString(
                 glyph,

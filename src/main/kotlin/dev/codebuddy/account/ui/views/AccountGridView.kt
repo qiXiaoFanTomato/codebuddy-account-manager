@@ -1,21 +1,30 @@
-package dev.codebuddy.account.ui
+package dev.codebuddy.account.ui.views
 
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.util.ui.JBUI
 import dev.codebuddy.account.model.CredentialSnapshot
 import dev.codebuddy.account.quota.QuotaSummary
+import dev.codebuddy.account.ui.components.AccountGridCard
+import dev.codebuddy.account.ui.components.GridCardAction
+import dev.codebuddy.account.ui.components.matchesKeyword
+import dev.codebuddy.account.ui.components.UiHint
+import dev.codebuddy.account.ui.foundation.WrapGridLayout
+import dev.codebuddy.account.ui.tokens.AccountUiColors
+import dev.codebuddy.account.ui.tokens.AccountUiSpacing
 import java.awt.BorderLayout
 import java.awt.Component
 import java.awt.Dimension
-import java.awt.Font
-import java.awt.Rectangle
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
+import java.awt.Font
+import java.awt.Rectangle
 import javax.swing.JLabel
 import javax.swing.JPanel
-import javax.swing.ScrollPaneConstants
 import javax.swing.Scrollable
+import javax.swing.ScrollPaneConstants
 import javax.swing.SwingUtilities
+
+
 
 /**
  * 卡片网格视图：自适应多列排布 [AccountGridCard]，支持关键字筛选、分页与多选。

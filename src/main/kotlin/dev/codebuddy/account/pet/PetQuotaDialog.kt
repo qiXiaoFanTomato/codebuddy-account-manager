@@ -11,16 +11,16 @@ import dev.codebuddy.account.quota.QuotaPackage
 import dev.codebuddy.account.quota.QuotaSummary
 import dev.codebuddy.account.service.AccountEvents
 import dev.codebuddy.account.service.AccountLibrary
-import dev.codebuddy.account.ui.AccountUiColors
-import dev.codebuddy.account.ui.AccountUiSpacing
-import dev.codebuddy.account.ui.AccountUiType
-import dev.codebuddy.account.ui.HistoryDialog
-import dev.codebuddy.account.ui.JellyButton
-import dev.codebuddy.account.ui.JellyButtonVariant
-import dev.codebuddy.account.ui.QuotaDetailDialog
-import dev.codebuddy.account.ui.UsageDetailDialog
-import dev.codebuddy.account.usage.UsageRecord
+import dev.codebuddy.account.ui.components.JellyButton
+import dev.codebuddy.account.ui.components.JellyButtonVariant
+import dev.codebuddy.account.ui.components.QuotaBar
+import dev.codebuddy.account.ui.tokens.AccountUiColors
+import dev.codebuddy.account.ui.tokens.AccountUiType
+import dev.codebuddy.account.ui.views.HistoryDialog
+import dev.codebuddy.account.ui.views.QuotaDetailDialog
+import dev.codebuddy.account.ui.views.UsageDetailDialog
 import dev.codebuddy.account.usage.formatCredit
+import dev.codebuddy.account.usage.UsageRecord
 import java.awt.BasicStroke
 import java.awt.Component
 import java.awt.Dimension
@@ -35,6 +35,8 @@ import javax.swing.BoxLayout
 import javax.swing.JComponent
 import javax.swing.JLabel
 import javax.swing.JPanel
+
+
 
 /**
  * 桌宠的额度明细窗口（由右键菜单与额度气泡打开）。
@@ -220,7 +222,7 @@ class PetQuotaDialog(private val project: Project) : DialogWrapper(project, true
         if (q == null) {
             percentLabel.text = "—"
             percentLabel.foreground = AccountUiColors.textMuted
-            summaryLabel.text = "尚未获取额度，点击「刷新额度」查询"
+            summaryLabel.text = "尚未获取额度"
             groupsLabel.text = ""
             bar.percent = 0.0
         } else if (q.error != null) {

@@ -1,19 +1,24 @@
-package dev.codebuddy.account.ui
+package dev.codebuddy.account.ui.foundation
 
+import com.intellij.ui.render.RenderingUtil
 import com.intellij.ui.table.JBTable
 import com.intellij.util.ui.JBUI
+import dev.codebuddy.account.ui.tokens.AccountUiColors
+import dev.codebuddy.account.ui.tokens.AccountUiType
 import java.awt.Component
 import java.awt.Dimension
-import java.awt.Font
-import java.awt.Point
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
+import java.awt.Font
+import java.awt.Point
 import javax.swing.JComponent
 import javax.swing.JLabel
 import javax.swing.JTable
 import javax.swing.SwingConstants
 import javax.swing.table.DefaultTableCellRenderer
 import javax.swing.table.TableCellRenderer
+
+
 
 /**
  * 表格统一样式：表头、斑马纹、行高、网格线，外加鼠标所在行的轻高亮。
@@ -35,6 +40,10 @@ object AccountTableStyle {
         table.selectionBackground = AccountUiColors.brassSoft
         table.selectionForeground = AccountUiColors.textPrimary
         table.fillsViewportHeight = true
+        // 关掉平台自带的「鼠标所在行」底色：JBTable.prepareRenderer 会在单元格渲染器之后
+        // 再刷一层主题 hover 色（深色主题是 Gray3 #393B40），盖掉本表的浅色纸面，
+        // 深墨文字压在灰黑底上就看不见了。本表已有自己的 hover 高亮，平台的这层不要。
+        table.putClientProperty(RenderingUtil.PAINT_HOVERED_BACKGROUND, false)
 
         val header = table.tableHeader
         // 账本式表头：等宽小字 + 1.5px 墨蓝底线

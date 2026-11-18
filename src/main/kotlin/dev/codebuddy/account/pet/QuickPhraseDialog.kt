@@ -7,13 +7,13 @@ import com.intellij.ui.components.JBList
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBTextField
 import com.intellij.util.ui.JBUI
-import dev.codebuddy.account.ui.AccountUiColors
+import dev.codebuddy.account.ui.tokens.AccountUiColors
 import java.awt.BorderLayout
 import java.awt.Component
 import java.awt.Dimension
-import java.awt.FlowLayout
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
+import java.awt.FlowLayout
 import javax.swing.Action
 import javax.swing.DefaultListCellRenderer
 import javax.swing.DefaultListModel
@@ -25,6 +25,8 @@ import javax.swing.JPanel
 import javax.swing.JTextArea
 import javax.swing.ListSelectionModel
 import javax.swing.SwingUtilities
+
+
 
 /**
  * 快捷短语管理窗口（仿 WorkDaddy「快捷短语」页）。
