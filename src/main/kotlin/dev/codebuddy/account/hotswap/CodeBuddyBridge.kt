@@ -5,12 +5,15 @@ import com.intellij.openapi.actionSystem.ActionManager
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.CommonDataKeys
 import com.intellij.openapi.actionSystem.DataContext
+import com.intellij.openapi.actionSystem.ex.ActionUtil
 import com.intellij.openapi.actionSystem.impl.SimpleDataContext
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.extensions.PluginId
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.wm.ToolWindowManager
 import java.util.Hashtable
+
+
 
 /**
  * 与 CodeBuddy 主插件（id=com.tencent.cloud.codingcopilot）的热切换桥。
@@ -124,14 +127,12 @@ object CodeBuddyBridge {
                 log.warn("未找到 CodeBuddy 重置动作: $RESET_ACTION_ID")
                 return false
             }
-            val context = SimpleDataContext.getSimpleContext(
-                CommonDataKeys.PROJECT.name,
-                project,
-                DataContext.EMPTY_CONTEXT
-            )
-            action.actionPerformed(
-                AnActionEvent.createFromAnAction(action, null, "CodeBuddyAccountManager", context)
-            )
+            // 走平台公开的 action 执行入口：直接调 action.actionPerformed 属于 OverrideOnly，
+            // createFromAnAction / getSimpleContext 在 2024.3 起被标记为待移除
+            val context = SimpleDataContext.builder()
+                .add(CommonDataKeys.PROJECT, project)
+                .build()
+            ActionUtil.invokeAction(action, context, "CodeBuddyAccountManager", null, null)
             true
         } catch (e: Exception) {
             log.warn("重启 CodeBuddy 内核失败", e)
