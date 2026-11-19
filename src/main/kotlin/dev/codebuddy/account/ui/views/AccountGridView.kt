@@ -53,6 +53,9 @@ class AccountGridView : JPanel(BorderLayout()) {
     private val scrollPane: JBScrollPane
     private var cards: List<AccountGridCard> = emptyList()
 
+    /** 卡片实例缓存：accountKey → 卡片，刷新 / 翻页时复用，避免整表重建 */
+    private val cardCache = HashMap<String, AccountGridCard>()
+
     private var rawList: List<CredentialSnapshot> = emptyList()
     private var filtered: List<CredentialSnapshot> = emptyList()
     private var activeKey: String? = null
@@ -213,7 +216,6 @@ class AccountGridView : JPanel(BorderLayout()) {
     private fun render() {
         // 重建前记住滚动位置：刷新额度 / 删除账号后仍停在用户刚才看的地方
         val scrollBefore = scrollPane.verticalScrollBar.value
-        container.removeAll()
 
         filtered = if (filterText.isBlank()) rawList else rawList.filter { it.matchesKeyword(filterText) }
         val pages = pageCount()
@@ -223,41 +225,11 @@ class AccountGridView : JPanel(BorderLayout()) {
         val from = pageIndexValue * pageSizeValue
         val pageItems = filtered.drop(from).take(pageSizeValue)
 
-        val newCards = pageItems.map { snapshot ->
-            AccountGridCard(
-                snapshot = snapshot,
-                isActive = snapshot.accountKey == activeKey,
-                pendingRestart = snapshot.accountKey == pendingRestartKey,
-                quota = quotas[snapshot.accountKey],
-                onCheckedChanged = { card, checked ->
-                    if (checked) checkedKeys.add(card.snapshot.accountKey)
-                    else checkedKeys.remove(card.snapshot.accountKey)
-                    onSelectionChanged?.invoke()
-                },
-                onAction = { card, action -> onAction?.invoke(card, action) },
-            ).apply {
-                checked = snapshot.accountKey in checkedKeys
-                alignmentX = Component.LEFT_ALIGNMENT
-            }.also { card ->
-                card.addMouseListener(object : MouseAdapter() {
-                    override fun mouseClicked(e: MouseEvent) {
-                        // 双击 = 切换该账号（会走确认框，不是"一点就切"）
-                        if (e.clickCount == 2 && SwingUtilities.isLeftMouseButton(e)) {
-                            onAction?.invoke(card, GridCardAction.SWITCH)
-                        }
-                    }
+        // 账号被删除后同步清理缓存，避免卡片实例一直挂在内存里
+        cardCache.keys.retainAll(filtered.map { it.accountKey }.toSet())
 
-                    override fun mousePressed(e: MouseEvent) = showPopup(e)
-
-                    override fun mouseReleased(e: MouseEvent) = showPopup(e)
-
-                    private fun showPopup(e: MouseEvent) {
-                        if (!e.isPopupTrigger) return
-                        onContextMenu?.invoke(card, e.x, e.y)
-                    }
-                })
-            }
-        }
+        val newCards = pageItems.map { cardFor(it) }
+        container.removeAll()
         for (card in newCards) container.add(card)
 
         if (rawList.isNotEmpty() && filtered.isEmpty()) container.add(emptyHint())
@@ -272,6 +244,61 @@ class AccountGridView : JPanel(BorderLayout()) {
         }
         onSelectionChanged?.invoke()
         onPageChanged?.invoke()
+    }
+
+    /** 按 accountKey 复用卡片：数据没变直接返回原实例，变了就地 [AccountGridCard.rebind] */
+    private fun cardFor(snapshot: CredentialSnapshot): AccountGridCard {
+        val key = snapshot.accountKey
+        val active = key == activeKey
+        val pending = key == pendingRestartKey
+        val quota = quotas[key]
+
+        val existing = cardCache[key]
+        if (existing != null) {
+            if (existing.snapshot != snapshot || existing.isActive != active ||
+                existing.quota != quota || existing.pendingRestart != pending
+            ) {
+                existing.rebind(snapshot, active, quota, pending)
+            }
+            existing.checked = key in checkedKeys
+            existing.alignmentX = Component.LEFT_ALIGNMENT
+            return existing
+        }
+
+        val card = AccountGridCard(
+            snapshot = snapshot,
+            isActive = active,
+            pendingRestart = pending,
+            quota = quota,
+            onCheckedChanged = { c, checked ->
+                if (checked) checkedKeys.add(c.snapshot.accountKey)
+                else checkedKeys.remove(c.snapshot.accountKey)
+                onSelectionChanged?.invoke()
+            },
+            onAction = { c, action -> onAction?.invoke(c, action) },
+        ).apply {
+            checked = key in checkedKeys
+            alignmentX = Component.LEFT_ALIGNMENT
+        }
+        card.addMouseListener(object : MouseAdapter() {
+            override fun mouseClicked(e: MouseEvent) {
+                // 双击 = 切换该账号（会走确认框，不是"一点就切"）
+                if (e.clickCount == 2 && SwingUtilities.isLeftMouseButton(e)) {
+                    onAction?.invoke(card, GridCardAction.SWITCH)
+                }
+            }
+
+            override fun mousePressed(e: MouseEvent) = showPopup(e)
+
+            override fun mouseReleased(e: MouseEvent) = showPopup(e)
+
+            private fun showPopup(e: MouseEvent) {
+                if (!e.isPopupTrigger) return
+                onContextMenu?.invoke(card, e.x, e.y)
+            }
+        })
+        cardCache[key] = card
+        return card
     }
 
     private fun emptyHint(): JLabel = UiHint("没有匹配的账号").apply {

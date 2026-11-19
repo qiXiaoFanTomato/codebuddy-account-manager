@@ -57,13 +57,29 @@ object QuotaCardUi {
  * 内层嵌套块用 [JellyMaterial.SOFT]（多一条顶部亮线）
  */
 open class RoundedCard(
-    private val fill: Color,
-    private val stroke: Color,
+    fill: Color,
+    stroke: Color,
     arc: Int = AccountUiRadius.card,
     private val elevated: Boolean = false,
     private val pill: Boolean = false,
     private val material: JellyMaterial = JellyMaterial.FLAT,
 ) : JPanel() {
+
+    /** 卡片底色：可变，账号卡复用时按激活态换色，不必重建整张卡 */
+    var fill: Color = fill
+        set(value) {
+            if (field == value) return
+            field = value
+            repaint()
+        }
+
+    /** 卡片描边色：与 [fill] 一同随状态刷新 */
+    var stroke: Color = stroke
+        set(value) {
+            if (field == value) return
+            field = value
+            repaint()
+        }
 
     private val arcSize = JBUI.scale(arc)
 

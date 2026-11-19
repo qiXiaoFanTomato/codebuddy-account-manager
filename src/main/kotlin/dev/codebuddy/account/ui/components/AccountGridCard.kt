@@ -38,11 +38,11 @@ enum class GridCardAction { SWITCH, DETAIL, RENAME, REFRESH, EXPORT, DELETE, GRO
  *  - 底部虚线：snapshots 文件路径 + 动作条。
  */
 class AccountGridCard(
-    val snapshot: CredentialSnapshot,
-    val isActive: Boolean,
-    val quota: QuotaSummary?,
+    snapshot: CredentialSnapshot,
+    isActive: Boolean,
+    quota: QuotaSummary?,
     /** 凭据已写入、等 IDE 重启生效（卡片左上角 tab 改为「待重启」） */
-    val pendingRestart: Boolean = false,
+    pendingRestart: Boolean = false,
     private val onCheckedChanged: (AccountGridCard, Boolean) -> Unit,
     private val onAction: (AccountGridCard, GridCardAction) -> Unit,
 ) : RoundedCard(
@@ -51,6 +51,18 @@ class AccountGridCard(
     arc = AccountUiRadius.card,
     elevated = true,
 ) {
+
+    var snapshot: CredentialSnapshot = snapshot
+        private set
+
+    var isActive: Boolean = isActive
+        private set
+
+    var quota: QuotaSummary? = quota
+        private set
+
+    var pendingRestart: Boolean = pendingRestart
+        private set
 
     private val check = CardCheckBox().apply {
         alignmentY = CENTER_ALIGNMENT
@@ -63,13 +75,50 @@ class AccountGridCard(
         set(value) {
             if (check.isSelected == value) return
             check.isSelected = value
-            // 选中态用主色描边，与卡片果冻描边统一
-            accentStroke = if (value) AccountUiColors.accent else null
-            strokeWidth = if (value) 1.8f else 1f
+            // 选中态用主色描边；取消选中时回落到激活态描边，而不是直接清空
+            accentStroke = when {
+                value -> AccountUiColors.accent
+                isActive -> AccountUiColors.ink
+                else -> null
+            }
+            strokeWidth = when {
+                value -> 1.8f
+                isActive -> 1.6f
+                else -> 1f
+            }
             repaint()
         }
 
     init {
+        addMouseListener(object : MouseAdapter() {
+            override fun mouseEntered(e: MouseEvent) = setHovering(true)
+
+            override fun mouseExited(e: MouseEvent) = setHovering(false)
+        })
+        buildContent()
+    }
+
+    /**
+     * 数据变化时就地刷新：只重建卡片内部内容，不新建 [AccountGridCard]。
+     *
+     * 列表刷新（刷新额度 / 翻页 / 筛选）时复用卡片对象，
+     * 省掉外框、鼠标监听与勾选组件的重复创建。
+     */
+    fun rebind(
+        snapshot: CredentialSnapshot,
+        isActive: Boolean,
+        quota: QuotaSummary?,
+        pendingRestart: Boolean,
+    ) {
+        this.snapshot = snapshot
+        this.isActive = isActive
+        this.quota = quota
+        this.pendingRestart = pendingRestart
+        buildContent()
+    }
+
+    /** 按当前字段重建外框与内容（构造与 [rebind] 共用一套绘制口径） */
+    private fun buildContent() {
         // 顶部留出索引 tab 的高度，内容不会被墨蓝标签压住
         border = JBUI.Borders.empty(
             AccountUiSpacing.cardPadV + tabHeightDp + 6,
@@ -77,22 +126,34 @@ class AccountGridCard(
             AccountUiSpacing.cardPadV,
             AccountUiSpacing.cardPadH,
         )
+        // 激活态换底色 / 描边（外框颜色可变，不再需要整卡重建）
+        fill = if (isActive) AccountUiColors.cardActiveBg else AccountUiColors.cardBg
+        stroke = if (isActive) AccountUiColors.borderActive else AccountUiColors.border
         // 「待重启」优先于「当前激活」：此时凭据已写入但 CodeBuddy 还没重新加载
         tabText = when {
             pendingRestart -> "待重启生效"
             isActive -> "当前激活"
             else -> null
         }
-        if (isActive) {
-            accentStroke = AccountUiColors.ink
-            strokeWidth = 1.6f
+        // 勾选描边优先于激活描边，复用时保持用户已经勾上的状态
+        when {
+            checked -> {
+                accentStroke = AccountUiColors.accent
+                strokeWidth = 1.8f
+            }
+
+            isActive -> {
+                accentStroke = AccountUiColors.ink
+                strokeWidth = 1.6f
+            }
+
+            else -> {
+                accentStroke = null
+                strokeWidth = 1f
+            }
         }
-        addMouseListener(object : MouseAdapter() {
-            override fun mouseEntered(e: MouseEvent) = setHovering(true)
 
-            override fun mouseExited(e: MouseEvent) = setHovering(false)
-        })
-
+        removeAll()
         add(buildTitle())
         add(Box.createVerticalStrut(JBUI.scale(AccountUiSpacing.blockGap)))
         add(buildMeta())
@@ -102,6 +163,8 @@ class AccountGridCard(
         add(buildPackages())
         add(Box.createVerticalStrut(JBUI.scale(AccountUiSpacing.md)))
         add(buildFooter())
+        revalidate()
+        repaint()
     }
 
     // ---------------------------------------------------------------
