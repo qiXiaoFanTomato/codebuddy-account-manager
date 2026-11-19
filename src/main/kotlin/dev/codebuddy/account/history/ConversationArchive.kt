@@ -9,12 +9,14 @@ import com.intellij.openapi.diagnostic.logger
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
+import java.time.format.DateTimeFormatter
 import java.time.Instant
 import java.time.ZoneId
-import java.time.format.DateTimeFormatter
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
+
+
 
 /**
  * 把本地历史会话转换成 CodeBuddy 官方「导入对话」可识别的归档文件。
@@ -355,7 +357,10 @@ object ConversationArchive {
     }
 
     fun sanitizeFileName(raw: String): String =
-        raw.replace(Regex("[\\\\/:*?\"<>|\\r\\n\\t]+"), "_").trim().take(40)
+        raw.replace(ILLEGAL_NAME_CHARS, "_").trim().take(40)
+
+    /** 文件名非法字符：批量导出时每条对话都会调用，正则只编译一次 */
+    private val ILLEGAL_NAME_CHARS = Regex("[\\\\/:*?\"<>|\\r\\n\\t]+")
 
     // ---------------------------------------------------------------
     // 内部工具

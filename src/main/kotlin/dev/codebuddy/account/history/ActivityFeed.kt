@@ -39,6 +39,10 @@ object ActivityFeed {
     /** 两种历史目录布局（见 [HistoryReader] 的目录说明） */
     private val LAYOUTS = listOf("JetBrains", "CodeBuddyIDE")
 
+    /** 摘要清洗用的正则：逐条对话调用，只编译一次 */
+    private val WHITESPACE = Regex("\\s+")
+    private val LINE_BREAKS = Regex("[\\r\\n\\t\\u2028\\u2029]+")
+
     data class Item(
         val project: String,
         val title: String,
@@ -166,7 +170,7 @@ object ActivityFeed {
 
     /** 标题里的换行 / 制表符会把提示框撑成多行，读出来后压成一行 */
     private fun cleanTitle(raw: String): String =
-        raw.replace(Regex("[\\r\\n\\t\\u2028\\u2029]+"), " ").trim().take(80)
+        raw.replace(LINE_BREAKS, " ").trim().take(80)
 
     /** workspace 的 index.json 路径：按需定位一次，[INDEX_PATH_TTL_MS] 内复用 */
     private fun indexFileFor(ws: String): Path? {
@@ -322,7 +326,7 @@ object ActivityFeed {
 
     /** 「主人」后面那一段话：去掉称呼与紧随标点，正文过长时截断 */
     fun excerpt(raw: String): String {
-        val flat = raw.replace(Regex("\\s+"), " ").trim()
+        val flat = raw.replace(WHITESPACE, " ").trim()
         if (flat.isBlank()) return "（无正文）"
         // 只有开头的称呼才剥离，正文中间出现「主人」时保持原文
         val idx = flat.indexOf("主人")

@@ -11,6 +11,8 @@ import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
 
+
+
 /**
  * 配额结果的本地缓存，避免每次打开面板都打网络请求。
  *
@@ -23,22 +25,49 @@ class QuotaCache(private val cacheFile: Path) {
     private val gson = GsonBuilder().setPrettyPrinting().create()
     private val lock = Any()
 
+    /** 文件指纹（mtime + size）：未变化时直接复用解析结果 */
+    private var cacheStamp: String? = null
+
+    /** 与 [cacheStamp] 对应的解析结果，避免 UI 线程每次刷新都读盘 + 全量解析 */
+    private var cacheSnapshot: Map<String, QuotaSummary> = emptyMap()
+
     /** 读取全部缓存：uid -> QuotaSummary */
     fun loadAll(): Map<String, QuotaSummary> {
         synchronized(lock) {
-            if (!Files.isRegularFile(cacheFile)) return emptyMap()
-            return try {
-                val root = JsonParser.parseString(Files.readString(cacheFile, StandardCharsets.UTF_8)).asJsonObject
-                val out = mutableMapOf<String, QuotaSummary>()
-                for ((uid, el) in root.entrySet()) {
-                    if (!el.isJsonObject) continue
-                    out[uid] = toSummary(el.asJsonObject)
-                }
-                out
-            } catch (e: Exception) {
-                log.warn("读取配额缓存失败", e)
-                emptyMap()
+            if (!Files.isRegularFile(cacheFile)) {
+                cacheStamp = null
+                cacheSnapshot = emptyMap()
+                return emptyMap()
             }
+            val stamp = stampOf(cacheFile)
+            if (stamp != null && stamp == cacheStamp) return cacheSnapshot
+            return readAllLocked(stamp)
+        }
+    }
+
+    /** 文件指纹：mtime + 大小，任一变化即视为内容已变 */
+    private fun stampOf(file: Path): String? = try {
+        val attrs = Files.readAttributes(file, java.nio.file.attribute.BasicFileAttributes::class.java)
+        "${attrs.lastModifiedTime().toMillis()}:${attrs.size()}"
+    } catch (_: Exception) {
+        null
+    }
+
+    /** 真正读盘解析；解析失败不污染缓存，下次仍会重试 */
+    private fun readAllLocked(stamp: String?): Map<String, QuotaSummary> {
+        return try {
+            val root = JsonParser.parseString(Files.readString(cacheFile, StandardCharsets.UTF_8)).asJsonObject
+            val out = mutableMapOf<String, QuotaSummary>()
+            for ((uid, el) in root.entrySet()) {
+                if (!el.isJsonObject) continue
+                out[uid] = toSummary(el.asJsonObject)
+            }
+            cacheStamp = stamp
+            cacheSnapshot = out
+            out
+        } catch (e: Exception) {
+            log.warn("读取配额缓存失败", e)
+            emptyMap()
         }
     }
 
@@ -131,6 +160,9 @@ class QuotaCache(private val cacheFile: Path) {
         } catch (_: Exception) {
             Files.move(tmp, cacheFile, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
         }
+        // 写盘后直接更新内存快照：省掉紧随其后的重新读盘解析
+        cacheSnapshot = HashMap(all)
+        cacheStamp = stampOf(cacheFile)
     }
 
     private fun toSummary(o: JsonObject): QuotaSummary {

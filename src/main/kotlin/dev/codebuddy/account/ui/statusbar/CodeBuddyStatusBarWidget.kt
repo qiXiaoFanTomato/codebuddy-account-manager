@@ -126,7 +126,7 @@ class CodeBuddyStatusBarWidget(private val project: Project) :
         INSTANCES.add(this)
         ensureThroughputWatcher()
         ensurePoller()
-        // 首次快照在后台建，装好即可用；之后快路径 500ms 刷新、标题每 3 秒重读一次
+        // 首次快照在后台建，装好即可用；之后快路径 1 秒刷新、标题每 3 秒重读一次
         ApplicationManager.getApplication().executeOnPooledThread {
             rebuildStatusSnapshot(true, listOf(ownWorkspace()))
             requestRefresh()
@@ -494,10 +494,10 @@ class CodeBuddyStatusBarWidget(private val project: Project) :
         private const val CACHE_TTL_MS = 3000L
 
         /** 快路径轮询间隔（毫秒）：只读内存里的运行态与实时样本，不读索引 */
-        private const val POLL_INTERVAL_MS = 500L
+        private const val POLL_INTERVAL_MS = 1_000L
 
-        /** 每几拍读一次会话索引（500ms × 6 ≈ 3 秒）：标题读盘不能跟快路径一起跑 */
-        private const val SLOW_EVERY = 6
+        /** 每几拍读一次会话索引（1s × 3 ≈ 3 秒）：标题读盘不能跟快路径一起跑 */
+        private const val SLOW_EVERY = 3
 
         /** 吞吐样本有效期：超过 2 分钟没有新的一步，视为空闲，不再显示旧速度 */
         private const val THROUGHPUT_TTL_MS = 2 * 60_000L
@@ -540,7 +540,7 @@ class CodeBuddyStatusBarWidget(private val project: Project) :
          * 项目以 workspace hash 为键，标题按 hash 直读该项目的会话索引。
          * 只能在后台线程调用。
          *
-         * @param loadTitles 是否重读会话标题。500ms 的快路径不能每次都读盘，
+         * @param loadTitles 是否重读会话标题。1 秒的快路径不能每次都读盘，
          *   否则实时读数会把状态栏变成高频文件扫描；快路径沿用上次读到的标题。
          * @param ownKeys 各窗口项目的 workspace hash：即使项目此刻空闲也把标题刷新出来
          */

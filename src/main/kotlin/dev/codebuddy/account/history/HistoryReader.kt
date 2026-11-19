@@ -14,8 +14,10 @@ import dev.codebuddy.account.scan.ScanSummary
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.ConcurrentHashMap
+
+
 
 /**
  * 读取 CodeBuddy 本地历史对话。
@@ -55,6 +57,9 @@ object HistoryReader {
     private const val MAX_CONTENT_CHARS = 200_000
     /** 全局 index.json 数量上限（防御性保护，覆盖多账号 × 多工作区场景） */
     private const val MAX_INDEX_FILES = 10_000
+
+    /** 目录遍历结果的复用窗口（纳秒，约 5 秒）：同一轮界面刷新内不重复走树 */
+    private const val SCAN_CACHE_TTL_NS = 5_000_000_000L
     private const val MAX_TOOL_ARGS_CHARS = 160
 
     /** 一次历史对话扫描的结果：会话列表 + 目录扫描汇总 */
@@ -118,7 +123,27 @@ object HistoryReader {
     /** index.json 路径 -> (mtime, 会话列表)。按文件粒度缓存，新增会话也能及时刷新 */
     private val cache = ConcurrentHashMap<String, Pair<Long, List<Conversation>>>()
 
-    fun clearCache() = cache.clear()
+    /**
+     * 目录遍历结果短 TTL 缓存（只给不带进度回调的只读调用用）。
+     *
+     * 活跃卡片、日报、状态栏会在短时间内各自触发一次扫描，
+     * 全盘走树是这里最贵的一步，TTL 内直接复用 index.json 列表。
+     */
+    private class ScanCacheEntry(
+        val at: Long,
+        val root: String,
+        val recursive: Boolean,
+        val indexes: List<ScanEntry>,
+        val summary: ScanSummary,
+    )
+
+    @Volatile
+    private var scanCache: ScanCacheEntry? = null
+
+    fun clearCache() {
+        cache.clear()
+        scanCache = null
+    }
 
     /**
      * 调用目录扫描功能扫描 [root] 下的历史会话（去重，按最后消息时间倒序）。
@@ -140,21 +165,47 @@ object HistoryReader {
         var scanned: ScanSummary? = null
         val notifyProgress = progress
 
-        DirectoryScanner.scan(root, options, object : ScanListener {
-            override fun onEntry(entry: ScanEntry) {
-                if (!entry.isDirectory && entry.name.equals("index.json", ignoreCase = true)) {
-                    indexes.add(entry)
+        // 只读调用（无进度回调、未取消）在 TTL 内复用上一次目录遍历结果
+        val cachedScan = if (progress == null && !cancel.get()) {
+            scanCache?.takeIf {
+                it.root == root.toString() && it.recursive == options.recursive &&
+                    System.nanoTime() - it.at < SCAN_CACHE_TTL_NS
+            }
+        } else {
+            null
+        }
+
+        if (cachedScan != null) {
+            indexes.addAll(cachedScan.indexes)
+            scanned = cachedScan.summary
+        } else {
+            DirectoryScanner.scan(root, options, object : ScanListener {
+                override fun onEntry(entry: ScanEntry) {
+                    if (!entry.isDirectory && entry.name.equals("index.json", ignoreCase = true)) {
+                        indexes.add(entry)
+                    }
                 }
-            }
 
-            override fun onProgress(progress: ScanProgress) {
-                notifyProgress?.invoke(progress)
-            }
+                override fun onProgress(progress: ScanProgress) {
+                    notifyProgress?.invoke(progress)
+                }
 
-            override fun onFinished(summary: ScanSummary) {
-                scanned = summary
+                override fun onFinished(summary: ScanSummary) {
+                    scanned = summary
+                }
+            }, cancel)
+
+            val done = scanned
+            if (done != null && progress == null && !cancel.get() && !done.cancelled) {
+                scanCache = ScanCacheEntry(
+                    System.nanoTime(),
+                    root.toString(),
+                    options.recursive,
+                    indexes.toList(),
+                    done,
+                )
             }
-        }, cancel)
+        }
 
         val result = mutableListOf<Conversation>()
         for (entry in indexes) {
@@ -439,9 +490,12 @@ object HistoryReader {
 
     /** 压缩成单行并截断，用于工具调用参数 */
     private fun oneLine(text: String, max: Int): String {
-        val flat = text.replace(Regex("\\s+"), " ").trim()
+        val flat = text.replace(WHITESPACE, " ").trim()
         return if (flat.length <= max) flat else flat.take(max - 1) + "…"
     }
+
+    /** 空白折叠：逐条消息清洗都走这里，正则只编译一次 */
+    private val WHITESPACE = Regex("\\s+")
 
     private fun JsonObject.str(key: String): String? = try {
         val el = get(key) ?: return null
