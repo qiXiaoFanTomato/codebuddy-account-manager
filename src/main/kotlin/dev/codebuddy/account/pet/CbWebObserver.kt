@@ -34,9 +34,10 @@ object CbWebObserver {
     private const val POLL_MS = 1_500L
 
     /** 快路径间隔：只读实时速率字段，不走组件树扫描、不注入脚本 */
-    private const val FAST_POLL_MS = 500L
+    private const val FAST_POLL_MS = 1_000L
 
-    private const val REINJECT_MS = 10_000L
+    /** 完整脚本重注入间隔：页面脚本只在心跳丢失时才会失效，稳态下不需要频繁重投 */
+    private const val REINJECT_MS = 30_000L
     private const val CONNECTED_MS = 8_000L
 
     /** 报文里的实时速率段 `<chars>,<ms>|`；旧版脚本没有这一段，解析时直接跳过 */
@@ -79,6 +80,9 @@ object CbWebObserver {
 
     /** CefBrowser -> 上次注入完整脚本的时间；弱引用避免持有已关闭的面板 */
     private val injected = WeakHashMap<Any, Long>()
+
+    /** CefBrowser -> 上次注入的项目 / workspace 归属串：没变就不必再投一遍脚本 */
+    private val injectedWhere = WeakHashMap<Any, String>()
 
     @Volatile
     private var lastHeartbeat = 0L
@@ -123,7 +127,10 @@ object CbWebObserver {
 
     private fun startInternal() {
         if (!running.compareAndSet(false, true)) return
-        synchronized(injected) { injected.clear() }
+        synchronized(injected) {
+            injected.clear()
+            injectedWhere.clear()
+        }
         firstInjectAt = 0L
         lastNoBeatLog = 0L
         task = executor.scheduleWithFixedDelay(
@@ -148,7 +155,10 @@ object CbWebObserver {
         fastTask?.cancel(false)
         fastTask = null
         ratePanels = emptyList()
-        synchronized(injected) { injected.clear() }
+        synchronized(injected) {
+            injected.clear()
+            injectedWhere.clear()
+        }
         lastHeartbeat = 0L
         lastStoreAt = 0L
         firstInjectAt = 0L
@@ -246,14 +256,21 @@ object CbWebObserver {
                 val where = "window.__cbPetCfg.project=${jsString(panel.project)};" +
                     "window.__cbPetCfg.workspace=${jsString(panel.workspace)};"
                 val last = synchronized(injected) { injected[browser] }
+                val lastWhere = synchronized(injected) { injectedWhere[browser] }
                 val needBoot = last == null || configChanged || now - last > REINJECT_MS ||
                     now - lastHeartbeat > CONNECTED_MS
                 if (needBoot) {
                     CodeBuddyApprover.inject(browser, configJs + where + BOOT_JS)
-                    synchronized(injected) { injected[browser] = now }
+                    synchronized(injected) {
+                        injected[browser] = now
+                        injectedWhere[browser] = where
+                    }
                     if (firstInjectAt == 0L) firstInjectAt = now
-                } else {
+                } else if (lastWhere != where) {
+                    // 项目 / workspace 没变就不再重投：心跳靠读 window.name 维持，
+                    // 之前每 1.5 秒无条件注入一次，纯粹是在 EDT 上白排队
                     CodeBuddyApprover.inject(browser, configJs + where)
+                    synchronized(injected) { injectedWhere[browser] = where }
                 }
                 readEvents(browser)
             } catch (_: Throwable) {
@@ -289,7 +306,7 @@ object CbWebObserver {
      * 只读面板的 `window.name` 并解析速率段，不注入脚本、不遍历组件树。
      *
      * 页面报的是**自本次脚本启动以来的累计字符数与累计毫秒数**，这里做差分：
-     * 500ms 读一次、页面 400ms 结算一次，偶尔漏读一次也不会少算字符。
+     * 1s 读一次、页面 400ms 结算一次，偶尔漏读一次也不会少算字符。
      */
     private fun fastTick() {
         if (!running.get()) return
@@ -450,7 +467,9 @@ object CbWebObserver {
      *  - 文案白名单 + 决策组（允许 / 运行 + 拒绝 / 跳过）双通道判定；
      *  - 扣费、提权、批量删除、凭证外发一律不自动点；
      *  - 「危险命令」默认只提示不代点，除非主人显式打开高风险开关；
-     *  - MutationObserver 防抖 120ms + 2 秒定时兜底扫描，页面重渲染不会漏。
+     *  - MutationObserver 防抖 300ms + 5 秒定时兜底扫描，页面重渲染不会漏。
+     *  - 扫描只读变化点附近的容器与末尾消息文本，不做整页 innerText / 全文档遍历，
+     *    避免长对话时把渲染进程拖卡（ver 4 起）。
      */
     private val BOOT_JS: String = """
         (function () {
@@ -459,14 +478,14 @@ object CbWebObserver {
           // 否则 flush 不带速率段，实时读数永远出不来。旧脚本的定时器会继续跑，
           // 但它写的报文没有速率段，上层按「读不到速率」处理，不会算错；
           // 两边事件重复的部分由 [CbEventCenter] 的去重表挡住，页面刷新后只剩新脚本。
-          if (W.__cbPet && W.__cbPet.alive && W.__cbPet.ver === 3) {
+          if (W.__cbPet && W.__cbPet.alive && W.__cbPet.ver === 4) {
             W.__cbPet.cfg = W.__cbPetCfg || {};
             return;
           }
           var boot = String(Date.now()) + '-' + Math.random().toString(36).slice(2, 8);
           var seq = 0, queue = [], cfg = W.__cbPetCfg || {}, pending = 0;
           var PREFIX = 'CBPET1|';
-          var api = { alive: true, cfg: cfg, ver: 3 };
+          var api = { alive: true, cfg: cfg, ver: 4 };
           W.__cbPet = api;
 
           var APPROVE_ONCE = /^(允许|允许一次|允许访问|运行|确认执行|批准|同意|确认允许|Allow|Allow once|Run|Yes)${'$'}/i;
@@ -646,8 +665,16 @@ object CbWebObserver {
             return (hit ? hit[1] : ctx).slice(0, 70) || '一个操作需要确认';
           }
           // 扫描根收敛：MutationObserver 只把变化点所在的确认卡容器排队，
-          // 快路径不遍历整页；队列为空时（2 秒兜底扫描）才退回整文档。
+          // 快路径不遍历整页；队列为空时先扫弹层容器，仍找不到才低频退回整文档。
           var rootQueue = [];
+          // 兜底扫描只认同这些容器（与 queueRoot 的 closest 口径一致）
+          var FALLBACK_ROOT_SELECTOR = '[role="dialog"],[class*="_dialog_"],[class*="_modal_"],' +
+            '[class*="_permission_"],[class*="_approval_"],[class*="_confirm_"],[class*="_decision_"],' +
+            '[class*="_ask_"],[class*="permission-dialog"],[class*="confirm-dialog"],' +
+            '[class*="approval"],[class*="permission"]';
+          // 整页兜底每 N 轮才跑一次（兜底扫描 5 秒一轮，整页扫一次已足够发现迟到的确认卡）
+          var FALLBACK_SCAN_EVERY = 5;
+          var fullScanTick = 0;
           function queueRoot(node) {
             var el = node && node.nodeType === 1 ? node : (node && node.parentElement);
             if (!el) return;
@@ -684,14 +711,26 @@ object CbWebObserver {
               if (!od || od === doc) roots.push(r); else kept.push(r);
             }
             rootQueue = kept;
-            if (!roots.length) roots = [doc.body];
+            if (!roots.length) {
+              // 兜底先只扫弹层容器（确认卡一定是弹层），扫不到才每 5 轮整页扫一次：
+              // 流式输出时变化触发每 300ms 一轮，整页 querySelectorAll 不能每轮都跑
+              try {
+                var boxes = doc.querySelectorAll(FALLBACK_ROOT_SELECTOR);
+                for (i = 0; i < boxes.length; i++) roots.push(boxes[i]);
+              } catch (e) {}
+              if (!roots.length) {
+                if (++fullScanTick % FALLBACK_SCAN_EVERY !== 0) return;
+                roots = [doc.body];
+              }
+            }
             for (i = 0; i < roots.length; i++) {
               var list = buttonsIn(roots[i]);
               for (j = 0; j < list.length; j++) {
                 var btn = list[j];
-                if (!visible(btn)) continue;
+                // 先比文案再判可见：getClientRects 会强制布局，只对命中文案的少数按钮调用
                 var label = norm(txt(btn));
                 if (!APPROVE_ONCE.test(label) && !SESSION.test(label)) continue;
+                if (!visible(btn)) continue;
                 var found = decisionBox(btn);
                 if (!found || found.box.getAttribute('data-cb-pet-ask')) continue;
                 var target = pickTarget(found.list);
@@ -885,9 +924,24 @@ object CbWebObserver {
             contAt = kept;
             return contAt.length < 5;
           }
+          // 只读尾部文本：innerText 会触发整页强制布局，流式输出时每轮扫一次会把面板拖卡。
+          // 优先取最后几条消息节点的 textContent（不触发布局），拿不到再退回整页 textContent。
+          function tailText(doc) {
+            var text = '';
+            try {
+              var nodes = doc.querySelectorAll('[class*="message"],[data-message-id]');
+              if (nodes.length) {
+                for (var i = Math.max(0, nodes.length - 6); i < nodes.length; i++) {
+                  text += String(nodes[i].textContent || '');
+                }
+              }
+            } catch (e) {}
+            if (!text) text = String((doc.body && doc.body.textContent) || '');
+            return text.slice(-4000);
+          }
           function scanInterrupted(doc) {
             if (!doc.body) return;
-            var text = String(doc.body.innerText || doc.body.textContent || '').slice(-4000);
+            var text = tailText(doc);
             if (!BREAK.test(text) || MANUAL_STOP.test(text.slice(-300))) return;
             var hit = BREAK.exec(text);
             var line = text.slice(Math.max(0, hit.index - 60), Math.min(text.length, hit.index + 120));
@@ -952,12 +1006,13 @@ object CbWebObserver {
           }
           function schedule() {
             if (pending) return;
-            pending = setTimeout(scan, 120);
+            // 流式输出时 DOM 变化非常密：300ms 防抖已足够快，120ms 只会让扫描轮次翻倍
+            pending = setTimeout(scan, 300);
           }
           try {
             var observer = new MutationObserver(function (records) {
               // 只把变化点所在的确认卡容器排队，快路径不再整页遍历；
-              // 根队列为空时由 2 秒兜底扫描退回整文档。
+              // 根队列为空时先扫弹层容器，仍为空才低频退回整文档。
               for (var i = 0; i < records.length; i++) {
                 var t = records[i].target;
                 if (t && t.getAttribute) {
@@ -973,7 +1028,7 @@ object CbWebObserver {
               attributeFilter: ['class', 'style', 'hidden', 'disabled', 'aria-disabled', 'data-state']
             });
           } catch (e) {}
-          // 后台（页面 hidden）时下面的 2 秒兜底扫描会被浏览器节流到分钟级：
+          // 后台（页面 hidden）时下面的 5 秒兜底扫描会被浏览器节流到分钟级：
           // 恢复可见时立刻补扫一次并回传，避免 hidden 期间积压的确认卡 / 中断提示延迟处理
           try {
             document.addEventListener('visibilitychange', function () {
@@ -983,10 +1038,9 @@ object CbWebObserver {
               flush();
             });
           } catch (e) {}
-          setInterval(scan, 2000);
-          // 速率结算与上报都跑得比扫描快：读数要亚秒级，事件扫描仍按 2 秒兜底
-          setInterval(rateSettle, 400);
-          setInterval(flush, 400);
+          setInterval(scan, 5000);
+          // 速率结算与上报合成一个定时器：读数要亚秒级，事件扫描按 5 秒兜底
+          setInterval(function () { rateSettle(); flush(); }, 400);
           scan();
           flush();
         })();

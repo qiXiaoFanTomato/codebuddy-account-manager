@@ -33,6 +33,9 @@ object PetPainter {
     const val BASE_W = 132f
     const val BASE_H = 156f
 
+    /** 底部读数字体：基准坐标系固定字号，绘制时不再每帧新建 */
+    private val READOUT_FONT = Font(Font.MONOSPACED, Font.BOLD, 17)
+
     /** 低额度阈值（%），与卡片「低额度」提示口径一致 */
     const val LOW_PERCENT = 20.0
 
@@ -165,7 +168,7 @@ object PetPainter {
             g2.fill(RoundRectangle2D.Float(27f, 104f, 3f, 14f, 1.5f, 1.5f))
 
             val text = data.readout()
-            g2.font = Font(Font.MONOSPACED, Font.BOLD, 17)
+            g2.font = READOUT_FONT
             val fm = g2.fontMetrics
             val textX = 72f - fm.stringWidth(text) / 2f
             val baseline = 107f + (fm.ascent - fm.descent) / 2f

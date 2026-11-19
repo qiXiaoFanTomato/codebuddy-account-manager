@@ -538,7 +538,7 @@ class CodeBuddyWatcher : Disposable {
         val stamp = RESET_TS.find(line)?.groupValues?.get(1)?.toLongOrNull()
         if (stamp != null) return if (stamp < 1_000_000_000_000L) stamp * 1000L else stamp
         val raw = RESET_AT.find(line)?.groupValues?.get(1)?.replace(' ', 'T') ?: return 0L
-        val zoned = if (Regex("^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}$").matches(raw)) {
+        val zoned = if (ISO_SECONDS.matches(raw)) {
             "$raw+08:00"
         } else {
             raw
@@ -724,7 +724,7 @@ class CodeBuddyWatcher : Disposable {
     private fun callIdOf(line: String): String? = CALL_ID.find(line)?.groupValues?.get(1)
 
     private fun oneLine(text: String, max: Int): String {
-        val flat = text.replace(Regex("\\s+"), " ").trim()
+        val flat = text.replace(WHITESPACE, " ").trim()
         return if (flat.length <= max) flat else flat.take(max - 1) + "…"
     }
 
@@ -754,10 +754,16 @@ class CodeBuddyWatcher : Disposable {
 
         /** 日志行首时间戳：`[2026-11-18 09:24:45.657]`，只取到秒（回溯时效判定够用） */
         private val LINE_TS = Regex("^\\[(\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2})")
+
+        /** ISO 秒级时间：日志里部分字段只有到秒，逐行解析时复用同一个正则 */
+        private val ISO_SECONDS = Regex("^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}$")
+
+        /** 空白折叠：日志行清洗逐条调用，避免每次重新编译 */
+        private val WHITESPACE = Regex("\\s+")
         private val LINE_TIME_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
 
-        /** 轮询间隔：日志是实时追加的，2 秒足够且开销可忽略 */
-        private const val POLL_INTERVAL_MS = 2_000L
+        /** 轮询间隔：日志是实时追加的，3 秒足够且目录 IO 更省 */
+        private const val POLL_INTERVAL_MS = 3_000L
         private const val FIRST_DELAY_MS = 3_000L
 
         /** 单次单文件最多读取的字节数 */

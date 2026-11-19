@@ -2,12 +2,14 @@ package dev.codebuddy.account.pet
 
 import com.intellij.openapi.diagnostic.logger
 import java.awt.AlphaComposite
-import java.awt.RenderingHints
 import java.awt.image.BufferedImage
+import java.awt.RenderingHints
 import java.io.ByteArrayInputStream
 import java.io.DataInputStream
 import java.io.InputStream
 import javax.imageio.ImageIO
+
+
 
 /**
  * 一个动画的容器文件（`*.petanim`），由 `tools` 侧的转换脚本从原版 webm 生成。
@@ -49,10 +51,20 @@ class PetAnimation private constructor(
 
     val frameCount: Int get() = jpgLengths.size
 
-    /** 已解码帧缓存：整段动画全解码内存不够，只保留最近若干帧 */
+    /**
+     * 已解码帧缓存：按字节预算折算可保留的帧数。
+     *
+     * 固定帧数在 462×260 的 ARGB 帧上会吃掉几十 MB（480KB/帧），
+     * 这里按 [CACHE_BYTES] 反算上限，既覆盖短循环动画，又避免常数帧数在大素材上失控。
+     */
+    private val cacheLimit: Int by lazy {
+        val perFrame = width.toLong() * height.toLong() * 4
+        (CACHE_BYTES / perFrame.coerceAtLeast(1L)).toInt().coerceIn(12, MAX_CACHE_FRAMES)
+    }
+
     private val cache = object : LinkedHashMap<Int, BufferedImage>(16, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Int, BufferedImage>): Boolean =
-            size > CACHE_FRAMES
+            size > cacheLimit
     }
 
     private val lock = Any()
@@ -91,11 +103,13 @@ class PetAnimation private constructor(
     }
 
     private fun decode(i: Int): BufferedImage? {
-        val jpg = source.copyOfRange(jpgOffsets[i], jpgOffsets[i] + jpgLengths[i])
-        val mask = source.copyOfRange(maskOffsets[i], maskOffsets[i] + maskLengths[i])
-
-        val color = ImageIO.read(ByteArrayInputStream(jpg)) ?: return null
-        val alpha = ImageIO.read(ByteArrayInputStream(mask))
+        // 直接用区间流读原数组，不再为每一帧复制两份字节
+        val color = ImageIO.read(
+            ByteArrayInputStream(source, jpgOffsets[i], jpgLengths[i])
+        ) ?: return null
+        val alpha = ImageIO.read(
+            ByteArrayInputStream(source, maskOffsets[i], maskLengths[i])
+        )
 
         val out = BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB)
         val g = out.createGraphics()
@@ -131,8 +145,11 @@ class PetAnimation private constructor(
 
         private val log = logger<PetAnimation>()
 
-        /** 每段动画保留的解码帧数（约 34k 像素/帧，48 帧约 6MB 上限） */
-        private const val CACHE_FRAMES = 48
+        /** 每段动画的解码帧内存预算：16MB（462×260 ARGB 约 480KB/帧 ≈ 34 帧） */
+        private const val CACHE_BYTES = 16L * 1024 * 1024
+
+        /** 帧数硬上限：超过这个值再降预算也不该无限膨胀 */
+        private const val MAX_CACHE_FRAMES = 48
 
         private const val MAGIC = "PETA"
         private const val HEADER_SIZE = 40

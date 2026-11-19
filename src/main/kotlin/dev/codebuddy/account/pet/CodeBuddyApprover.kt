@@ -9,8 +9,10 @@ import dev.codebuddy.account.history.ProjectResolver
 import java.awt.Component
 import java.awt.Container
 import java.lang.reflect.Field
+import java.lang.reflect.Method
 import java.lang.reflect.Modifier
 import java.util.WeakHashMap
+import java.util.concurrent.ConcurrentHashMap
 
 
 
@@ -35,6 +37,24 @@ import java.util.WeakHashMap
 object CodeBuddyApprover {
 
     private val log = logger<CodeBuddyApprover>()
+
+    /**
+     * 反射方法缓存：`javaClass.methods` 每次都返回整张数组，注入与读 name 都是高频调用，
+     * 按「类名#方法名/参数个数」缓存，稳态下只查一次。
+     */
+    private val METHOD_CACHE = ConcurrentHashMap<String, Method>()
+
+    private fun cachedMethod(owner: Any, name: String, paramCount: Int): Method? {
+        val key = owner.javaClass.name + '#' + name + '/' + paramCount
+        METHOD_CACHE[key]?.let { return it }
+        val found = try {
+            owner.javaClass.methods.firstOrNull { it.name == name && it.parameterCount == paramCount }
+        } catch (_: Throwable) {
+            null
+        } ?: return null
+        METHOD_CACHE[key] = found
+        return found
+    }
 
     /**
      * CodeBuddy 对话侧边栏可能所在的 ToolWindow id。
@@ -145,9 +165,7 @@ object CodeBuddyApprover {
         val app = ApplicationManager.getApplication() ?: return false
         app.invokeLater {
             try {
-                val execute = browser.javaClass.methods.firstOrNull {
-                    it.name == "executeJavaScript" && it.parameterCount == 3
-                } ?: return@invokeLater
+                val execute = cachedMethod(browser, "executeJavaScript", 3) ?: return@invokeLater
                 execute.invoke(browser, script, frameUrl(browser), 0)
             } catch (e: Throwable) {
                 log.warn("注入 CodeBuddy 脚本失败", e)
@@ -158,8 +176,8 @@ object CodeBuddyApprover {
 
     /** 当前页面 URL（脚本来源标记，失败时给空串） */
     private fun frameUrl(cef: Any): String = try {
-        val frame = cef.javaClass.getMethod("getMainFrame").invoke(cef) ?: return ""
-        (frame.javaClass.getMethod("getUrl").invoke(frame) as? String) ?: ""
+        val frame = cachedMethod(cef, "getMainFrame", 0)?.invoke(cef) ?: return ""
+        (cachedMethod(frame, "getUrl", 0)?.invoke(frame) as? String) ?: ""
     } catch (_: Exception) {
         ""
     }
@@ -170,12 +188,12 @@ object CodeBuddyApprover {
      */
     internal fun mainFrameName(cef: Any): String = onEdt {
         val frame = try {
-            cef.javaClass.getMethod("getMainFrame").invoke(cef)
+            cachedMethod(cef, "getMainFrame", 0)?.invoke(cef)
         } catch (_: Throwable) {
             null
         } ?: return@onEdt null
         try {
-            frame.javaClass.getMethod("getName").invoke(frame) as? String
+            cachedMethod(frame, "getName", 0)?.invoke(frame) as? String
         } catch (_: Throwable) {
             null
         }

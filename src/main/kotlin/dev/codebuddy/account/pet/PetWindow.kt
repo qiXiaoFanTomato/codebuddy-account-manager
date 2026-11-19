@@ -547,7 +547,8 @@ class PetWindow(
             }
         }
         speakQuotaDelta(delta)
-        canvas.repaint()
+        // 浮字要淡出，必须保证缓动定时器在跑（空闲时它是停着的）
+        canvas.ensureAnimating()
     }
 
     /**
@@ -817,12 +818,25 @@ class PetWindow(
 
         var data: PetData = PetData.empty()
 
+        /** 悬停 / 按压目标值：赋值即唤起缓动定时器，收敛后自动停表 */
         var hoverTarget: Double = 0.0
+            set(value) {
+                field = value
+                startAnimation()
+            }
+
         var pressTarget: Double = 0.0
+            set(value) {
+                field = value
+                startAnimation()
+            }
 
         private var hover = 0.0
         private var press = 0.0
         private var timer: Timer? = null
+
+        /** 额度浮字字体：绘制每帧复用同一个 Font，避免 30fps 下反复分配 */
+        private val deltaFont = Font(Font.MONOSPACED, Font.BOLD, JBUI.scale(15))
 
         /** 强提醒弹跳 / 光环的开始时间（0 表示未激活） */
         private var attentionAt = 0L
@@ -847,6 +861,8 @@ class PetWindow(
             if (!settings.animationsEnabled) {
                 hover = 0.0
                 press = 0.0
+                // 关闭动画后停表，桌宠只保留一张静态帧
+                stopAnimation()
             }
             repaint()
         }
@@ -861,13 +877,28 @@ class PetWindow(
                 press = 0.0
             }
             repaint()
+
+            // 悬停 / 按压已收敛，且没有浮字或强提醒需要逐帧推进时停表：
+            // 空闲的桌宠不再以 30fps 空转 EDT
+            val now = System.currentTimeMillis()
+            val attentionBusy = attentionAt != 0L && now - attentionAt < ATTENTION_MS
+            val deltaBusy = deltaText != null && now - deltaAt < DELTA_SHOW_MS
+            if (!attentionBusy) attentionAt = 0L
+            val settled = Math.abs(hoverTarget - hover) < 0.002 && Math.abs(pressTarget - press) < 0.002
+            if (settled && !attentionBusy && !deltaBusy) stopAnimation()
+        }
+
+        /** 需要逐帧推进时唤醒缓动定时器（浮字、强提醒用） */
+        fun ensureAnimating() {
+            startAnimation()
+            repaint()
         }
 
         /** 触发一次「弹跳 + 光环」；复用现有的 33ms 刷新，不额外起 Timer */
         fun startAttention() {
             if (!settings.animationsEnabled) return
             attentionAt = System.currentTimeMillis()
-            repaint()
+            ensureAnimating()
         }
 
         /** 注意力动效进度 0..1；结束返回 null 并清零 */
@@ -905,7 +936,7 @@ class PetWindow(
             val fadeStart = DELTA_SHOW_MS - 800
             val alpha = if (elapsed <= fadeStart) 1.0 else (1.0 - (elapsed - fadeStart) / 800.0).coerceIn(0.0, 1.0)
 
-            g2.font = Font(Font.MONOSPACED, Font.BOLD, JBUI.scale(15))
+            g2.font = deltaFont
             val fm = g2.fontMetrics
             val padH = JBUI.scale(8)
             val padV = JBUI.scale(4)
