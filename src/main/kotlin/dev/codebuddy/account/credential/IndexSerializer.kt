@@ -6,6 +6,8 @@ import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import dev.codebuddy.account.model.CredentialSnapshot
 
+
+
 /**
  * 账号库索引的序列化。
  *

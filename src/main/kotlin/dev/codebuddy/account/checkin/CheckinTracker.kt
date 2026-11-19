@@ -10,6 +10,8 @@ import dev.codebuddy.account.service.DayProvider
 import dev.codebuddy.account.service.MultiInstanceCoordinator
 import java.time.LocalDate
 
+
+
 /**
  * 今日签到的跨账号聚合。
  *

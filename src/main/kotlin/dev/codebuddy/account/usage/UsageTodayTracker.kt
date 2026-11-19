@@ -7,6 +7,8 @@ import dev.codebuddy.account.service.AccountLibrary
 import dev.codebuddy.account.service.DayProvider
 import java.time.LocalDate
 
+
+
 /**
  * 今日消耗聚合（跨账号），供首页看板与消耗明细入口复用。
  *

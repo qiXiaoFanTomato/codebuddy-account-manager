@@ -4,6 +4,8 @@ import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
 import dev.codebuddy.account.pet.QuickPhraseDialog
 
+
+
 /**
  * Tools 菜单入口：桌宠关掉、看板没打开时也能管理快捷短语。
  *

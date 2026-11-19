@@ -3,6 +3,8 @@ package dev.codebuddy.account.pet
 import java.awt.image.BufferedImage
 import javax.swing.Timer
 
+
+
 /**
  * 桌宠状态机：按原项目 `config.jsonc` 的动画池驱动帧序列。
  *

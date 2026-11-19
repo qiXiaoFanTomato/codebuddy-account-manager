@@ -6,6 +6,8 @@ import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.State
 import com.intellij.openapi.components.Storage
 
+
+
 /**
  * 配额告警设置。
  */

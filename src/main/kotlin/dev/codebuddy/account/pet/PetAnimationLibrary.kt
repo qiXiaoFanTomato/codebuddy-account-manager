@@ -2,8 +2,10 @@ package dev.codebuddy.account.pet
 
 import com.intellij.openapi.diagnostic.logger
 import java.awt.Rectangle
-import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
+import java.util.Locale
+
+
 
 /**
  * 原版动画素材库：把 `config.jsonc` 里的动画名映射为随包资源。

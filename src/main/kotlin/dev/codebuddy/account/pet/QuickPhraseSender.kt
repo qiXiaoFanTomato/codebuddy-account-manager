@@ -3,6 +3,8 @@ package dev.codebuddy.account.pet
 import com.google.gson.Gson
 import com.intellij.openapi.diagnostic.logger
 
+
+
 /**
  * 把快捷短语写进 CodeBuddy 聊天面板（JCEF）的输入框，可选直接发送。
  *

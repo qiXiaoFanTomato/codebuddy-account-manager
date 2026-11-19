@@ -6,12 +6,14 @@ import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.diagnostic.logger
 import dev.codebuddy.account.service.AccountLibrary
-import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
+import java.net.URI
 import java.time.Duration
 import java.util.Locale
+
+
 
 /**
  * 从 CodeBuddy 拉取可用模型目录（供模型限额规则下拉选择）。

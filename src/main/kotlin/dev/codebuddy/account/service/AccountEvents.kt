@@ -3,6 +3,8 @@ package dev.codebuddy.account.service
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.util.messages.Topic
 
+
+
 /**
  * 账号数据变更事件（application 级广播）。
  *

@@ -6,6 +6,8 @@ import com.google.gson.JsonParser
 import com.intellij.ide.util.PropertiesComponent
 import com.intellij.openapi.diagnostic.logger
 
+
+
 /**
  * 快捷短语库（仿 WorkDaddy「快捷短语」）。
  *

@@ -4,6 +4,8 @@ import dev.codebuddy.account.service.DayProvider
 import java.time.LocalDate
 import java.time.LocalDateTime
 
+
+
 /**
  * 模型积分限额（对应 CodeBuddy 官方对特定模型（如 DeepSeek）的积分上限规则）。
  *

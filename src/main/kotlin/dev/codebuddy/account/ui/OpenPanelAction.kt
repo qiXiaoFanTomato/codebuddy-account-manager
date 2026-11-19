@@ -4,6 +4,8 @@ import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.wm.ToolWindowManager
 
+
+
 /**
  * Tools 菜单入口：打开账号管理面板。
  */

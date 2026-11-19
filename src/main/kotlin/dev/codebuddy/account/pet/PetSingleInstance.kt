@@ -11,6 +11,8 @@ import java.nio.file.Path
 import java.nio.file.Paths
 import java.nio.file.StandardOpenOption
 
+
+
 /**
  * 跨进程单例：多个 IDE 实例同时打开时，全机只允许一个桌宠。
  *
