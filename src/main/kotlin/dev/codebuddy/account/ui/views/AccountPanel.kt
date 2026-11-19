@@ -142,11 +142,8 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
 
     private lateinit var viewTabs: SegmentedTabs
 
-    /** 抽屉面工具栏容器：视图切换后按视图显隐动作并重新布局 */
+    /** 抽屉面工具栏容器：只在账号视图出现，看板 / 额度明细整条隐藏 */
     private lateinit var toolDrawer: JComponent
-
-    /** 账号视图专属的工具栏控件（切换 / 改名 / 删除 / 回滚 / 筛选 / 排序 / 导出导入 / 勾选） */
-    private val listOnlyControls = mutableListOf<JComponent>()
 
     private lateinit var selectAllBox: JCheckBox
     private lateinit var selectionHint: JLabel
@@ -323,9 +320,8 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
      * 第二行是筛选、排序、导出导入与设置，右侧是勾选状态与「已选中」，与
      * design/plugin-ui.html 的 `.toolbar` 一一对应。
      *
-     * 工具栏常驻，但只显示当前视图用得上的动作：账号专属动作（切换 / 改名 / 删除 /
-     * 回滚 / 筛选 / 排序 / 导出导入 / 勾选批量）在看板与额度明细里隐藏，
-     * 避免在看板上点了没有对应对象。
+     * 工具栏只在账号视图出现：看板与额度明细整条隐藏，避免在这些页面上出现
+     * 依赖勾选 / 选中账号的入口。
      */
     private fun buildToolDrawer(): JComponent {
         val drawer = JPanel()
@@ -349,21 +345,21 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
         row.add(toolButton("添加账号", JellyButtonVariant.PRIMARY) { doAddAccount() })
         row.add(toolButton("从 auth 目录导入") { doImport() })
         row.add(toolButton("历史对话") { doOpenHistory() })
-        row.add(toolButton("历史共享到当前", listOnly = true, tooltip = "把全部账号的历史会话合并到当前激活账号") {
+        row.add(toolButton("历史共享到当前", tooltip = "把全部账号的历史会话合并到当前激活账号") {
             doSyncHistoryToCurrent()
         })
         row.add(
-            toolButton("批量同步历史", listOnly = true, tooltip = "把全部账号的历史会话互相合并到每一个账号") {
+            toolButton("批量同步历史", tooltip = "把全部账号的历史会话互相合并到每一个账号") {
                 doSyncAllAccounts()
             }
         )
-        row.add(toolButton("切换", listOnly = true) { doSwitch() })
+        row.add(toolButton("切换") { doSwitch() })
         row.add(toolButton("智能调度") { doSmartSwitch() })
         row.add(toolButton("刷新额度") { doRefreshQuota() })
-        row.add(toolButton("额度视图", listOnly = true) { setView(VIEW_QUOTA) })
-        row.add(toolButton("重命名", listOnly = true) { doEditAlias() })
-        row.add(toolButton("删除", danger = true, listOnly = true) { doDelete() })
-        row.add(toolButton("回滚", listOnly = true) { doRollback() })
+        row.add(toolButton("额度视图") { setView(VIEW_QUOTA) })
+        row.add(toolButton("重命名") { doEditAlias() })
+        row.add(toolButton("删除", danger = true) { doDelete() })
+        row.add(toolButton("回滚") { doRollback() })
         return row
     }
 
@@ -376,12 +372,12 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
         )
 
         val left = JPanel(FlowWrapLayout(JBUI.scale(6), JBUI.scale(6))).apply { isOpaque = false }
-        left.add(toolbarLabel("筛选:").listOnly())
-        left.add(buildFilterField().listOnly())
-        left.add(toolbarLabel("排序:").listOnly())
-        left.add(buildSortCombo().listOnly())
-        left.add(toolButton("导出", listOnly = true) { doExport() })
-        left.add(toolButton("导入库", listOnly = true) { doImportLibrary() })
+        left.add(toolbarLabel("筛选:"))
+        left.add(buildFilterField())
+        left.add(toolbarLabel("排序:"))
+        left.add(buildSortCombo())
+        left.add(toolButton("导出") { doExport() })
+        left.add(toolButton("导入库") { doImportLibrary() })
         left.add(toolButton("设置") { doOpenSettings() })
 
         val right = JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(6), 0)).apply { isOpaque = false }
@@ -401,9 +397,9 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
         bulkButton = AccountUiKit.button("批量操作", JellyButtonVariant.SECONDARY, null, "对勾选的账号执行批量操作") {
             showBulkMenu(bulkButton)
         }.apply { isEnabled = false }
-        right.add(selectAllBox.listOnly())
-        right.add(selectionHint.listOnly())
-        right.add(bulkButton.listOnly())
+        right.add(selectAllBox)
+        right.add(selectionHint)
+        right.add(bulkButton)
 
         // 左侧筛选区放 CENTER：FlowWrapLayout 需要拿到实际可用宽度才会折行
         row.add(left, BorderLayout.CENTER)
@@ -416,19 +412,11 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
         text: String,
         variant: JellyButtonVariant = JellyButtonVariant.SECONDARY,
         danger: Boolean = false,
-        listOnly: Boolean = false,
         tooltip: String? = null,
         onClick: () -> Unit,
     ): JellyButton = AccountUiKit.button(text, variant, null, tooltip ?: text, onClick).apply {
         this.danger = danger
         actionButtons[text] = this
-        if (listOnly) this.listOnly()
-    }
-
-    /** 标记该控件只在账号视图出现（看板 / 额度明细里隐藏） */
-    private fun <T : JComponent> T.listOnly(): T {
-        listOnlyControls += this
-        return this
     }
 
     /** 筛选框：等宽小字 + 1px 铅线，对应 `.tw-input` */
@@ -936,16 +924,14 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
         pagerPanel.isVisible = viewMode == VIEW_LIST
     }
 
-    /**
-     * 工具栏按视图收敛：账号专属动作（切换 / 改名 / 删除 / 回滚 / 筛选 / 排序 /
-     * 导出导入 / 勾选批量）只在账号视图出现，看板与额度明细只保留全局动作。
-     */
+    /** 工具栏整条只在账号视图出现，看板 / 额度明细不显示 */
     private fun applyToolbarScope() {
         if (!::toolDrawer.isInitialized) return
         val accountsView = viewMode == VIEW_LIST
-        listOnlyControls.forEach { it.isVisible = accountsView }
-        toolDrawer.revalidate()
-        toolDrawer.repaint()
+        if (toolDrawer.isVisible == accountsView) return
+        toolDrawer.isVisible = accountsView
+        // 收起 / 展开会改变标题栏下方的可用高度，需要让外层重新布局
+        toolDrawer.parent?.revalidate()
     }
 
     /** 底部概览：账号数 / token 过期数 / 当前账号 / 额度最高账号 */
