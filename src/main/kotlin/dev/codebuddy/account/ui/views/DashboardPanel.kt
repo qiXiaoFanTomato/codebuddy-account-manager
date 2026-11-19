@@ -20,6 +20,7 @@ import dev.codebuddy.account.pet.PetApprovalHistory
 import dev.codebuddy.account.pet.PetNotifier
 import dev.codebuddy.account.pet.PetService
 import dev.codebuddy.account.pet.PetSettings
+import dev.codebuddy.account.pet.PetSettingsDialog
 import dev.codebuddy.account.quota.QuotaPackage
 import dev.codebuddy.account.quota.QuotaSummary
 import dev.codebuddy.account.quota.QuotaTime
@@ -141,6 +142,14 @@ class DashboardPanel(
     /** 正在播放的布局位移动画；全量刷新前要先停掉，避免写到已销毁的卡片实例上 */
     private var layoutTween: Tween? = null
 
+    /**
+     * 数据回包后的重建去抖。
+     *
+     * 看板一次刷新会向 6 个 tracker 登记回调，它们几乎同时回包；
+     * 不去抖时每个回包都整页重建一遍（17 张卡），滚动位置与 hover 状态全丢。
+     */
+    private var updateDebounce: Timer? = null
+
     // 上一次刷新用的数据快照：换尺寸时只重建那一张卡的内容，不触发全量刷新
     private var lastSaved: List<CredentialSnapshot> = emptyList()
     private var lastActive: CredentialSnapshot? = null
@@ -228,24 +237,38 @@ class DashboardPanel(
         content.revalidate()
         content.repaint()
 
-        // 今日消耗 / 今日对话 / 今日签到：只在缓存过期时后台刷新，回来后再重建一次
-        UsageTodayTracker.ensureFresh { update() }
-        HistoryActivity.ensureFresh { update() }
+        // 今日消耗 / 今日对话 / 今日签到：只在缓存过期时后台刷新，回来后合并重建一次
+        UsageTodayTracker.ensureFresh { scheduleUpdate() }
+        HistoryActivity.ensureFresh { scheduleUpdate() }
         if (settings.modelQuotaEnabled) {
-            ModelQuotaTracker.ensureFresh { update() }
+            ModelQuotaTracker.ensureFresh { scheduleUpdate() }
         }
         if (settings.checkinEnabled) {
-            CheckinTracker.ensureFresh { update() }
+            CheckinTracker.ensureFresh { scheduleUpdate() }
         }
         if (settings.growthEnabled) {
-            GrowthTracker.ensureFresh { update() }
+            GrowthTracker.ensureFresh { scheduleUpdate() }
             // 成长计划详情（活跃 / 连登 / 旅行）独立缓存，不跟任务一起查
-            GrowthTracker.ensureFreshDetails { update() }
+            GrowthTracker.ensureFreshDetails { scheduleUpdate() }
         }
         loadActivityIfNeeded()
     }
 
-    /** 对话活跃：读盘重，后台线程读一次缓存，回来再重建卡片 */
+    /**
+     * 数据回包后的重建入口：短时间去抖，多个 tracker 同时回来只重建一次。
+     *
+     * 与 [update] 的区别：`update()` 是面板主动刷新（立即重建），
+     * 这里是异步数据回包（合并重建），避免一次刷新触发 6~7 次全量重建。
+     */
+    private fun scheduleUpdate() {
+        updateDebounce?.stop()
+        updateDebounce = Timer(UPDATE_DEBOUNCE_MS) { update() }.apply {
+            isRepeats = false
+            start()
+        }
+    }
+
+    /** 对话活跃：读盘重，后台线程读一次缓存，回来再合并重建卡片 */
     private fun loadActivityIfNeeded(force: Boolean = false) {
         if (activityLoading) return
         if (!force && activityLoaded) return
@@ -256,7 +279,7 @@ class DashboardPanel(
                 activityLoading = false
                 activityLoaded = true
                 activityItems = items
-                update()
+                scheduleUpdate()
             }
         }
     }
@@ -293,6 +316,7 @@ class DashboardPanel(
         DashboardCardId.GROWTH_PLAN -> newCard(id) { card -> fillGrowthPlanCard(card) }
         DashboardCardId.GROWTH -> newCard(id) { card -> fillGrowthCard(card) }
         DashboardCardId.ASSISTANT -> newCard(id) { card -> fillAssistantCard(card) }
+        DashboardCardId.PET -> newCard(id) { card -> fillPetCard(card) }
         DashboardCardId.EVENTS -> newCard(id) { card -> fillEventsCard(card) }
         DashboardCardId.ACTIVITY -> newCard(id) { card -> fillActivityCard(card) }
         DashboardCardId.SCHEDULER -> newCard(id) { card -> fillSchedulerCard(card) }
@@ -515,7 +539,7 @@ class DashboardPanel(
     }
 
     /**
-     * 看板标题行右侧：「＋ 添加卡片」（仅编辑态）+「管理卡片 / 完成编辑」。
+     * 看板标题行右侧：「＋ 添加卡片」（仅编辑态）+「管理卡片 / 完成编辑」+「设置」。
      *
      * 由外部（主面板的 `.view-head`）挂载，看板自身不再单独占一行工具条，
      * 与 design/plugin-ui.html 的 `.view-head` 一行标题 + 右侧操作保持一致。
@@ -543,6 +567,15 @@ class DashboardPanel(
         ) { toggleEditMode() }
         editButton = manage
         actions.add(manage)
+
+        actions.add(
+            AccountUiKit.button(
+                "设置",
+                JellyButtonVariant.SECONDARY,
+                null,
+                "打开插件设置",
+            ) { onOpenSettings() }
+        )
         return actions
     }
 
@@ -1263,6 +1296,110 @@ class DashboardPanel(
     }
 
     // ---------------------------------------------------------------
+    // 2.57.5 桌面宠物：启动状态
+    // ---------------------------------------------------------------
+
+    /**
+     * 桌面宠物：只读展示桌宠的启动状态（总开关 / 单例占用 / 窗口 / 确认通道）。
+     *
+     * 状态全部取自 [PetService.status] 的即时快照，不在这里另存缓存：
+     * 多开 IDE 时的所有权、窗口是否建好都可能在两次刷新之间变化。
+     */
+    private fun fillPetCard(card: DashboardCard) {
+        val pet = PetSettings.getInstance()
+        card.actions.addAction(
+            if (pet.enabled) "隐藏桌宠" else "显示桌宠",
+            if (pet.enabled) "释放全机占用，其他 IDE 实例可接管" else "启动桌宠并占用全机唯一实例",
+            primary = true,
+        ) {
+            PetService.getInstance().setEnabled(!pet.enabled)
+            update()
+        }
+        card.actions.addAction("桌宠设置", "打开桌宠外观与交互设置") {
+            PetSettingsDialog.show {
+                PetService.getInstance().applySettings()
+                update()
+            }
+        }
+        card.actions.addAction("刷新", "重新读取桌宠运行状态", ghost = true) { update() }
+
+        val st = PetService.getInstance().status()
+        val (headline, tone, hint) = when {
+            !st.enabled -> Triple("已关闭", AccountUiColors.textMuted, "桌宠总开关已关，点「显示桌宠」重新启动。")
+            st.windowShowing -> Triple("运行中", AccountUiColors.success, null)
+            st.owner -> Triple("正在启动", AccountUiColors.warning, "已拿到全机唯一所有权，桌面窗口还在创建。")
+            st.started -> Triple(
+                "其他实例持有",
+                AccountUiColors.warning,
+                "全机只允许一只桌宠，另一个 IDE 实例正在显示它；本实例每 3 秒尝试接管。",
+            )
+            else -> Triple(
+                "未启动",
+                AccountUiColors.textMuted,
+                "本进程还没启动桌宠（无图形界面或启动过早时会出现），可在设置里重新开启。",
+            )
+        }
+
+        card.body.add(
+            AccountUiKit.cardHeadline(
+                value = headline,
+                unit = "桌宠启动状态",
+                tone = tone,
+                trailing = AccountUiKit.statusTag(
+                    if (st.owner) "本实例持有" else "未持有",
+                    if (st.owner) AccountUiColors.success else AccountUiColors.textMuted,
+                ),
+            )
+        )
+        if (hint != null) {
+            card.body.add(Box.createVerticalStrut(JBUI.scale(CardMetrics.rowGap)))
+            card.body.add(CardNotice(hint, tone))
+        }
+        card.body.add(Box.createVerticalStrut(JBUI.scale(CardMetrics.blockGap)))
+
+        val channel = when (pet.cbApprovalMode) {
+            CbApprovalMode.NONE -> "不干预（只提醒）"
+            CbApprovalMode.PAGE -> "页面代点"
+            CbApprovalMode.HOOK -> if (st.hookReady) "桌宠弹窗（已就绪）" else "桌宠弹窗（未就绪）"
+        }
+        val channelTone = when {
+            pet.cbApprovalMode == CbApprovalMode.HOOK && !st.hookReady -> AccountUiColors.warning
+            pet.cbApprovalMode == CbApprovalMode.NONE -> AccountUiColors.textMuted
+            else -> AccountUiColors.textSecondary
+        }
+
+        val rows = mutableListOf<JComponent>()
+        fun kv(label: String, value: String, valueColor: Color = AccountUiColors.textSecondary, tip: String? = null) {
+            val line = AccountUiKit.valueText(value, valueColor, mono = false)
+            if (tip != null) line.toolTipText = tip
+            rows += AccountUiKit.fieldLine(label, line)
+        }
+
+        kv("显示开关", if (st.enabled) "已开" else "已关", if (st.enabled) AccountUiColors.textSecondary else AccountUiColors.textMuted)
+        kv(
+            "单例占用",
+            when {
+                st.owner -> "本实例持有"
+                st.enabled && st.started -> "其他实例持有"
+                else -> "已释放"
+            },
+            if (st.owner) AccountUiColors.success else AccountUiColors.textMuted,
+            "全机唯一占用由 pet.lock 文件锁仲裁，进程异常退出时由系统释放",
+        )
+        kv("桌面窗口", if (st.windowShowing) "显示中" else "未显示")
+        kv("确认通道", channel, channelTone, "在「桌宠设置」里调整处理方式与普通 / 危险命令策略")
+        kv(
+            "页面观察",
+            if (CbWebObserver.isConnected()) "已连接" else "未连接",
+            if (CbWebObserver.isConnected()) AccountUiColors.success else AccountUiColors.warning,
+        )
+        val current = PetService.getInstance().currentData()
+        kv("当前账号", current.accountName.ifBlank { "未检测到" }, AccountUiColors.textMuted)
+
+        card.body.add(AccountUiKit.cardList(rows, card.listRows, overflowText = { "另有 $it 项" }))
+    }
+
+    // ---------------------------------------------------------------
     // 2.58 事件记录
     // ---------------------------------------------------------------
 
@@ -1317,7 +1454,7 @@ class DashboardPanel(
         val time = APPROVAL_TIME.format(Instant.ofEpochMilli(e.at))
         val who = listOf(e.project, e.title).filter { it.isNotBlank() }
             .joinToString(" · ").ifBlank { "未知项目" }
-        val what = e.what.replace(Regex("\\s+"), " ").trim()
+        val what = e.what.replace(WHITESPACE, " ").trim()
         val kind = if (e.auto) "代点" else "待确认"
         val tone = when (e.result) {
             "ok" -> AccountUiColors.success
@@ -2085,5 +2222,11 @@ class DashboardPanel(
 
         /** 对话活跃一次读取的条数（渲染时再按卡片容量裁剪） */
         const val ACTIVITY_ROWS = 16
+
+        /** 数据回包后的重建去抖窗口：把同批回包合并成一次重建 */
+        const val UPDATE_DEBOUNCE_MS = 120
+
+        /** 事件文案清洗：正则只编译一次 */
+        val WHITESPACE = Regex("\\s+")
     }
 }

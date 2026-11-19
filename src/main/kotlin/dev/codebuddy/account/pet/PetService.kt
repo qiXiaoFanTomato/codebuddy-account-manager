@@ -77,6 +77,24 @@ data class PetData(
 }
 
 /**
+ * 桌宠启动状态的只读快照（供看板等只读界面展示）。
+ *
+ * 全部为即时值，不做缓存：多开 IDE 时的所有权、窗口是否建好都可能在两次读取之间变化。
+ */
+data class PetStatus(
+    /** 设置里的「显示桌面宠物」总开关 */
+    val enabled: Boolean,
+    /** 本进程已按设置启动（轮询与事件订阅已接上） */
+    val started: Boolean,
+    /** 本进程持有全机唯一的桌宠所有权 */
+    val owner: Boolean,
+    /** 桌面窗口已创建 */
+    val windowShowing: Boolean,
+    /** hook 确认通道的回环端口已就绪 */
+    val hookReady: Boolean,
+)
+
+/**
  * 桌宠生命周期服务：单例仲裁、窗口开关、数据轮询与即时刷新。
  *
  * 数据来源全部复用现有能力：
@@ -462,6 +480,15 @@ class PetService : Disposable {
 
     /** 最近一次读取到的展示数据（供窗口与气泡复用） */
     fun currentData(): PetData = data
+
+    /** 启动状态快照：设置开关 + 本进程启动 / 所有权 / 窗口 / hook 通道 */
+    fun status(): PetStatus = PetStatus(
+        enabled = PetSettings.getInstance().enabled,
+        started = started.get(),
+        owner = instance.isOwner,
+        windowShowing = window != null,
+        hookReady = hookServer?.isRunning == true,
+    )
 
     // ---------------------------------------------------------------
     // 单例仲裁

@@ -363,9 +363,13 @@ class AccountSettingsConfigurable : Configurable {
         usageRefreshTimer?.stop()
         var ticks = 0
         usageRefreshTimer = javax.swing.Timer(3000) { e ->
-            modelQuotaRulesEditor.refreshUsage()
+            val timer = e.source as javax.swing.Timer
             ticks++
-            if (ticks >= 10) (e.source as javax.swing.Timer).stop()
+            // 统计已落地（loading=false）时只刷一次结果列就停表，
+            // 不再固定空跑 10 次整表刷新
+            val loading = dev.codebuddy.account.usage.ModelQuotaTracker.state().loading
+            modelQuotaRulesEditor.refreshUsage()
+            if (!loading || ticks >= 10) timer.stop()
         }.also {
             it.isRepeats = true
             it.start()

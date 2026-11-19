@@ -92,6 +92,7 @@ enum class DashboardCardId(val title: String, val priority: CardPriority) {
     RANKING("额度排行", CardPriority.P1),
     CHECKIN("今日签到", CardPriority.P1),
     USAGE("消耗明细", CardPriority.P1),
+    PET("桌面宠物", CardPriority.P1),
     SCHEDULER("智能调度", CardPriority.P2),
     GROWTH_PLAN("成长计划与活跃", CardPriority.P2),
     GROWTH("成长中心", CardPriority.P2),

@@ -97,6 +97,9 @@ class GrowthCenterDialog(private val project: Project?) : DialogWrapper(project,
 
     /** 待抽奖次数：接口只提供 chances，多账号时合计；null 表示尚未查询 */
     private var lotteryChances: Int? = null
+
+    /** 数据回包后的重建去抖定时器 */
+    private var renderDebounce: javax.swing.Timer? = null
     private var lotteryLoading = false
 
     /** 首次进入的「今天可以做什么」提示：本次会话点过「知道了」后不再显示 */
@@ -132,10 +135,19 @@ class GrowthCenterDialog(private val project: Project?) : DialogWrapper(project,
 
     private fun reload() {
         render()
-        GrowthTracker.ensureFresh { onEdt { render() } }
-        GrowthTracker.ensureFreshDetails { onEdt { render() } }
-        CheckinTracker.ensureFresh { onEdt { render() } }
+        GrowthTracker.ensureFresh { onEdt { scheduleRender() } }
+        GrowthTracker.ensureFreshDetails { onEdt { scheduleRender() } }
+        CheckinTracker.ensureFresh { onEdt { scheduleRender() } }
         loadLottery()
+    }
+
+    /** 数据回包去抖：三个 tracker 几乎同时回来时只重建一次 */
+    private fun scheduleRender() {
+        renderDebounce?.stop()
+        renderDebounce = javax.swing.Timer(RENDER_DEBOUNCE_MS) { render() }.apply {
+            isRepeats = false
+            start()
+        }
     }
 
     private fun render() {
@@ -879,6 +891,9 @@ class GrowthCenterDialog(private val project: Project?) : DialogWrapper(project,
     private companion object {
         const val ALL_ACCOUNTS = "__all__"
         const val ALL_ACCOUNTS_LABEL = "全部账号"
+
+        /** 数据回包去抖窗口 */
+        const val RENDER_DEBOUNCE_MS = 120
     }
 
     // ---------------------------------------------------------------
