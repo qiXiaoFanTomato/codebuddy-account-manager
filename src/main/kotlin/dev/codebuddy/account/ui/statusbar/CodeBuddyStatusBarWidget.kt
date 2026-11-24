@@ -15,6 +15,8 @@ import dev.codebuddy.account.model.CredentialSnapshot
 import dev.codebuddy.account.pet.CbEventCenter
 import dev.codebuddy.account.pet.CbWebObserver
 import dev.codebuddy.account.pet.CodeBuddyWatcher
+import dev.codebuddy.account.pet.PetSettings
+import dev.codebuddy.account.pet.SilentMode
 import dev.codebuddy.account.quota.QuotaDisplayMode
 import dev.codebuddy.account.quota.QuotaSummary
 import dev.codebuddy.account.quota.QuotaTime
@@ -145,19 +147,39 @@ class CodeBuddyStatusBarWidget(private val project: Project) :
     override fun getAlignment(): Float = Component.CENTER_ALIGNMENT
 
     override fun getText(): String {
+        // 静默标识独立于账号 / 速度开关：它是安全状态，关掉读数也必须能看见
+        val silent = silentPrefix()
         // 兜底：若动态移除 widget 失败（内部 API 变动），至少让内容为空；
         // 只关掉额度展示时仍需留出速度读数，所以两个开关都关才彻底清空
         val settings = AccountSettings.getInstance()
-        if (!settings.showStatusBarWidget && !settings.showStatusBarThroughput) return ""
+        if (!settings.showStatusBarWidget && !settings.showStatusBarThroughput) return silent
         if (renderedText.isEmpty()) {
             // 尚未完成首次加载时同步取一次，保证状态栏不会空白
             rolling.offer(computeDisplay(), animate = false)
         }
-        return renderedText
+        return silent + renderedText
+    }
+
+    /**
+     * 静默运行的常驻标识。
+     *
+     * 状态栏文本的颜色由 LAF 统一决定，无法单独染色，所以用「符号 + 文案」做双通道：
+     * `●` 表示当前处于非常规状态，`静默 Nm` 说明还剩多久。颜色留给 tooltip 与设置页。
+     */
+    private fun silentPrefix(): String {
+        val settings = try {
+            PetSettings.getInstance()
+        } catch (_: Throwable) {
+            return ""
+        }
+        if (!SilentMode.isActive(settings)) return ""
+        val minutes = (SilentMode.remainingMillis(settings) / 60_000L).coerceAtLeast(0L)
+        return "\u25CF 静默 ${minutes}m \u00B7 "
     }
 
     override fun getTooltipText(): String {
         val sb = StringBuilder()
+        appendSilentTooltip(sb)
         val snapshot = snapshot()
         if (snapshot == null) {
             sb.append("CodeBuddy 未登录\n")
@@ -214,6 +236,21 @@ class CodeBuddyStatusBarWidget(private val project: Project) :
         }
         sb.append("点击打开账号管理器")
         return "<html>${sb.toString().trimEnd().replace("\n", "<br/>")}</html>"
+    }
+
+    /** 状态栏静默标识的详细说明；未开启时什么也不加 */
+    private fun appendSilentTooltip(sb: StringBuilder) {
+        val settings = try {
+            PetSettings.getInstance()
+        } catch (_: Throwable) {
+            return
+        }
+        if (!SilentMode.isActive(settings)) return
+        val minutes = (SilentMode.remainingMillis(settings) / 60_000L).coerceAtLeast(0L)
+        val scope = if (settings.cbSilentAllowRedline) "含凭证与扣费" else "凭证与扣费仍要人工"
+        sb.append("<font color='#A32D2D'><b>静默运行中</b>：剩 $minutes 分钟，")
+        sb.append("已自动放行 ${SilentMode.approvedCount()} 次，$scope。</font>\n")
+        sb.append("在「桌宠设置 → 静默运行」或动作「关闭静默运行」里可以立刻关掉。\n")
     }
 
     override fun getClickConsumer(): Consumer<MouseEvent>? = Consumer {

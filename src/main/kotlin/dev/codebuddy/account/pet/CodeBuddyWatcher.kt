@@ -93,6 +93,9 @@ class CodeBuddyWatcher : Disposable {
         var approveVerified: Boolean = false
     }
 
+    /** 一轮「宿主在等主人」的状态记录，状态对账兜底用 */
+    private class WaitingAsk(val project: ProjectRef, val since: Long)
+
     private val executor: ScheduledExecutorService =
         Executors.newSingleThreadScheduledExecutor { r ->
             Thread(r, "codebuddy-log-watch").apply { isDaemon = true }
@@ -127,6 +130,16 @@ class CodeBuddyWatcher : Disposable {
     /** 项目 -> (最近一次实际调用的模型名, 时间)，用于补全限流与吞吐文案 */
     private val recentModel = HashMap<String, Pair<String, Long>>()
 
+    /**
+     * 宿主会话状态机：key = 会话 id（拿不到时用 project.key），值 = 这一轮等待。
+     *
+     * 与所有确认文案无关，是**状态对账**兜底唯一的输入；离开等待即移除。
+     */
+    private val waitingSince = HashMap<String, WaitingAsk>()
+
+    /** 已经补过兜底提醒的那一轮等待（key 同上，值 = 该轮起始时刻），避免重复补 */
+    private val fallbackFired = HashMap<String, Long>()
+
     /** 已处理过的事件键（callId / requestId），带容量上限的 LRU */
     private val handled = object : LinkedHashMap<String, Boolean>(256, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Boolean>?): Boolean =
@@ -160,6 +173,8 @@ class CodeBuddyWatcher : Disposable {
             dangerByProject.clear()
             autoAllowed.clear()
             recentModel.clear()
+            waitingSince.clear()
+            fallbackFired.clear()
         }
         task = executor.scheduleWithFixedDelay(
             { tickQuietly() },
@@ -182,6 +197,8 @@ class CodeBuddyWatcher : Disposable {
             dangerByProject.clear()
             autoAllowed.clear()
             recentModel.clear()
+            waitingSince.clear()
+            fallbackFired.clear()
         }
     }
 
@@ -218,10 +235,21 @@ class CodeBuddyWatcher : Disposable {
             (settings.cbProgressNoticeEnabled || settings.cbAutoContinueEnabled)
         // 三个通道互斥：桌宠弹窗接管时，页面代点与日志补刀一律让位，避免同一个确认被处理两次
         // 通道按可用性让位：宿主不执行 hook 时，选定「桌宠弹窗」也由页面代点顶上
-        val pageActive = ApprovalChannel.effective(settings) == CbApprovalMode.PAGE
+        val effective = ApprovalChannel.effective(settings)
+        val pageActive = effective == CbApprovalMode.PAGE
+        // 静默运行：页面脚本已经接管代点，日志通道不要再补一张「在等主人点头」的卡。
+        // 口径与 [CbWebObserver] 一致：「不干预」下不算静默生效
+        val silent = SilentMode.isActive(settings) && settings.cbApprovalMode != CbApprovalMode.NONE
+        // HOOK 模式下的页面兜底代点：宿主 Auto-run 关闭时 hook 返回 allow 也拦不住
+        // 「每次询问」的确认卡（source=user_setting_ask），普通确认改由页面直接点「运行」。
+        // 口径与 [CbWebObserver] 的 hookFallback 一致，这里据此认定「已经有人点」。
+        val hookFallback = effective == CbApprovalMode.HOOK &&
+            settings.cbApprovalNormal == CbNormalPolicy.ALLOW && CbWebObserver.isConnected()
         // 页面「直接放行」已经接管时，超时补刀不再重复点同一个按钮
-        val noDisturbActive =
-            pageActive && settings.cbApprovalNormal == CbNormalPolicy.ALLOW && CbWebObserver.isConnected()
+        val noDisturbActive = silent || (
+            (pageActive || hookFallback) && settings.cbApprovalNormal == CbNormalPolicy.ALLOW &&
+                CbWebObserver.isConnected()
+            )
         val autoApproveOn = pageActive && settings.cbApprovalNormal == CbNormalPolicy.ASK_THEN_ALLOW
         // 页面已经直接点过时不再超时补刀，避免同一个确认被处理两次；
         // 危险命令「超时放行」与「自动放行」在页面通道都表现为到点代点，只有「一直等人工」不补刀
@@ -247,8 +275,46 @@ class CodeBuddyWatcher : Disposable {
         }
         if (approvalActive) {
             processAsks(autoApproveOn, autoApproveDangerOn, autoApproveMs)
+            reconcileWaiting()
         } else {
             clearAsks()
+        }
+    }
+
+    /**
+     * 状态对账兜底：宿主已进入 `waiting_user_input` 且超过宽限期，但没有任何通道提示过。
+     *
+     * 覆盖三类漏提示：宿主改确认文案导致 [ASK_HINT] 失配、并行调用把 pending 清掉、
+     * 桌宠重启后在回溯时效之外错过事件。只提醒不代点，提示后本轮等待不再重复补。
+     */
+    private fun reconcileWaiting() {
+        val now = System.currentTimeMillis()
+        val due = ArrayList<WaitingAsk>()
+        synchronized(states) {
+            val it = waitingSince.entries.iterator()
+            while (it.hasNext()) {
+                val e = it.next()
+                val ask = e.value
+                if (now - ask.since > WAIT_FALLBACK_TTL_MS) {
+                    // 宿主状态残留（异常退出没打离开行）：放弃这一轮，别一直补提醒
+                    it.remove()
+                    continue
+                }
+                if (now - ask.since < WAIT_FALLBACK_DELAY_MS) continue
+                val fired = fallbackFired[e.key]
+                if (fired != null && fired == ask.since) continue
+                // 正常通道（hook 气泡 / 页面 / 日志）已经提示过这一轮：不补
+                if (CbEventCenter.confirmNoticedAt(ask.project.key) >= ask.since) continue
+                fallbackFired[e.key] = ask.since
+                due.add(ask)
+            }
+        }
+        for (ask in due) {
+            try {
+                CbEventCenter.onLogWaitingFallback(ask.project.name, ask.project.workspace, ask.since)
+            } catch (_: Exception) {
+                // 兜底提醒失败不影响主流程
+            }
         }
     }
 
@@ -330,8 +396,10 @@ class CodeBuddyWatcher : Disposable {
         // 不再截断行数：一次写入超过上限时，中间的行也不能丢
         for (line in text.lineSequence()) {
             if (line.isBlank()) continue
-            // 回溯段只补「刚刚发生」的事件，旧行直接丢弃，避免重启后重播几分钟前的提示
-            if (backfill && isStaleForBackfill(line)) continue
+            // 回溯段只补「刚刚发生」的事件，旧行直接丢弃，避免重启后重播几分钟前的提示；
+            // 宿主会话状态行例外：它表达的是「现在还在等」而不是一条旧事件，
+            // 重启后按最后状态对账（进入 / 离开成对出现，不会重播多条）
+            if (backfill && isStaleForBackfill(line) && !isStateLine(line)) continue
             try {
                 handleLine(project, line, approveOn, progressOn, autoAllowNotice)
             } catch (_: Exception) {
@@ -388,6 +456,25 @@ class CodeBuddyWatcher : Disposable {
             CbEventCenter.touchRuntime(project.key, projectName)
         }
 
+        // 宿主会话状态机：与确认文案完全无关的「在等人」事实，状态对账兜底只认它
+        if (SESSION_WAIT_EXIT.containsMatchIn(line)) {
+            synchronized(states) {
+                val key = waitKeyOf(line, project)
+                waitingSince.remove(key)
+                fallbackFired.remove(key)
+            }
+            // 离开等待：兜底卡跟着收；危险命令 30 秒窗口内不动，交给执行行或主人自己点
+            if (dangerText(projectName) == null) PetService.getInstance().dismissManualNotice()
+        } else if (SESSION_WAIT_ENTER.containsMatchIn(line) || SESSION_WAIT_STAY.containsMatchIn(line)) {
+            CbEventCenter.noteRuntime(project.key, projectName, CbEventCenter.Phase.WAITING)
+            synchronized(states) {
+                // 后到的「仍在等」不重置起算时刻，否则兜底永远等不到宽限期跑满
+                val key = waitKeyOf(line, project)
+                if (waitingSince[key]?.project?.key == project.key) return@synchronized
+                waitingSince[key] = WaitingAsk(project, now)
+            }
+        }
+
         // 一步结束：输出 token 与步耗时 -> 最近一步的吞吐（看板展示，不弹提示）
         if (line.contains("Step execution metrics")) {
             // 有新的步完成说明这一轮还在跑：状态栏显示「思考中」而不是上一步的旧速度
@@ -403,6 +490,14 @@ class CodeBuddyWatcher : Disposable {
 
         // 宿主自己放行（needConfirm=false）：先记一拍，紧随其后的命令原文用来告诉主人刚跑过什么
         if (AUTO_ALLOW_HINT.containsMatchIn(line)) {
+            // 撤销可能先到的「等待确认」pending：这一行才是宿主的最终裁决，
+            // 不撤销的话 2.5 秒宽限一到照样弹「等主人点确认」，可屏幕上根本没有确认框
+            synchronized(states) {
+                pending.entries.removeIf {
+                    it.value.project == projectName && now - it.value.at <= AUTO_ALLOW_CANCEL_MS
+                }
+                orphanAsks.remove(projectName)
+            }
             if (autoAllowNotice) {
                 val tag = tagOf(line)
                 synchronized(states) { autoAllowed[projectName] = now to tag }
@@ -412,7 +507,15 @@ class CodeBuddyWatcher : Disposable {
 
         // 默认放行的终端命令原文：`命令: "<命令>", isWatchCommand: false`
         // 同一行还会派生出「执行普通命令: ...」，只认前一条，避免一次调用提示两次
-        if (autoAllowNotice && line.contains("命令: \"") && !line.contains("执行普通命令")) {
+        val commandLine = line.contains("命令: \"") && !line.contains("执行普通命令")
+        // 危险命令真正开始执行了：收起常驻提醒卡，别让主人以为它还卡在「运行 / 跳过 / 拒绝」里
+        if (commandLine) {
+            val command = COMMAND_TEXT.find(line)?.groupValues?.get(1)
+            if (!command.isNullOrBlank() && clearDangerIfMatches(projectName, command)) {
+                PetService.getInstance().dismissManualNotice()
+            }
+        }
+        if (autoAllowNotice && commandLine) {
             val tag = tagOf(line)
             val allowed = synchronized(states) {
                 val entry = autoAllowed[projectName]
@@ -451,21 +554,18 @@ class CodeBuddyWatcher : Disposable {
             return
         }
 
-        // 危险命令原文：补充提示正文，并留一条兜底待提示（弹窗日志可能不写「等待确认」）
+        // 危险命令原文：宿主 [SafetyRule] 检出即已把这条命令拦住，不存在「等一拍看是不是自动确认」，
+        // 所以**检出即提示**。以前先塞进 pending 等一拍，会被并行调用的另一条命令的
+        // 「收到用户确认」按项目前缀一起清掉，导致桌宠完全不提示（2026-11-20 实测漏提示）。
         if (line.contains("Dangerous command detected:")) {
             val cmd = line.substringAfter("Dangerous command detected:").trim()
             if (cmd.isNotBlank()) {
-                synchronized(states) {
-                    dangerByProject[projectName] = cmd to now
-                    if (approveOn) {
-                        val key = "danger:$projectName:${now / 2_000L}"
-                        if (!pending.containsKey(key)) {
-                            pending[key] = PendingAsk(
-                                projectName, "危险命令：" + oneLine(cmd, MAX_COMMAND_CHARS), now,
-                                dangerous = true, workspace = project.key,
-                            )
-                        }
-                    }
+                synchronized(states) { dangerByProject[projectName] = cmd to now }
+                if (approveOn) {
+                    CbEventCenter.onLogApproval(
+                        projectName, "危险命令：" + oneLine(cmd, MAX_COMMAND_CHARS),
+                        dangerous = true, workspace = project.key,
+                    )
                 }
             }
             return
@@ -492,16 +592,21 @@ class CodeBuddyWatcher : Disposable {
             return
         }
 
-        // 主人确认 / 拒绝：撤销待提示（含危险命令 / 无 callId 的兜底项）
+        // 主人确认 / 拒绝：撤销待提示（只撤这一条，别的并行调用还在等）
         if (CONFIRM_HINT.containsMatchIn(line)) {
+            val id = callIdOf(line)
+            // 常驻只读卡跟着收：命令已被放行 / 拒绝 / 扣费已确认，再挂着就是误导。
+            // 但本项目还有刚检出的危险命令（宿主安全规则拦截，30 秒内）时不收：
+            // 并行调用里另一条命令的确认，不能把还在「运行 / 跳过 / 拒绝」里等着的提醒一起收掉。
+            if (dangerText(projectName) == null) PetService.getInstance().dismissManualNotice()
             // 确认后不管是执行还是中止，这一轮都回到了模型手里
             CbEventCenter.noteRuntime(project.key, projectName, CbEventCenter.Phase.THINKING)
-            val id = callIdOf(line)
             synchronized(states) {
-                if (id != null) pending.remove(id)
-                // 兜底项没有 callId，只能按项目前缀清，否则「已确认」行撤不掉刚入队的提示
-                pending.entries.removeIf {
-                    it.key.startsWith("danger:$projectName:") || it.key.startsWith("line:$projectName:")
+                if (id != null) {
+                    pending.remove(id)
+                } else {
+                    // 老日志的确认行没有 callId，只能按项目前缀清兜底项
+                    pending.entries.removeIf { it.key.startsWith("line:$projectName:") }
                 }
                 orphanAsks.remove(projectName)
             }
@@ -597,11 +702,14 @@ class CodeBuddyWatcher : Disposable {
             }
         }
         for ((id, ask) in callAsks) {
+            val mayAutoApprove = if (ask.dangerous) autoApproveDangerOn else autoApproveOn
             if (!ask.notified && now - ask.at >= CONFIRM_GRACE_MS) {
                 ask.notified = true
                 showAsk(ask)
+                // 没有任何通道会超时代点时，提示一次就消费掉：残留项会让同项目后来的确认被
+                // 「5 秒内已有待确认」判成重复，白白吞掉一条真正的新确认
+                if (!mayAutoApprove) synchronized(states) { pending.remove(id) }
             }
-            val mayAutoApprove = if (ask.dangerous) autoApproveDangerOn else autoApproveOn
             if (mayAutoApprove && !ask.approveTried &&
                 autoApproveMs in 60_000L..ASK_EXPIRE_MS && now - ask.at >= autoApproveMs
             ) {
@@ -690,11 +798,43 @@ class CodeBuddyWatcher : Disposable {
         return if (System.currentTimeMillis() - entry.second <= MODEL_TTL_MS) entry.first else null
     }
 
+    /** 状态机行的归属键：同一项目可能有多个会话并行，按会话 id 分开记账 */
+    private fun waitKeyOf(line: String, project: ProjectRef): String {
+        val sid = SESSION_ID.find(line)?.groupValues?.get(1)
+        return if (sid.isNullOrBlank()) project.key else "$sid|${project.key}"
+    }
+
+    /** 这一行是不是宿主会话状态机的「进入 / 离开 / 仍在等」 */
+    private fun isStateLine(line: String): Boolean =
+        SESSION_WAIT_ENTER.containsMatchIn(line) ||
+            SESSION_WAIT_EXIT.containsMatchIn(line) ||
+            SESSION_WAIT_STAY.containsMatchIn(line)
+
     /** 30 秒内该项目刚被判定的危险命令原文；没有则为 null */
     private fun dangerText(project: String): String? {
         val danger = synchronized(states) { dangerByProject[project] } ?: return null
         return if (System.currentTimeMillis() - danger.second <= DANGER_TTL_MS) danger.first else null
     }
+
+    /**
+     * 真正开始执行的命令与刚被检出的危险命令是同一条时，清掉危险标记。
+     *
+     * 宿主的 `[SafetyRule]` 行与后面的 `命令: "..."` 行都会带回命令原文，但转义方式可能不同，
+     * 所以只比前缀（取较短者前 60 字）；命中返回 true，调用方据此收起常驻提醒卡。
+     */
+    private fun clearDangerIfMatches(project: String, command: String): Boolean {
+        val danger = synchronized(states) { dangerByProject[project] } ?: return false
+        val a = normalizeCommand(danger.first)
+        val b = normalizeCommand(command)
+        if (a.isEmpty() || b.isEmpty()) return false
+        val n = minOf(a.length, b.length, DANGER_MATCH_CHARS)
+        if (!a.regionMatches(0, b, 0, n)) return false
+        synchronized(states) { dangerByProject.remove(project) }
+        return true
+    }
+
+    private fun normalizeCommand(text: String): String =
+        text.replace("\\\"", "\"").replace("\\\\", "\\").trim()
 
     /** 提示正文：优先用危险命令原文，否则按日志行首标签推断操作类型 */
     private fun describe(project: String, line: String): String {
@@ -793,8 +933,23 @@ class CodeBuddyWatcher : Disposable {
         /** 危险命令原文的时效 */
         private const val DANGER_TTL_MS = 30_000L
 
+        /** 状态对账宽限：hook 3 秒决策 / 日志 2.5 秒 grace / 页面 1 秒扫描都该在这之前提示过 */
+        private const val WAIT_FALLBACK_DELAY_MS = 8_000L
+
+        /** 状态对账有效期：宿主异常残留（没打「离开等待」行）时最多补到这么久 */
+        private const val WAIT_FALLBACK_TTL_MS = 10 * 60_000L
+
+        /** 「已开始执行的命令」与危险命令原文比对的字符数：日志对命令的转义方式可能不同，只比前缀 */
+        private const val DANGER_MATCH_CHARS = 60
+
         /** 自动放行判定与实际命令行的最大间隔：两行通常同一拍写入，留几秒余量 */
         private const val AUTO_ALLOW_BIND_MS = 10_000L
+
+        /**
+         * 宿主放行（needConfirm=false）能撤销的待提示窗口：只清这条判定前后几秒内
+         * 记下的 pending，避免把同项目另一条真正在等的确认一起清掉。
+         */
+        private const val AUTO_ALLOW_CANCEL_MS = 5_000L
 
         /** 最近模型名的时效：半小时内出现的调用都算「当前模型」 */
         private const val MODEL_TTL_MS = 30 * 60_000L
@@ -861,11 +1016,30 @@ class CodeBuddyWatcher : Disposable {
          * `needConfirm=false` 这类自动放行不会命中。
          */
         private val ASK_HINT = Regex(
-            "转入等待确认状态|User confirmation required|等待用户确认|需要用户确认|等待确认|" +
+            // 不要收裸的「等待确认」：`[search-content] 关键参数解析完成，进入等待确认状态`
+            // 只是状态机 parsing→pending 的固定文案，紧随其后就是
+            // `requiredApprove: false, needUserConfirm: false` 与
+            // `Permission decision: source=default_allow, ... needConfirm=false`，
+            // 宿主根本不需要主人点（2026-11-20 实测就是它导致的误报卡片）
+            "转入等待确认状态|User confirmation required|等待用户确认|需要用户确认|" +
                 "waiting for confirmation|permission required|包含危险命令|" +
                 "needConfirm\\s*[:=]\\s*true|needUserConfirm\\s*[:=]\\s*true|requiredApprove\\s*[:=]\\s*true",
             RegexOption.IGNORE_CASE,
         )
+        /**
+         * 宿主会话状态机（与确认文案无关），状态对账兜底只认这几行：
+         * `[AgentSessionManager] Session <id> state: running → waiting_user_input` 及其反向、
+         * `restoreFromUserInputWait: ... stays WAITING_USER_INPUT (...)`。
+         */
+        private val SESSION_WAIT_ENTER =
+            Regex("running\\s*(?:→|->)\\s*waiting_user_input", RegexOption.IGNORE_CASE)
+        private val SESSION_WAIT_EXIT =
+            Regex("waiting_user_input\\s*(?:→|->)\\s*running", RegexOption.IGNORE_CASE)
+        private val SESSION_WAIT_STAY = Regex("stays\\s+WAITING_USER_INPUT", RegexOption.IGNORE_CASE)
+
+        /** `Session <32位会话id> state:` / `session <id> stays ...`，用来把并行会话的等待状态分开记账 */
+        private val SESSION_ID = Regex("session\\s+([0-9a-fA-F]{32})", RegexOption.IGNORE_CASE)
+
         private val CONFIRM_HINT = Regex(
             "收到用户确认|收到用户拒绝|用户拒绝执行|用户已确认|用户取消|user confirmed|user rejected|confirmed by user|" +
                 // 新版同一批日志里紧跟「第一阶段已确认」，说明这次并不会真的等主人点

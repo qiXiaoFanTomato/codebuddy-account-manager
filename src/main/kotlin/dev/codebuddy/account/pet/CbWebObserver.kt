@@ -203,22 +203,40 @@ object CbWebObserver {
         // 关掉提醒不应关掉页面代点，关掉跑完提醒也不应关掉自动继续。
         // 处理方式不是「页面代点」时，页面只观察不点，避免和桌宠弹窗通道抢同一个确认。
         // 生效通道由 [ApprovalChannel] 统一判定：桌宠弹窗不可用时页面代点顶上。
-        val pageActive = !onlyRate && ApprovalChannel.effective(settings) == CbApprovalMode.PAGE
+        val effective = ApprovalChannel.effective(settings)
+        val pageActive = !onlyRate && effective == CbApprovalMode.PAGE
+        // HOOK 通道管不到宿主的「每次询问」：宿主 Auto-run 关闭时，hook 返回 allow 只能置
+        // allowed，改不了 needConfirm（宿主日志 source=user_setting_ask、bypassImmune=true），
+        // 确认卡照样渲染出来，而 HOOK 通道没有可点的对象。
+        // 所以普通档位为 ALLOW 时让页面代点兜底：只点普通卡，危险卡仍只看 cbApprovalDanger。
+        val hookFallback = !onlyRate && effective == CbApprovalMode.HOOK &&
+            settings.cbApprovalNormal == CbNormalPolicy.ALLOW
+        // 静默运行：页面通道也要跟着放开。脚本侧只点「一次」，不点「本次会话内始终允许」，
+        // 否则时间盒一过、这个会话仍然处于全放行状态。
+        // 「不干预」下不生效：那种模式本来就没有代点通道，静默开了也无处施展。
+        val silent = SilentMode.isActive(settings) && settings.cbApprovalMode != CbApprovalMode.NONE
+        val canAutoClick = silent || pageActive || hookFallback
         // 扣费确认提示是「权限提醒」之外的独立开关：单独开着时页面也要继续观察，
         // 否则关掉权限提醒后这条提示永远不会出现（脚本只能扫到不扫就发不出事件）
-        val observeApproval = !onlyRate &&
-            (settings.cbApproveNoticeEnabled || pageActive || settings.cbCreditNoticeEnabled)
+        val observeApproval = silent || (!onlyRate &&
+            (settings.cbApproveNoticeEnabled || canAutoClick || settings.cbCreditNoticeEnabled))
         val observeInterrupt = !onlyRate &&
             (settings.cbProgressNoticeEnabled || settings.cbAutoContinueEnabled)
-        val autoAllowNormal = pageActive && settings.cbApprovalNormal == CbNormalPolicy.ALLOW
+        val autoAllowNormal = silent ||
+            (canAutoClick && settings.cbApprovalNormal == CbNormalPolicy.ALLOW)
         val cfg = JsonObject().apply {
             addProperty("observeApproval", observeApproval)
             addProperty("noDisturb", autoAllowNormal)
-            // 危险档位只是普通档位的附加项，普通命令仍需确认时不得单独生效
+            // 危险档位只是普通档位的附加项，普通命令仍需确认时不得单独生效；
+            // 静默是独立旁路，不受这个约束
             addProperty(
                 "noDisturbDanger",
-                autoAllowNormal && settings.cbApprovalDanger == CbDangerPolicy.AUTO,
+                silent || (autoAllowNormal && settings.cbApprovalDanger == CbDangerPolicy.AUTO),
             )
+            // 静默标记：脚本据此跳过 blocked 正则（凭证外发也放行）
+            addProperty("silent", silent)
+            // 静默但保留红线时，扣费卡仍然整卡跳过
+            addProperty("silentRedline", silent && settings.cbSilentAllowRedline)
             addProperty("observeInterrupt", observeInterrupt)
             addProperty("autoContinue", settings.cbAutoContinueEnabled)
             // 仅采样模式只拿速度：限流提示属于桌宠通道，不能在桌宠关闭时被顺带打开
@@ -744,17 +762,23 @@ object CbWebObserver {
                   via: found.via, label: txt(target.el).slice(0, 20),
                   credit: credit, sessionId: sessionIdOf(found.box)
                 };
+                var auto = false;
+                var c = api.cfg || {};
+                // 静默且放开红线：扣费卡也放行；否则整卡跳过（点一下就是真花钱）
+                var silentAll = !!(c.silent && c.silentRedline);
                 // 扣费卡整卡跳过：不代点也不提示，只留一条审计（auto 恒为 false）
-                if (credit) {
+                if (credit && !silentAll) {
                   base.auto = false;
                   base.blocked = true;
                   emit('approval', 'credit|' + found.ctx.slice(0, 90), base);
                   continue;
                 }
-                var auto = false;
-                var c = api.cfg || {};
                 // 决策看整张确认卡：卡里同时有「允许」和「允许一次」时，后者才是 pickTarget 的结果
-                if (c.noDisturb && !blocked) {
+                if (c.silent) {
+                  // 静默：跳过 blocked（凭证外发也放行），但只点「一次」。
+                  // 点「本次会话内始终允许」会把权限放大到整段会话，静默的时间盒一过就形同虚设。
+                  if (target.kind === 'once') auto = true;
+                } else if (c.noDisturb && !blocked) {
                   // 回落「本次会话内始终允许」= 放开整段会话权限：
                   // 只对普通卡开放（且卡内必须有拒绝选项）；危险卡一律只点单次，不放大到整段会话
                   var acceptable = target.kind === 'once' || (found.hasDeny && !danger);

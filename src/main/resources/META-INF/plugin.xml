@@ -251,5 +251,17 @@
                 description="管理常用短语并发送到 CodeBuddy 输入框">
             <add-to-group group-id="ToolsMenu" anchor="last"/>
         </action>
+        <action id="CodeBuddyAccountManager.PetDemo"
+                class="dev.codebuddy.account.ui.PetDemoAction"
+                text="桌宠演示（录制用）"
+                description="按时间线依次演示点击反馈、随机动作、碎碎念、系统提示、额度变化、强提醒与跑动">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+        </action>
+        <action id="CodeBuddyAccountManager.ToggleSilentMode"
+                class="dev.codebuddy.account.ui.ToggleSilentModeAction"
+                text="开启静默运行"
+                description="静默期间所有确认直接放行；有到期时间，重启 IDE 自动失效">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+        </action>
     </actions>
 </idea-plugin>

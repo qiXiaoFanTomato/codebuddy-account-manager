@@ -76,8 +76,11 @@ function project(payload) {
       ? payload.tool_input
       : {};
   const toolName = bounded(payload.tool_name || payload.hook_event_name || '?', MAX_TOOL_NAME) || '?';
+  // 命令类取命令原文；写 / 编辑类取目标路径（宿主用驼峰 filePath，实测 write_to_file 只给 filePath+content）；
+  // 绝不取 content —— 那是整篇文件正文，既撑爆摘要也会让风险判定误读代码文本
   const rawDetail =
-    toolInput.command || toolInput.file_path || toolInput.path || toolInput.url || '';
+    toolInput.command || toolInput.filePath || toolInput.file_path ||
+    toolInput.path || toolInput.url || '';
   const truncated = str(rawDetail).length > MAX_DETAIL;
   const detail = bounded(rawDetail, MAX_DETAIL);
   const event = bounded(payload.hook_event_name || process.argv[2] || 'PreToolUse', 64) || 'PreToolUse';

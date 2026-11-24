@@ -41,6 +41,10 @@ internal const val APPROVAL_ANSWER_TIMEOUT = "timeout"
  *
  * 与 [PetSpeechBubble] 的区别：这里必须能接收点击，所以窗口可获焦、置顶、不自动消失
  * （只在倒计时结束时收起），并且**同一时刻只处理一个请求**。
+ *
+ * 另有一种 [notice] 模式：宿主 `[SafetyRule]` 自己拦的命令（PowerShell 脚本 / 递归删除 /
+ * `node -e`）hook 的 allow 豁免不了，代点也没意义，于是只弹一张**常驻只读卡**——
+ * 说明为什么桌宠不代点，一直挂到主人点掉或宿主动作完成。
  */
 class PetApprovalBubble {
 
@@ -91,6 +95,10 @@ class PetApprovalBubble {
     /** 当前这张气泡是不是危险操作确认 */
     private var riskyMode = false
 
+    /** 是否有一张确认卡正在阻塞等主人裁决：此时不许只读提醒覆盖它 */
+    @Volatile
+    private var asking = false
+
     /** 超时无人裁决时是否按「同意执行」处理（危险命令「问，超时没人管就放行」） */
     private var autoAllowOnTimeout = false
 
@@ -134,6 +142,8 @@ class PetApprovalBubble {
      * @param timeoutAllows 超时无人裁决时是否算「同意执行」；普通命令与危险命令各自的
      *        「问，超时没人管就放行」都传 true，敏感类（凭证 / 扣费 / 对外分发）永远传 false
      * @param where 项目 + 对话标题，由调用方在非 EDT 线程算好（这里只负责显示）
+     * @param riskLabel 命中的风险类别（删除 / 提权 / 凭证…），显示在卡片顶部标签里，
+     *        让主人一眼看出「这次点的是哪一类」，空串表示普通确认
      * @return "allow" / "deny"；超时返回 [APPROVAL_ANSWER_TIMEOUT]（仅 [timeoutAllows] 时），
      *         其余无裁决（含异常、气泡没弹出来）返回 null，调用方应转为 passthrough
      */
@@ -144,30 +154,105 @@ class PetApprovalBubble {
         risky: Boolean = false,
         timeoutAllows: Boolean = false,
         where: String = "",
+        riskLabel: String = "",
     ): String? =
         synchronized(lock) {
-            val waitMs = timeoutMs.coerceAtLeast(MIN_TIMEOUT_MS)
-            val latch = CountDownLatch(1)
-            val settled = AtomicBoolean(false)
-            val answer = AtomicReference<String?>(null)
-            val finish: (String?) -> Unit = { value ->
-                if (settled.compareAndSet(false, true)) {
-                    answer.set(value)
-                    latch.countDown()
-                }
-            }
+            asking = true
             try {
-                SwingUtilities.invokeAndWait {
-                    present(request, anchor(), waitMs, risky, timeoutAllows, where, finish)
+                val waitMs = timeoutMs.coerceAtLeast(MIN_TIMEOUT_MS)
+                val latch = CountDownLatch(1)
+                val settled = AtomicBoolean(false)
+                val answer = AtomicReference<String?>(null)
+                val finish: (String?) -> Unit = { value ->
+                    if (settled.compareAndSet(false, true)) {
+                        answer.set(value)
+                        latch.countDown()
+                    }
                 }
-            } catch (_: Exception) {
-                return null
+                try {
+                    SwingUtilities.invokeAndWait {
+                        present(request, anchor(), waitMs, risky, timeoutAllows, where, riskLabel, finish)
+                    }
+                } catch (_: Exception) {
+                    return null
+                }
+                val settledInTime = latch.await(waitMs + 1_000L, TimeUnit.MILLISECONDS)
+                // 兜底：无论正常点击还是超时，都让气泡收起
+                SwingUtilities.invokeLater { hide() }
+                answer.get() ?: if (timeoutAllows && settledInTime) APPROVAL_ANSWER_TIMEOUT else null
+            } finally {
+                asking = false
             }
-            val settledInTime = latch.await(waitMs + 1_000L, TimeUnit.MILLISECONDS)
-            // 兜底：无论正常点击还是超时，都让气泡收起
-            SwingUtilities.invokeLater { hide() }
-            answer.get() ?: if (timeoutAllows && settledInTime) APPROVAL_ANSWER_TIMEOUT else null
         }
+
+    /**
+     * 只提醒、不代点的常驻卡片：宿主 `[SafetyRule]` 在 hook 之外自己拦的命令用它。
+     *
+     * 与 [ask] 的区别：不阻塞调用方、没有倒计时、只有一个「知道了」；卡片一直挂着，
+     * 直到主人点掉、或宿主动作完成（[dismissNotice]）。原因写进 [reason]，说清为什么不代点。
+     *
+     * @return false 表示当前正有一张确认卡在等裁决，不能覆盖它
+     */
+    fun notice(
+        anchor: () -> Rectangle?,
+        title: String,
+        where: String,
+        detail: String,
+        reason: String,
+    ): Boolean {
+        if (asking) return false
+        SwingUtilities.invokeLater {
+            // EDT 上串行执行：进来再判一次，避免与刚起步的 ask 抢同一张卡片
+            if (asking) return@invokeLater
+            countdownTimer?.stop()
+            countdownTimer = null
+            riskyMode = true
+            autoAllowOnTimeout = false
+            panel.warning = true
+
+            chipLabel.text = "CodeBuddy · 需要主人亲手确认"
+            whereLabel.text = if (where.isBlank()) "" else "在「$where」里"
+            whereLabel.isVisible = where.isNotBlank()
+            titleLabel.text = escape(title)
+            titleLabel.foreground = AccountUiColors.seal
+            val full = detail.trim()
+            val cut = full.length > DISPLAY_MAX_CHARS
+            val shown = if (cut) full.take(DISPLAY_MAX_CHARS) + "…" else full
+            val note = if (cut) "<br/><br/><i>（命令过长，仅显示前 $DISPLAY_MAX_CHARS 字）</i>" else ""
+            detailLabel.text = if (shown.isEmpty()) {
+                "<html><body style='width:${JBUI.scale(WIDTH_DP)}px'><i>（无命令详情）</i></body></html>"
+            } else {
+                "<html><body style='width:${JBUI.scale(WIDTH_DP)}px'>" +
+                    escape(shown).replace("\n", "<br/>") + note + "</body></html>"
+            }
+            hintLabel.text = "<html><body style='width:${JBUI.scale(WIDTH_DP)}px'>" +
+                escape(reason).replace("\n", "<br/>") + "</body></html>"
+
+            allowButton.isVisible = false
+            denyButton.text = "知道了"
+            denyButton.isVisible = true
+            denyButton.isEnabled = true
+            allowButton.actionListeners.forEach { allowButton.removeActionListener(it) }
+            denyButton.actionListeners.forEach { denyButton.removeActionListener(it) }
+            denyButton.addActionListener { hide() }
+
+            // 锚点在 EDT 上现取：角色可能已经被拖走
+            place(anchor())
+        }
+        return true
+    }
+
+    /** 宿主动作已完成（命令开始执行 / 已被拒绝）：收起只读提醒卡；确认卡在等裁决时不动它 */
+    fun dismissNotice() {
+        if (asking) return
+        SwingUtilities.invokeLater { if (!asking) hide() }
+    }
+
+    /** 空摘要时的占位文案：写 / 编辑类本该有文件路径，说「无命令详情」会误导 */
+    private fun emptyDetailHint(toolName: String): String {
+        val t = toolName.lowercase()
+        return if ("write" in t || "edit" in t) "（无文件路径）" else "（无命令详情）"
+    }
 
     private fun present(
         request: HookApprovalRequest,
@@ -176,6 +261,7 @@ class PetApprovalBubble {
         risky: Boolean,
         timeoutAllows: Boolean,
         where: String,
+        riskLabel: String,
         finish: (String?) -> Unit,
     ) {
         countdownTimer?.stop()
@@ -183,7 +269,13 @@ class PetApprovalBubble {
         autoAllowOnTimeout = timeoutAllows
         panel.warning = risky
 
-        chipLabel.text = if (risky) "CodeBuddy · 危险操作" else "CodeBuddy · 请求确认"
+        // 命中具体类别时直接写类别名（删除 / 提权 / 凭证…），比笼统的「危险操作」更有用：
+        // 主人在点之前就能判断这条确认属于哪一类，而不是每次都要读完整命令
+        chipLabel.text = when {
+            risky && riskLabel.isNotBlank() -> "CodeBuddy · $riskLabel"
+            risky -> "CodeBuddy · 危险操作"
+            else -> "CodeBuddy · 请求确认"
+        }
         // 多开 / 多对话时最容易认错：先标出「在哪个项目、哪个对话里」（文案由调用方算好）
         whereLabel.text = if (where.isBlank()) "" else "在「$where」里"
         whereLabel.isVisible = where.isNotBlank()
@@ -198,7 +290,7 @@ class PetApprovalBubble {
             ""
         }
         detailLabel.text = if (detail.isEmpty()) {
-            "<html><body style='width:${JBUI.scale(WIDTH_DP)}px'><i>（无命令详情）</i></body></html>"
+            "<html><body style='width:${JBUI.scale(WIDTH_DP)}px'><i>${emptyDetailHint(request.toolName)}</i></body></html>"
         } else {
             "<html><body style='width:${JBUI.scale(WIDTH_DP)}px'>" +
                 escape(detail).replace("\n", "<br/>") + note + "</body></html>"
@@ -206,6 +298,8 @@ class PetApprovalBubble {
 
         allowButton.text = if (risky) "同意执行" else "同意"
         denyButton.text = "取消"
+        allowButton.isVisible = true
+        denyButton.isVisible = true
         allowButton.isEnabled = true
         denyButton.isEnabled = true
 
@@ -217,6 +311,20 @@ class PetApprovalBubble {
         remainingMs = timeoutMs.toLong()
         updateHint()
 
+        place(anchor)
+
+        countdownTimer = Timer(COUNTDOWN_TICK_MS) {
+            remainingMs -= COUNTDOWN_TICK_MS
+            if (remainingMs <= 0) {
+                finish(null)
+            } else {
+                updateHint()
+            }
+        }.apply { start() }
+    }
+
+    /** 按角色上方定位并显示：确认卡与只读提醒卡共用同一套摆放规则 */
+    private fun place(anchor: Rectangle?) {
         window.pack()
         val size = window.size
         val pet = anchor
@@ -235,15 +343,6 @@ class PetApprovalBubble {
         window.setLocation(x, y)
         window.isVisible = true
         window.toFront()
-
-        countdownTimer = Timer(COUNTDOWN_TICK_MS) {
-            remainingMs -= COUNTDOWN_TICK_MS
-            if (remainingMs <= 0) {
-                finish(null)
-            } else {
-                updateHint()
-            }
-        }.apply { start() }
     }
 
     private fun updateHint() {

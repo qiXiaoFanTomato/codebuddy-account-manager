@@ -336,6 +336,16 @@ class PetWindow(
         UsageStatsDialog.show(project)
     }
 
+    /** 演示脚本用：只播一次点击回应（与真实单击同一条路径，不弹任何窗口） */
+    fun demoClick() {
+        animator.onClick()
+    }
+
+    /** 演示脚本用：按当前档位模拟一次额度减少（正上方浮字 + 反应动作 + 台词） */
+    fun demoQuotaDelta(delta: Double) {
+        showQuotaDelta(delta, canvas.data.balanceTier)
+    }
+
     /** 定时随机小动作（由 [PetService] 的定时器调用）；返回是否真的演了一段 */
     fun playRandomAction(): Boolean {
         if (jokeActive) return false

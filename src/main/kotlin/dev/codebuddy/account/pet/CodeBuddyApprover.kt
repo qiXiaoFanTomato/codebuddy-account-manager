@@ -105,13 +105,19 @@ object CodeBuddyApprover {
      * 只接受「整词匹配」的短文案，并且排除会放大权限的按钮：
      *  - 允许 / 同意 / 确认 / 继续 / 运行 / 批准 / Allow / Approve / Accept / Run / Continue / Yes
      *  - 含「始终 / 总是 / 全部 / 所有 / Always / remember / 记住」的一律跳过
+     *
+     * [silent] 为 true 时跳过卡片正文的 `blocked` 限制（凭证外发、批量删除等），
+     * 但「始终 / 记住」这类**扩权按钮仍然排除**：静默有时间盒，不能把权限写到会话里。
      */
-    private val SCRIPT: String = """
+    private fun allowScript(silent: Boolean): String {
+        val silentFlag = if (silent) "true" else "false"
+        return """
         (function () {
           try {
+            var SILENT = $silentFlag;
             var ok = /^(允许|同意|确认|继续|运行|批准|允许运行|确认执行|Allow|Approve|Accept|Run|Continue|Yes)${'$'}/;
             var bad = /(始终|总是|全部|所有|Always|remember|记住)/i;
-            var blocked = /(积分|信用|credit|消耗|付费|支付|费用|金额|余额|扣费|完全访问|批量删除|凭证外发|发送到外部|确认开启)/i;
+            var blocked = SILENT ? /(?!)/ : /(积分|信用|credit|消耗|付费|支付|费用|金额|余额|扣费|完全访问|批量删除|凭证外发|发送到外部|确认开启)/i;
             var nodes = Array.prototype.slice.call(
               document.querySelectorAll('button,[role="button"],a[role="button"],div[role="button"]')
             );
@@ -140,7 +146,8 @@ object CodeBuddyApprover {
             return 'ERROR';
           }
         })();
-    """.trimIndent()
+        """.trimIndent()
+    }
 
     /**
      * 尝试点击「允许」：日志通道超时自动同意的兜底动作。
@@ -154,8 +161,10 @@ object CodeBuddyApprover {
             logMissingPanel()
             return false
         }
+        // 静默运行期间不看卡片正文的风险词；扩权按钮仍由脚本里的 bad 正则排除
+        val script = allowScript(SilentMode.isActive(PetSettings.getInstance()))
         for (browser in browsers) {
-            if (inject(browser, SCRIPT)) return true
+            if (inject(browser, script)) return true
         }
         return false
     }

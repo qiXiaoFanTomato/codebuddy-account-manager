@@ -52,9 +52,11 @@ object PetAuditLog {
      * @param source 判定来源：`page`（页面代点）/ `hook`（hook 决策通道）/ `log`（日志兜底）
      * @param auto 本次是否真的替主人点了
      * @param kind 点中的按钮类型：`once`（允许一次）/ `session`（本次会话内始终允许）/ `allow`（宿主默认放行）
-     * @param via 判定通道：`keyword` / `structured` / `default_allow` / `log`
+     * @param via 判定通道：`keyword` / `structured` / `default_allow` / `log` / `silent` / `risk:<类别>`
      * @param label 命中的按钮文案原文（截断），用来核对是否点错了按钮
      * @param what 确认卡正文摘要
+     * @param risk 命中的风险类别（[CbRiskKind] 名称）；空表示未分类（页面通道）
+     * @param silent 是否由静默运行放行
      */
     fun approval(
         source: String,
@@ -67,6 +69,8 @@ object PetAuditLog {
         sessionId: String,
         credit: Boolean = false,
         danger: Boolean = false,
+        risk: String = "",
+        silent: Boolean = false,
     ) {
         val entry = JsonObject().apply {
             addProperty("ts", OffsetDateTime.now().truncatedTo(ChronoUnit.SECONDS).toString())
@@ -80,6 +84,9 @@ object PetAuditLog {
             addProperty("sessionId", sessionId.take(80))
             addProperty("credit", credit)
             addProperty("danger", danger)
+            // 分类与静默标记：事后复盘「这条为什么被放行」只需要看这两列
+            if (risk.isNotBlank()) addProperty("risk", risk)
+            if (silent) addProperty("silent", true)
         }
         append(gson.toJson(entry))
     }

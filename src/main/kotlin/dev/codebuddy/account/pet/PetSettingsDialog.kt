@@ -1,10 +1,12 @@
 package dev.codebuddy.account.pet
 
 import com.intellij.openapi.ui.DialogWrapper
+import com.intellij.openapi.ui.Messages
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.util.ui.FormBuilder
 import com.intellij.util.ui.JBUI
+import dev.codebuddy.account.ui.components.AccountUiKit
 import dev.codebuddy.account.ui.tokens.AccountUiColors
 import dev.codebuddy.account.ui.tokens.AccountUiType
 import java.awt.BorderLayout
@@ -64,6 +66,36 @@ class PetSettingsDialog(private val onChange: () -> Unit) : DialogWrapper(true) 
     private val approvalModeCombo = labelCombo(CbApprovalMode.values()) { it.label }
     private val approvalNormalCombo = labelCombo(CbNormalPolicy.values()) { it.label }
     private val approvalDangerCombo = labelCombo(CbDangerPolicy.values()) { it.label }
+
+    /** 按类别配置的策略（含「普通」，共 7 行）；红线两类不在其中，只读展示 */
+    private val riskCombos: Map<CbRiskKind, JComboBox<CbRiskPolicy>> =
+        PetSettings.CONFIGURABLE_RISK_KINDS.associateWith { kind ->
+            labelCombo(CbRiskPolicy.values()) { it.label }
+        }
+
+    /** 分类矩阵说明：讲清红线为什么不可配、以及通道边界 */
+    private val riskHint = JBLabel().apply {
+        font = AccountUiType.ui(AccountUiType.micro)
+        foreground = AccountUiColors.textMuted
+        text = "<html>凭证、扣费不在上面：这两类失败一次不可回滚，永远要你亲手点，" +
+            "只有静默运行勾选「放开红线」才能越过。<br>" +
+            "分类只对「桌宠弹窗」通道生效；页面代点看不到命令原文，仍按下面的危险命令档位处理。</html>"
+    }
+
+    private val silentCheck = JCheckBox("开启静默运行：所有确认直接放行")
+    private val silentMinutesSpinner = JSpinner(
+        SpinnerNumberModel(
+            SilentMode.DEFAULT_MINUTES,
+            SilentMode.MIN_MINUTES,
+            SilentMode.MAX_MINUTES,
+            5,
+        )
+    )
+    private val silentRedlineCheck = JCheckBox("连凭证 / 扣费一起放行（不可回滚，请谨慎）")
+    private val silentHint = JBLabel().apply {
+        font = AccountUiType.ui(AccountUiType.micro)
+        foreground = AccountUiColors.textMuted
+    }
     private val approvalHint = JBLabel().apply {
         font = AccountUiType.ui(AccountUiType.micro)
         foreground = AccountUiColors.textMuted
@@ -164,10 +196,24 @@ class PetSettingsDialog(private val onChange: () -> Unit) : DialogWrapper(true) 
                 addComponent(noticeCheck)
                 addLabeledComponent("处理方式：", approvalModeCombo)
                 addComponent(approvalHint)
-                addLabeledComponent("普通命令：", approvalNormalCombo)
-                addLabeledComponent("危险命令：", approvalDangerCombo)
+                addLabeledComponent("普通命令（仅页面代点）：", approvalNormalCombo)
+                addLabeledComponent("危险命令（仅页面代点）：", approvalDangerCombo)
                 addLabeledComponent("桌宠弹窗等待（秒）：", hookSecondsSpinner)
                 addLabeledComponent("页面超时放行等待（分钟）：", cbAutoApproveSpinner)
+            })
+            .addVerticalGap(JBUI.scale(8))
+            .addComponent(section("命令分类放行（桌宠弹窗通道）") {
+                PetSettings.CONFIGURABLE_RISK_KINDS.forEach { kind ->
+                    addLabeledComponent("${kind.label}：", riskCombos.getValue(kind))
+                }
+                addComponent(riskHint)
+            })
+            .addVerticalGap(JBUI.scale(8))
+            .addComponent(section("静默运行") {
+                addComponent(silentCheck)
+                addLabeledComponent("最长持续时间（分钟）：", silentMinutesSpinner)
+                addComponent(silentRedlineCheck)
+                addComponent(silentHint)
             })
             .addVerticalGap(JBUI.scale(8))
             .addComponent(buttonRow(resetButton))
@@ -207,28 +253,16 @@ class PetSettingsDialog(private val onChange: () -> Unit) : DialogWrapper(true) 
             buttons.forEach { add(it) }
         }
 
-    /** 枚举下拉统一用中文标签渲染 */
+    /**
+     * 枚举下拉统一用中文标签渲染。
+     *
+     * 直接复用 [AccountUiKit.styleCombo]：固定浅色档案纸底，IDE 深色主题下
+     * LAF 的下拉框会变成深底浅字，自己写渲染器迟早漏掉某几项样式。
+     */
     private fun <T> labelCombo(values: Array<T>, label: (T) -> String): JComboBox<T> =
         JComboBox(values).apply {
-            renderer = object : DefaultListCellRenderer() {
-                override fun getListCellRendererComponent(
-                    list: JList<*>?,
-                    value: Any?,
-                    index: Int,
-                    isSelected: Boolean,
-                    cellHasFocus: Boolean,
-                ): Component {
-                    @Suppress("UNCHECKED_CAST")
-                    val item = value as? T
-                    return super.getListCellRendererComponent(
-                        list,
-                        if (item != null) label(item) else "",
-                        index,
-                        isSelected,
-                        cellHasFocus,
-                    )
-                }
-            }
+            @Suppress("UNCHECKED_CAST")
+            AccountUiKit.styleCombo(this) { item -> (item as? T)?.let(label) ?: "" }
         }
 
     /**
@@ -239,38 +273,56 @@ class PetSettingsDialog(private val onChange: () -> Unit) : DialogWrapper(true) 
      */
     private fun refreshApprovalState() {
         val mode = approvalModeCombo.selectedItem as? CbApprovalMode ?: CbApprovalMode.NONE
+        val pageMode = mode == CbApprovalMode.PAGE
         val danger = approvalDangerCombo.selectedItem as? CbDangerPolicy ?: CbDangerPolicy.ASK
-        approvalNormalCombo.isEnabled = mode != CbApprovalMode.NONE
-        // 危险策略两个通道都可选：以前 hook 模式禁用并强制归 ASK，等于连选项都没有
-        approvalDangerCombo.isEnabled = mode != CbApprovalMode.NONE
+        // 普通 / 危险两档只服务于页面代点：那条通道看不到命令原文，分不了类；
+        // 桌宠弹窗通道改由下面的分类矩阵逐类决定
+        approvalNormalCombo.isEnabled = pageMode
+        approvalDangerCombo.isEnabled = pageMode
+        riskCombos.values.forEach { it.isEnabled = mode != CbApprovalMode.NONE }
         hookSecondsSpinner.isEnabled = mode == CbApprovalMode.HOOK
-        cbAutoApproveSpinner.isEnabled = mode == CbApprovalMode.PAGE
+        cbAutoApproveSpinner.isEnabled = pageMode
+        // 静默必须有通道去放行：「不干预」时开了也不会生效，直接禁掉避免误解
+        silentCheck.isEnabled = mode != CbApprovalMode.NONE
+        refreshSilentState()
         val main = when (mode) {
             CbApprovalMode.NONE -> "只提醒，不自作决定"
-            CbApprovalMode.PAGE -> "页面自动点「允许」（旧通道），桌宠 hook 不启用"
-            CbApprovalMode.HOOK -> "桌宠气泡给同意 / 取消，危险命令按下面的策略处理"
+            CbApprovalMode.PAGE -> "页面自动点「允许」（旧通道），看不到命令原文，按上面的普通 / 危险两档处理"
+            CbApprovalMode.HOOK -> "桌宠气泡给同意 / 取消，按「危险命令分类放行」逐类处理"
         }
         val active = mode != CbApprovalMode.NONE
-        val auto = danger == CbDangerPolicy.AUTO && active
-        val timeoutAllow = danger == CbDangerPolicy.ASK_THEN_ALLOW && active
+        val auto = pageMode && danger == CbDangerPolicy.AUTO
+        val timeoutAllow = pageMode && danger == CbDangerPolicy.ASK_THEN_ALLOW
         val lines = ArrayList<String>()
         lines.add(main)
-        if (auto) lines.add("危险命令会自动放行；凭证 / 扣费 / 对外分发仍要人工")
+        if (auto) lines.add("页面通道：危险确认会自动点「允许」；凭证 / 扣费 / 对外分发仍要人工")
         if (timeoutAllow) {
-            val wait = if (mode == CbApprovalMode.HOOK) {
-                "${(hookSecondsSpinner.value as? Number)?.toInt() ?: PetSettings.getInstance().cbApprovalTimeoutSeconds} 秒"
-            } else {
-                "${(cbAutoApproveSpinner.value as? Number)?.toInt() ?: PetSettings.getInstance().cbAutoApproveMinutes} 分钟"
-            }
-            lines.add("危险命令等 $wait 没人管就自动放行；凭证 / 扣费 / 对外分发仍要人工")
+            val wait = "${(cbAutoApproveSpinner.value as? Number)?.toInt() ?: PetSettings.getInstance().cbAutoApproveMinutes} 分钟"
+            lines.add("页面通道：危险确认等 $wait 没人管就自动放行；凭证 / 扣费 / 对外分发仍要人工")
         }
-        // 宿主的 [SafetyRule] 在 hook 之后还有一道，hook 的 allow 豁免不了它（实测
-        // `Safety rule triggered despite hook presence`）；这类命令桌宠只提醒、不弹确认
+        // 分类矩阵里选了「直接放行」的类别要显式列出来，避免主人忘了自己开过
+        if (mode == CbApprovalMode.HOOK) {
+            val allowKinds = PetSettings.CONFIGURABLE_RISK_KINDS.filter {
+                PetSettings.getInstance().riskPolicyOf(it) == CbRiskPolicy.ALLOW
+            }
+            if (allowKinds.isNotEmpty()) {
+                lines.add("分类矩阵直接放行：" + allowKinds.joinToString("、") { it.label } + "（逐条记审计）")
+            }
+        }
+        // 宿主的 [SafetyRule] 在 hook 之外还有一道，hook 的 allow 豁免不了它（实测
+        // `Safety rule triggered despite hook presence`）；这类命令桌宠弹常驻卡提醒但不代点
         if (active) {
-            lines.add("PowerShell 递归删除 / 脚本执行 / node -e 这类命令由宿主安全规则二次拦截，桌宠只提醒、不弹确认")
+            lines.add("PowerShell 递归删除 / 脚本执行 / node -e 这类命令由宿主安全规则拦截，桌宠会弹卡一直提醒但不代点，请在宿主弹框里自己点")
+            // 扣费与「一直问」的确认同样没有任何通道代点，卡片一直挂着等主人自己点
+            lines.add("扣费确认、以及分类里选「问，一直等主人确认」时，桌宠也弹这种常驻卡，不代点")
+            // 状态对账兜底：宿主改确认文案 / 并行调用 / 重启错过日志时，按会话状态补一条
+            lines.add("如果某次确认没被认出来，桌宠会按 CodeBuddy 的「等确认」状态补一条提醒（只提醒，不代点）")
         }
         // hook 通道在本机宿主不执行时是空操作；通道失效后由页面代点接管，这里如实说明
         if (mode == CbApprovalMode.HOOK) {
+            // hook 的 allow 改不了宿主的 needConfirm：宿主 Auto-run 关着时照样弹「确认执行命令」，
+            // 普通命令改由页面兜底点「运行」，否则主人每一条都要自己点
+            lines.add("宿主若仍弹「确认执行命令」，普通命令由页面自动点「运行」；危险 / 扣费卡仍要主人自己点")
             when {
                 ApprovalChannel.isHookBroken() ->
                     lines.add("当前宿主没有执行 hook：桌宠弹窗用不了，已自动改用页面代点（超时按分钟计）")
@@ -278,11 +330,35 @@ class PetSettingsDialog(private val onChange: () -> Unit) : DialogWrapper(true) 
                     lines.add("还没同意改写 CodeBuddy 配置：看板「启用桌宠弹窗」可随时启用")
                 PetSettings.getInstance().cbHookConsent == CbHookConsent.UNKNOWN ->
                     lines.add("还没确认过是否允许改写 CodeBuddy 配置；已存在的 hook 会继续使用")
-                auto || timeoutAllow ->
-                    lines.add("宿主不执行 hook 时此项不生效，届时自动改用页面代点")
             }
         }
         approvalHint.text = "<html>" + lines.joinToString("<br>") + "</html>"
+    }
+
+    /**
+     * 刷新静默区块的文案与可编辑状态。
+     *
+     * 静默状态不在 [PetSettings] 的普通字段里（时间戳 + 进程令牌），
+     * 所以每次都要现读 [SilentMode]，不能只看 checkbox 的勾选值。
+     */
+    private fun refreshSilentState() {
+        val settings = PetSettings.getInstance()
+        val active = SilentMode.isActive(settings)
+        val left = (SilentMode.remainingMillis(settings) / 60_000L).coerceAtLeast(0L)
+        val modeAllowed = silentCheck.isEnabled
+        silentHint.text = when {
+            !modeAllowed ->
+                "<html>当前处理方式是「不干预」，没有通道会替主人点，静默不会生效；先选「桌宠弹窗」或「页面代点」。</html>"
+            active -> "<html><b>静默运行中</b>：剩 $left 分钟，已自动放行 ${SilentMode.approvedCount()} 次。" +
+                "凭证 / 扣费${if (settings.cbSilentAllowRedline) "已放开" else "仍要人工"}。" +
+                "到期或重启 IDE 后自动关闭。</html>"
+            else -> "<html>未开启。开启期间所有确认直接放行；到期自动关闭，重启 IDE 也会关闭。" +
+                "状态栏会常驻朱红标识，随时可关。</html>"
+        }
+        silentHint.foreground = if (active) AccountUiColors.seal else AccountUiColors.textMuted
+        // 开启期间锁住时长与红线，避免「改了却没生效」；要调整就先关再开
+        silentMinutesSpinner.isEnabled = modeAllowed && !active
+        silentRedlineCheck.isEnabled = modeAllowed && !active
     }
 
     /**
@@ -333,6 +409,15 @@ class PetSettingsDialog(private val onChange: () -> Unit) : DialogWrapper(true) 
             refreshApprovalState()
             apply()
         }
+        // 分类矩阵：每一行改动即写回 cbRiskRules 并刷新提示
+        riskCombos.forEach { (_, combo) ->
+            combo.addActionListener {
+                refreshApprovalState()
+                apply()
+            }
+        }
+        // 静默开关不走 apply()：它管的是时间戳与进程令牌，必须经过二次确认
+        silentCheck.addActionListener { onSilentToggled() }
         // 等待秒数 / 分钟数变化要同步刷新提示文案里的具体数值
         hookSecondsSpinner.addChangeListener {
             refreshApprovalState()
@@ -368,6 +453,17 @@ class PetSettingsDialog(private val onChange: () -> Unit) : DialogWrapper(true) 
         approvalDangerCombo.selectedItem = s.cbApprovalDanger
         hookSecondsSpinner.value = s.cbApprovalTimeoutSeconds
         cbAutoApproveSpinner.value = s.cbAutoApproveMinutes
+        // 分类矩阵：按已存配置回填，没配过时显示出厂默认
+        riskCombos.forEach { (kind, combo) -> combo.selectedItem = s.riskPolicyOf(kind) }
+        // 静默状态是「时间戳 + 进程令牌」，不是普通布尔字段，只能现问 SilentMode
+        val silent = SilentMode.isActive(s)
+        silentCheck.isSelected = silent
+        silentRedlineCheck.isSelected = s.cbSilentAllowRedline
+        if (silent) {
+            val left = (SilentMode.remainingMillis(s) / 60_000L).toInt()
+                .coerceIn(SilentMode.MIN_MINUTES, SilentMode.MAX_MINUTES)
+            silentMinutesSpinner.value = left
+        }
         refreshApprovalState()
         whisperCheck.isSelected = s.whisperEnabled
         whisperMinutesSpinner.value = s.whisperMinutes
@@ -394,6 +490,14 @@ class PetSettingsDialog(private val onChange: () -> Unit) : DialogWrapper(true) 
         approvalModeCombo.selectedItem = CbApprovalMode.NONE
         approvalNormalCombo.selectedItem = CbNormalPolicy.ASK
         approvalDangerCombo.selectedItem = CbDangerPolicy.ASK
+        PetSettings.CONFIGURABLE_RISK_KINDS.forEach { kind ->
+            riskCombos[kind]?.selectedItem = PetSettings.DEFAULT_RISK_POLICY[kind] ?: CbRiskPolicy.ASK
+        }
+        // 恢复默认同时关掉静默：留着它等于「重置了但还是全放行」
+        silentCheck.isSelected = false
+        silentRedlineCheck.isSelected = false
+        silentMinutesSpinner.value = SilentMode.DEFAULT_MINUTES
+        SilentMode.disable(PetSettings.getInstance())
         hookSecondsSpinner.value = 45
         cbAutoApproveSpinner.value = 5
         refreshApprovalState()
@@ -420,10 +524,18 @@ class PetSettingsDialog(private val onChange: () -> Unit) : DialogWrapper(true) 
         s.noticePetEnabled = noticeCheck.isSelected
         s.cbApprovalMode =
             (approvalModeCombo.selectedItem as? CbApprovalMode) ?: CbApprovalMode.NONE
+        // 切到「不干预」时静默自动结束：没有任何通道会放行，留着只会让状态栏显示假的「静默中」
+        if (s.cbApprovalMode == CbApprovalMode.NONE && SilentMode.isActive(s)) {
+            SilentMode.disable(s, "处理方式已改为「不干预」，静默随之结束")
+        }
         s.cbApprovalNormal =
             (approvalNormalCombo.selectedItem as? CbNormalPolicy) ?: CbNormalPolicy.ASK
         s.cbApprovalDanger =
             (approvalDangerCombo.selectedItem as? CbDangerPolicy) ?: CbDangerPolicy.ASK
+        // 分类矩阵写回；红线类 setRiskPolicy 内部直接忽略，UI 也没给它下拉
+        PetSettings.CONFIGURABLE_RISK_KINDS.forEach { kind ->
+            (riskCombos[kind]?.selectedItem as? CbRiskPolicy)?.let { s.setRiskPolicy(kind, it) }
+        }
         s.cbApprovalTimeoutSeconds =
             (hookSecondsSpinner.value as? Number)?.toInt() ?: s.cbApprovalTimeoutSeconds
         s.cbAutoApproveMinutes =
@@ -436,6 +548,62 @@ class PetSettingsDialog(private val onChange: () -> Unit) : DialogWrapper(true) 
         s.opacityPercent = (opacitySpinner.value as? Number)?.toInt() ?: s.opacityPercent
         s.quadrant = (quadrantCombo.selectedItem as? PetQuadrant) ?: PetQuadrant.BOTTOM_RIGHT
         onChange()
+    }
+
+    /**
+     * 静默开关：勾选 → 二次确认 → 开启；取消勾选 → 立刻关闭。
+     *
+     * 二次确认不是走形式：弹窗里逐条列出会被放行的类别，并把「静默也拦不住宿主
+     * SafetyRule」这条硬约束写在明面上，避免主人开了之后发现还弹窗就以为坏了。
+     */
+    private fun onSilentToggled() {
+        if (loading) return
+        val settings = PetSettings.getInstance()
+        if (!silentCheck.isSelected) {
+            SilentMode.disable(settings)
+            refreshApprovalState()
+            onChange()
+            return
+        }
+        if (!confirmSilent()) {
+            // 拒绝后回滚勾选，避免出现「勾着但没生效」的假象
+            loading = true
+            silentCheck.isSelected = false
+            loading = false
+            refreshSilentState()
+            return
+        }
+        val minutes = (silentMinutesSpinner.value as? Number)?.toInt() ?: SilentMode.DEFAULT_MINUTES
+        SilentMode.enable(settings, minutes, silentRedlineCheck.isSelected)
+        refreshApprovalState()
+        onChange()
+    }
+
+    /** 开启静默前的风险告知；返回 true 表示主人确认开启 */
+    private fun confirmSilent(): Boolean {
+        val minutes = (silentMinutesSpinner.value as? Number)?.toInt() ?: SilentMode.DEFAULT_MINUTES
+        val redline = silentRedlineCheck.isSelected
+        val text = buildString {
+            append("<html>开启后所有确认都会直接放行，<b>不再弹桌宠气泡</b>。<br><br>")
+            append("放行范围：<br>")
+            PetSettings.CONFIGURABLE_RISK_KINDS.forEach { append("· ${it.label}：${it.hint}<br>") }
+            append("<br>")
+            if (redline) {
+                append("<b>已勾选放开红线：凭证与扣费也会自动放行。</b><br>")
+            } else {
+                append("凭证与扣费仍要你亲手点。<br>")
+            }
+            append("持续时间 $minutes 分钟；到点自动关闭，重启 IDE 也会关闭。<br>")
+            append("PowerShell 递归删除 / 脚本执行 / node -e 仍会被宿主拦一次，桌宠代不了。")
+            append("</html>")
+        }
+        return Messages.showYesNoDialog(
+            text,
+            "确认开启静默运行",
+            "确认开启",
+            "取消",
+            Messages.getWarningIcon(),
+        ) == Messages.YES
     }
 
     companion object {

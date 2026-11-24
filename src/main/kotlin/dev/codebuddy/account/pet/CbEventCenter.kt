@@ -14,6 +14,7 @@ import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.ZoneId
+import java.util.ArrayDeque
 
 
 
@@ -281,6 +282,9 @@ object CbEventCenter {
         }
         countAutoApproval()
         mergeAutoEvent(title, content)
+        // 登记一次「刚放过这条」：宿主若因为 Auto-run 关闭又弹了确认卡，
+        // 页面兜底点掉时据此认领，不再记第二次
+        rememberAutoAllow(whereName)
     }
 
     /**
@@ -408,6 +412,77 @@ object CbEventCenter {
 
     /** 去重表：key = 事件类型|业务键 */
     private val claims = HashMap<String, Long>()
+
+    /**
+     * 刚被 hook / 日志通道「默认放行」的那几次调用，按项目排队。
+     *
+     * HOOK 模式下的页面兜底代点会为同一张确认卡再记一次账（hook 的 allow 被宿主的
+     * `user_setting_ask` 覆盖，页面才真正点掉「运行」），两条记录的键不同去不了重。
+     * 这里按「项目 + 20 秒 + 先进先出」把它们对成一次，页面那条不再重复计数、不再写账本。
+     */
+    private val recentAutoAllow = HashMap<String, ArrayDeque<Long>>()
+
+    /** 页面对账窗口：命令放行到页面点到同一张卡通常几百毫秒，20 秒足够宽 */
+    private const val AUTO_ALLOW_DEDUPE_MS = 20_000L
+
+    /** 记一次默认放行，等页面通道来认领 */
+    private fun rememberAutoAllow(project: String) {
+        val key = project.trim()
+        if (key.isEmpty()) return
+        val now = System.currentTimeMillis()
+        synchronized(recentAutoAllow) {
+            val queue = recentAutoAllow.getOrPut(key) { ArrayDeque() }
+            queue.addLast(now)
+            // 同一项目积压到 8 条说明对账已经失配，丢最旧的，别让窗口无限长
+            while (queue.size > 8) queue.removeFirst()
+            trimAutoAllow(queue, now)
+        }
+    }
+
+    /**
+     * 页面报上来的代点是否就是刚放过的那条命令。
+     *
+     * @return true 表示 hook / 日志通道已经记过账，本次不再重复计数
+     */
+    private fun consumeAutoAllow(project: String): Boolean {
+        val key = project.trim()
+        if (key.isEmpty()) return false
+        val now = System.currentTimeMillis()
+        synchronized(recentAutoAllow) {
+            val queue = recentAutoAllow[key] ?: return false
+            trimAutoAllow(queue, now)
+            if (queue.isEmpty()) {
+                recentAutoAllow.remove(key)
+                return false
+            }
+            queue.removeFirst()
+            if (queue.isEmpty()) recentAutoAllow.remove(key)
+            return true
+        }
+    }
+
+    private fun trimAutoAllow(queue: ArrayDeque<Long>, now: Long) {
+        while (queue.isNotEmpty() && now - queue.first() > AUTO_ALLOW_DEDUPE_MS) queue.removeFirst()
+    }
+
+    /**
+     * 最近一次真正弹出确认提示的时刻：key = workspace hash（缺失时项目名）。
+     *
+     * 给日志通道的**状态对账**兜底用：宿主进入 `waiting_user_input` 后若这里没有更新过，
+     * 说明三条通道都没认出这次确认（文案漂移、并行清状态、启动时效边界），由兜底补一条只读提醒。
+     */
+    private val confirmNoticed = HashMap<String, Long>()
+
+    /** 记一次确认提示已发出：任何通道（hook 气泡 / 页面 / 日志）都要调 */
+    fun markConfirmNoticed(key: String) {
+        val k = key.trim()
+        if (k.isEmpty()) return
+        synchronized(confirmNoticed) { confirmNoticed[k] = System.currentTimeMillis() }
+    }
+
+    /** 该 workspace 最近一次确认提示的时刻；没有则为 0 */
+    fun confirmNoticedAt(key: String): Long =
+        synchronized(confirmNoticed) { confirmNoticed[key.trim()] ?: 0L }
 
     /** 限流记录：key = model|code */
     private val limits = LinkedHashMap<String, ModelLimit>()
@@ -539,6 +614,63 @@ object CbEventCenter {
             source = "log", workspace = workspace,
         )
 
+    /**
+     * 日志通道的**状态对账兜底**：宿主已进入 `waiting_user_input`，但宽限期内没有任何通道提示过。
+     *
+     * 与 [onLogApproval] 的区别是它**不看任何确认文案**——只认宿主自己的会话状态机
+     * （`state: running → waiting_user_input`），所以宿主改文案、并行调用清掉状态、
+     * 启动时错过事件这些情况下都能兜到。只提醒、不代点，卡片挂到主人自己处理完。
+     */
+    fun onLogWaitingFallback(project: String, workspace: String, waitedSince: Long) {
+        val ws = workspace.trim()
+        val where = whereText(displayProject(project, ws), ws).ifBlank { project }
+        val minutes = ((System.currentTimeMillis() - waitedSince) / 60_000L).coerceAtLeast(0)
+        val waited = if (minutes >= 1) "已等约 $minutes 分钟" else "刚开始等"
+        PetAuditLog.approval(
+            source = "log", auto = false, kind = "fallback", via = "state",
+            label = "", what = "等待确认（状态对账）", project = where, sessionId = "",
+            credit = false, danger = false,
+        )
+        PetApprovalHistory.record(
+            project = where, title = titleOf(ws), tool = "状态对账",
+            what = "有确认在等，桌宠没认出具体文案", auto = false, danger = false, source = "log",
+        )
+        PetService.getInstance().showManualNotice(
+            "有确认在等主人",
+            where,
+            "CodeBuddy 停在「等确认」状态（$waited），但桌宠没认出这次确认的具体内容。",
+            "桌宠不会猜着替主人点，请到 CodeBuddy 面板的确认卡里自己选；处理完这张卡会自动收起。",
+        )
+        // 兜底本身也算「提示过了」，避免 8 秒后重复补发
+        markConfirmNoticed(ws.ifBlank { project })
+        record("approval", "有确认在等主人", "「$where」状态对账兜底提醒", false)
+    }
+
+    /**
+     * 宿主原生确认框被同进程探测器认出（[HostConfirmWatcher]）。
+     *
+     * 这是最后一道兜底：连日志与 `waiting_user_input` 都没有信号时，直接看那个 Swing 框本身。
+     * 只提醒、不代点——原生的「运行 / 跳过 / 拒绝」插件点不到。
+     */
+    fun onHostDialogConfirm(dialogText: String) {
+        val active = activeProjects().firstOrNull()
+        val where = if (active == null) "当前项目"
+        else whereText(active.project, active.workspace).ifBlank { active.project }
+        PetAuditLog.approval(
+            source = "dialog", auto = false, kind = "hostDialog", via = "swing",
+            label = "", what = dialogText.take(160), project = where, sessionId = "",
+            credit = false, danger = true,
+        )
+        PetService.getInstance().showManualNotice(
+            "宿主在等主人确认",
+            where,
+            dialogText.take(160),
+            "这是 CodeBuddy 自己弹的原生框「运行 / 跳过 / 拒绝」，桌宠点不到也不会替主人点，" +
+                "请直接在那个框里选；选完这张卡自动收起。",
+        )
+        record("approval", "宿主在等主人确认", "「$where」原生确认框", false)
+    }
+
     /** 日志通道的异常结束事件 */
     fun onLogInterrupted(project: String, reasons: List<String>) =
         onInterrupted(project, reasons.joinToString("、").ifBlank { "回复中断" }, auto = false)
@@ -574,6 +706,12 @@ object CbEventCenter {
             what = what, project = displayName, sessionId = sessionId,
             credit = credit, danger = dangerous,
         )
+        // hook / 日志通道刚为同一条命令记过一次代点：宿主 Auto-run 关闭时 hook 的 allow
+        // 不生效，真正点掉「运行」的是页面。这是同一次，不再计数也不再写账本，否则今日代点虚高。
+        if (auto && !credit && consumeAutoAllow(displayName)) {
+            markConfirmNoticed(ws.ifBlank { displayName })
+            return
+        }
         // 可查询的代点记录：结果等 PostToolUse 回填，没回填的显示「待回填」
         PetApprovalHistory.record(
             project = displayName,
@@ -594,30 +732,81 @@ object CbEventCenter {
         // 危险命令即使不代点也要提示，否则关掉「权限提醒」后会静默卡在那里没人知道
         if (!credit && !auto && !dangerous && !settings.cbApproveNoticeEnabled) return
         if (!claim(if (auto) "approvalAuto" else "approval", "$project|$what")) return
+        // 已经提示过这条确认：日志通道的状态对账据此判定「有人管了」，不再补兜底提醒
+        markConfirmNoticed(ws.ifBlank { displayName })
+        // 等待确认的提示同样要标出项目与对话标题，多开时才认得出是哪一条
+        val where = whereText(displayName, ws).ifBlank { displayName }
+        // 日志通道的危险行只可能来自宿主的 [SafetyRule]：它在 hook 之外独立判定，
+        // 页面注入点不到那个原生 Swing 框，所以**一律**弹常驻卡，不受「页面会超时代点」影响。
+        val hostSafety = dangerous && source == "log"
+        // 没有任何通道会替主人点（扣费、宿主安全规则、设置成「一直问」的普通/危险确认）：
+        // 一律弹**常驻只读卡**——写明为什么不代点，一直挂到主人自己点掉或宿主动作完成。
+        // 12 秒就消失的普通提示在这类场景等于没提醒，主人回来只看到命令还卡着。
+        if (!auto && (credit || hostSafety || !willAutoApprove(settings, dangerous, source))) {
+            val (title, reason) = manualConfirmText(credit, dangerous, source)
+            // 日志通道的正文前缀是「危险命令：」，卡片标题已经说了，这里去掉避免重复
+            PetService.getInstance()
+                .showManualNotice(title, where, what.removePrefix("危险命令："), reason)
+            record("approval", title, "「$where」$what（桌宠不代点，等主人自己点）", auto)
+            return
+        }
         val (level, title) = when {
-            // 扣费卡只提示不代点，标题要写明，别让主人以为已经替自己确认扣费了
-            credit -> PetNotifier.Level.WARN to "有扣费确认在等主人点头"
             // 回落到「本次会话内始终允许」是放大权限的操作，标题必须点明，别让主人以为是普通允许
             auto && kind == "session" -> PetNotifier.Level.INFO to "我先替主人点了「本次会话内始终允许」"
             auto -> PetNotifier.Level.INFO to "我先替主人点了「运行」"
-            // 日志通道的危险项来自宿主 [SafetyRule]，hook 管不到（实测 despite hook presence）；
-            // 页面通道的危险卡才是 JCEF 里的危险命令，两者标题分开，别让主人以为桌宠漏了
-            dangerous && source == "log" -> PetNotifier.Level.WARN to "宿主安全规则在等主人确认"
             dangerous -> PetNotifier.Level.WARN to "有危险命令在等主人点头"
             else -> PetNotifier.Level.WARN to "CodeBuddy 在等主人点头"
         }
         val tail = when {
-            credit -> "$what（会扣积分，不代点）"
-            dangerous && !auto && source == "log" -> "$what（宿主安全规则拦截，桌宠不代点）"
-            dangerous && !auto -> "$what（危险命令，不代点）"
             auto && kind == "session" -> "$what（本会话内同类操作不再询问）"
             else -> what
         }
-        // 等待确认的提示同样要标出项目与对话标题，多开时才认得出是哪一条
-        val where = whereText(displayName, ws).ifBlank { displayName }
         val content = "「$where」$tail"
         PetNotifier.notify(level, title, content, durationMs = 12_000)
         record("approval", title, content, auto)
+    }
+
+    /**
+     * 这一条确认还有没有通道会替主人点（直接放行或超时补刀）。
+     *
+     * 口径与 [CodeBuddyWatcher] 的 tick / [CbWebObserver] 保持一致：只有页面通道真的在用、
+     * 且对应策略不是「一直问」时才有人点。hook 通道的确认由气泡自己处理，不在这里重复提醒。
+     */
+    private fun willAutoApprove(settings: PetSettings, dangerous: Boolean, source: String): Boolean {
+        if (source == "hook") return true
+        // 静默：非红线一律有人代点；红线是否代点取决于主人是否勾了「放开红线」。
+        // 判断不了具体类别时用 dangerous 近似（页面通道的危险卡与红线卡高度重合）。
+        // 「不干预」下不算数：那种模式没有任何通道会代点。
+        if (SilentMode.isActive(settings) && settings.cbApprovalMode != CbApprovalMode.NONE) {
+            return !dangerous || settings.cbSilentAllowRedline
+        }
+        val mode = ApprovalChannel.effective(settings)
+        if (mode == CbApprovalMode.PAGE) {
+            return if (dangerous) {
+                settings.cbApprovalDanger != CbDangerPolicy.ASK
+            } else {
+                settings.cbApprovalNormal != CbNormalPolicy.ASK
+            }
+        }
+        // HOOK 模式下页面只做「普通确认」的兜底代点（宿主 Auto-run 关闭时会弹那张卡）：
+        // 普通确认要求普通档位是 ALLOW，危险卡仍只有 AUTO 才会被点，没有超时补刀通道。
+        if (mode != CbApprovalMode.HOOK || !CbWebObserver.isConnected()) return false
+        if (settings.cbApprovalNormal != CbNormalPolicy.ALLOW) return false
+        return if (dangerous) settings.cbApprovalDanger == CbDangerPolicy.AUTO else true
+    }
+
+    /** 必须主人亲手点的确认：卡片标题 + 为什么不代点 */
+    private fun manualConfirmText(credit: Boolean, dangerous: Boolean, source: String): Pair<String, String> = when {
+        credit -> "有扣费确认在等主人点头" to
+            "这笔确认会扣积分 / 金额，桌宠从不代点；请自己核对后再点「确认」，点完这张卡自动收起。"
+        // 宿主 [SafetyRule] 在 hook 之外独立判定，hook 返回 allow 也豁免不了
+        dangerous && source == "log" -> "宿主安全规则在等主人确认" to
+            "这类命令由 CodeBuddy 自己的安全规则拦截，桌宠点「允许」也豁免不了，所以我不替你点。" +
+                "请到 CodeBuddy 的「运行 / 跳过 / 拒绝」里自己选；选完这张卡自动收起。"
+        dangerous -> "有危险命令在等主人点头" to
+            "当前设置下危险命令不自动代点，桌宠只提醒、不替你点；请到 CodeBuddy 里自己选，选完这张卡自动收起。"
+        else -> "CodeBuddy 在等主人点确认" to
+            "当前设置下这类确认不自动代点，桌宠只提醒、不替你点；请到 CodeBuddy 里自己选，选完这张卡自动收起。"
     }
 
     private fun onRateLimit(model: String, code: Int, resetAt: Long) {

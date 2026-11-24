@@ -150,6 +150,8 @@ class PetService : Disposable {
 
         connectBus()
         schedulePoll()
+        // 静默的到期检查独立于桌宠动画：起来就挂上，20 秒一轮
+        SilentMode.startWatch()
         ensureOwnership()
         refreshDataAsync()
     }
@@ -167,6 +169,8 @@ class PetService : Disposable {
         connection?.disconnect()
         connection = null
         started.set(false)
+        // 桌宠关闭后 hook 与页面通道都停了，静默留着只会让状态栏显示一个假的「静默中」
+        SilentMode.disable(PetSettings.getInstance(), "桌宠已关闭，静默随之结束")
         SwingUtilities.invokeLater {
             stopRandomActions()
             stopWhisper()
@@ -174,6 +178,7 @@ class PetService : Disposable {
             clearNotices()
             CodeBuddyWatcher.getInstance().stop()
             CbWebObserver.stop()
+            HostConfirmWatcher.stop()
             destroyBubble()
             destroyWindow()
         }
@@ -324,6 +329,78 @@ class PetService : Disposable {
     private fun stopJoke() {
         jokeTimer?.stop()
         jokeTimer = null
+    }
+
+    // ---------------------------------------------------------------
+    // 录制演示脚本（开发 / 录屏专用）
+    // ---------------------------------------------------------------
+
+    private var demoTimer: javax.swing.Timer? = null
+
+    /**
+     * 按固定时间线把桌宠的主要表现依次演一遍，供录制演示视频使用：
+     * 点击反馈 → 随机动作 → 碎碎念 → 成功提示 → 错误提示 → 额度减少 → 强提醒 → 跑动。
+     *
+     * 只复用已有入口，不修改任何用户设置；重复触发会先取消上一条时间线。
+     * 桌宠窗口未显示（未启用 / 非持有者）时直接跳过。
+     */
+    fun runDemo() {
+        demoTimer?.stop()
+        demoTimer = null
+        val w = window
+        if (w == null || !w.isShowing) {
+            log.info("桌宠未显示，跳过演示脚本")
+            return
+        }
+        val steps = listOf<Pair<Long, () -> Unit>>(
+            1_000L to { w.demoClick() },
+            5_000L to { w.playRandomAction() },
+            12_000L to { w.whisper(PetWhisper.nextLine()) },
+            19_000L to {
+                showNotice(
+                    PetNotifier.Level.SUCCESS,
+                    "操作成功",
+                    "已切换到「演示账号」，重启 IDE 后生效",
+                    5_000,
+                )
+            },
+            27_000L to {
+                showNotice(
+                    PetNotifier.Level.ERROR,
+                    "出错了",
+                    "导出账号库失败：目标目录不可写",
+                    9_000,
+                )
+            },
+            38_000L to { w.demoQuotaDelta(-3.34) },
+            45_000L to {
+                showNotice(
+                    PetNotifier.Level.SUCCESS,
+                    "对话完成",
+                    "本项目这轮对话已结束，共 12 步",
+                    12_000,
+                    highlight = true,
+                )
+            },
+            60_000L to { w.performMove() },
+        )
+        runDemoStep(steps, 0)
+    }
+
+    /** 时间线按「距上一步的延迟」串行推进，每步独立计时，单步异常不影响后续 */
+    private fun runDemoStep(steps: List<Pair<Long, () -> Unit>>, index: Int) {
+        val step = steps.getOrNull(index) ?: return
+        demoTimer = javax.swing.Timer(step.first.toInt()) {
+            try {
+                step.second()
+            } catch (e: Exception) {
+                log.warn("桌宠演示步骤失败", e)
+            }
+            runDemoStep(steps, index + 1)
+        }.apply {
+            isRepeats = false
+            start()
+        }
     }
 
     // ---------------------------------------------------------------
@@ -555,9 +632,10 @@ class PetService : Disposable {
             scheduleRandomActions()
             scheduleWhisper()
             scheduleJoke()
-            // 桌宠就绪后才开始盯 CodeBuddy 日志与聊天面板，避免提示无处可显示
+            // 桌宠就绪后才开始盯 CodeBuddy 日志、聊天面板与宿主原生确认框，避免提示无处可显示
             CodeBuddyWatcher.getInstance().start()
             CbWebObserver.start()
+            HostConfirmWatcher.start()
             // hook 只由持有者进程提供，避免多开 IDE 时两个审批端口抢答
             executor.execute { syncHookServer() }
         } catch (e: Exception) {
@@ -706,17 +784,189 @@ class PetService : Disposable {
      */
     private fun decideHookApproval(request: HookApprovalRequest): ApprovalDecision {
         val settings = PetSettings.getInstance()
+        val risk = RiskClassifier.classify(request)
+
+        // ① 静默运行：优先级高于一切通道判定与分类策略。
+        //    必须放在 ApprovalChannel 判定之前——那里会在 hook 被判失效时把通道让位给页面，
+        //    静默若排在后面，就会跟着一起失效（这正是「开了静默却还在弹窗」的典型来源）。
+        if (SilentMode.isActive(settings)) {
+            return decideSilent(request, risk, settings)
+        }
+
         if (settings.cbApprovalMode != CbApprovalMode.HOOK) return ApprovalDecision.PASSTHROUGH
         val w = window ?: return ApprovalDecision.PASSTHROUGH
-        // 敏感类（凭证 / 扣费 / 对外分发 / 摘要截断）永远人工，连策略都不看
-        val manualOnly = HookApprovalRules.isSensitive(request)
-        val destructive = !manualOnly && HookApprovalRules.isDestructive(request)
-        // 这条确认属于哪个项目、哪个对话：优先按 sessionId 反查，cwd 只作兜底
+        val ctx = approvalContext(request)
+
+        // ② 宿主 SafetyRule 会在 hook 之外再拦一次（实测 `Safety rule triggered despite hook presence`），
+        //    hook 返回 allow 也逃不掉它的原生三选一框。立刻让位、不阻塞脚本，
+        //    由日志通道弹常驻只读卡提醒。静默模式对这三类同样无效——这是宿主的硬约束。
+        if (risk.hostSafety) {
+            PetAuditLog.approval(
+                source = "hook", auto = false, kind = "hostSafety", via = "passthrough",
+                label = request.toolName, what = request.detail,
+                project = ctx.project, sessionId = request.sessionId,
+                danger = !risk.normal, risk = risk.top.name,
+            )
+            return ApprovalDecision.PASSTHROUGH
+        }
+
+        // ③ 取该类别的策略。UNKNOWN（摘要为空）与截断（看不全）恒按「一直问」：
+        //    截断时 top 可能仍是 DELETE 这类高风险类别，只看类别会让「删除=直接放行」
+        //    的配置把一条看不全的命令放过去，所以这里必须单独判 truncated
+        val policy = if (risk.top == CbRiskKind.UNKNOWN || risk.truncated) {
+            CbRiskPolicy.ASK
+        } else {
+            settings.riskPolicyOf(risk.top)
+        }
+
+        if (policy == CbRiskPolicy.ALLOW) {
+            CbEventCenter.onHookAutoApproval(
+                request.toolName, request.detail,
+                danger = !risk.normal, project = ctx.project,
+                workspace = ctx.workspace, sessionTitle = ctx.title,
+            )
+            PetAuditLog.approval(
+                source = "hook", auto = true, kind = "risk", via = "risk:${risk.top.name}",
+                label = request.toolName, what = request.detail,
+                project = ctx.project, sessionId = request.sessionId,
+                credit = CbRiskKind.BILLING in risk.kinds,
+                danger = !risk.normal, risk = risk.top.name,
+            )
+            return ApprovalDecision.ALLOW
+        }
+
+        // 摘要被截断时不提供「超时放行」：看不全就不替主人做决定
+        val timeoutAllow = policy == CbRiskPolicy.ASK_THEN_ALLOW && !risk.truncated
+        // 气泡即将弹出：告诉日志通道「这条确认有人管了」，别让状态对账再补一张兜底卡
+        CbEventCenter.markConfirmNoticed(ctx.workspace.ifBlank { ctx.project })
+        val answer = approvalBubble().ask(
+            request,
+            { w.characterBounds() },
+            settings.cbApprovalTimeoutSeconds * 1_000,
+            // 任何风险类别都用朱红卡强调，只有 NORMAL 用普通样式
+            !risk.normal,
+            timeoutAllow,
+            // 会话索引查询放在这条 hook 线程上，别让 EDT 去扫盘
+            ctx.where,
+            // 卡片顶部直接写类别名，主人点之前就知道这是删除还是提权
+            if (risk.normal) "" else risk.top.label,
+        )
+        return when (answer) {
+            "allow" -> {
+                PetAuditLog.approval(
+                    source = "hook", auto = false, kind = "once", via = "risk:${risk.top.name}",
+                    label = request.toolName, what = request.detail,
+                    project = ctx.project, sessionId = request.sessionId,
+                    danger = !risk.normal, risk = risk.top.name,
+                )
+                ApprovalDecision.ALLOW
+            }
+            "deny" -> ApprovalDecision.DENY
+            APPROVAL_ANSWER_TIMEOUT -> {
+                // 超时代办按实际级别留痕：只有配置成「超时放行」才会走到这里
+                CbEventCenter.onHookAutoApproval(
+                    request.toolName, request.detail,
+                    danger = !risk.normal, project = ctx.project,
+                    workspace = ctx.workspace, sessionTitle = ctx.title,
+                )
+                PetAuditLog.approval(
+                    source = "hook", auto = true, kind = "timeout", via = "risk:${risk.top.name}",
+                    label = request.toolName, what = request.detail,
+                    project = ctx.project, sessionId = request.sessionId,
+                    danger = !risk.normal, risk = risk.top.name,
+                )
+                ApprovalDecision.ALLOW
+            }
+            else -> ApprovalDecision.PASSTHROUGH
+        }
+    }
+
+    /**
+     * 静默运行下的裁决：默认全部放行，红线（凭证 / 扣费）看主人是否勾选放开。
+     *
+     * 之所以保留「静默但拦红线」这一档：凭证泄露与扣费是所有风险里唯二
+     * 连事后补救都做不到的，默认替主人守住，想放开必须单独勾选。
+     */
+    private fun decideSilent(
+        request: HookApprovalRequest,
+        risk: RiskProfile,
+        settings: PetSettings,
+    ): ApprovalDecision {
+        val ctx = approvalContext(request)
+        val keepRedline = risk.redline && !settings.cbSilentAllowRedline
+
+        if (keepRedline) {
+            PetAuditLog.approval(
+                source = "hook", auto = false, kind = "redline", via = "silent-hold",
+                label = request.toolName, what = request.detail,
+                project = ctx.project, sessionId = request.sessionId,
+                credit = CbRiskKind.BILLING in risk.kinds,
+                danger = true, risk = risk.top.name, silent = true,
+            )
+            val w = window
+            if (w == null) {
+                showManualNotice(
+                    "凭证 / 扣费确认",
+                    ctx.where,
+                    request.detail,
+                    "静默模式保留了红线，这条需要你自己点",
+                )
+                return ApprovalDecision.PASSTHROUGH
+            }
+            CbEventCenter.markConfirmNoticed(ctx.workspace.ifBlank { ctx.project })
+            val answer = approvalBubble().ask(
+                request,
+                { w.characterBounds() },
+                settings.cbApprovalTimeoutSeconds * 1_000,
+                true,
+                false,
+                ctx.where,
+                // 静默下仍被拦的红线，卡片要写明是哪一类（凭证 / 扣费）
+                risk.top.label,
+            )
+            return when (answer) {
+                "allow" -> ApprovalDecision.ALLOW
+                "deny" -> ApprovalDecision.DENY
+                else -> ApprovalDecision.PASSTHROUGH
+            }
+        }
+
+        // 逐条计数：每 20 次提醒一次，状态栏同时有常驻标识
+        SilentMode.noteApproval(risk.redline)
+        CbEventCenter.onHookAutoApproval(
+            request.toolName, request.detail,
+            danger = risk.redline, project = ctx.project,
+            workspace = ctx.workspace, sessionTitle = ctx.title,
+        )
+        PetAuditLog.approval(
+            source = "hook", auto = true, kind = "silent", via = "silent",
+            label = request.toolName, what = request.detail,
+            project = ctx.project, sessionId = request.sessionId,
+            credit = CbRiskKind.BILLING in risk.kinds,
+            danger = risk.redline, risk = risk.top.name, silent = true,
+        )
+        return ApprovalDecision.ALLOW
+    }
+
+    /** 一次确认的归属信息：项目 / workspace / 对话标题 / 展示用文案 */
+    private class ApprovalContext(
+        val project: String,
+        val workspace: String,
+        val title: String,
+        val where: String,
+    )
+
+    /**
+     * 解析这条确认属于哪个项目、哪个对话。
+     *
+     * 优先按 sessionId 反查会话索引，cwd 只作兜底；标题优先用这条会话自己的名字，
+     * 索引还没写进这条会话时按 workspace 现读当前对话。
+     */
+    private fun approvalContext(request: HookApprovalRequest): ApprovalContext {
         val resolved = SessionContext.of(request.sessionId, request.transcriptPath)
         val fallback = CbEventCenter.resolveWhere(request.cwd)
         val proj = resolved?.project?.takeIf { it.isNotBlank() } ?: fallback.first
         val ws = resolved?.workspace?.takeIf { it.isNotBlank() } ?: fallback.second
-        // 标题优先用这条会话自己的名字；索引还没写进这条会话时，按 workspace 现读当前对话
         val title = resolved?.title?.takeIf { it.isNotBlank() }
             ?: if (ws.isNotBlank()) CbEventCenter.titleOf(ws) else ""
         // 项目、标题都可能只认出一半：认不全就只显示认得的那部分，别把空的拼进去
@@ -725,64 +975,45 @@ class PetService : Disposable {
             proj.isNotBlank() -> proj
             else -> title
         }
-        // 宿主 SafetyRule 会在 hook 之后再拦一次（实测日志 `Safety rule triggered despite hook presence`,
-        // `fromHook: undefined`），hook 返回 allow 也逃不掉它的原生三选一框。这类命令再弹桌宠气泡
-        // 只会让主人点两遍，所以直接让位：不代点、不弹气泡，提醒交给日志通道的「危险命令」兜底。
-        if (!manualOnly && HookApprovalRules.isHostSafety(request)) {
-            PetAuditLog.approval(
-                source = "hook", auto = false, kind = "hostSafety", via = "passthrough",
-                label = request.toolName, what = request.detail,
-                project = proj, sessionId = request.sessionId,
-                danger = HookApprovalRules.isDestructive(request),
+        return ApprovalContext(proj, ws, title, where)
+    }
+
+    /**
+     * 必须主人亲手点的确认：弹**常驻只读卡**，不代点、不超时，[reason] 说明为什么不代点。
+     *
+     * 覆盖三类：扣费确认（永不代点）、宿主安全规则拦截（hook allow 也豁免不了）、
+     * 设置成「一直问」的普通 / 危险确认（没有通道会替主人点）。
+     * 卡片一直挂着，直到主人点「知道了」或宿主动作完成（[dismissManualNotice]）。
+     */
+    fun showManualNotice(title: String, where: String, detail: String, reason: String) {
+        if (window == null) {
+            // 桌宠不在（关掉 / 非持有者）：退回 IDE 通知，别让这条确认静默挂着
+            PetNotifier.notify(
+                PetNotifier.Level.WARN,
+                title,
+                "「${where.ifBlank { "当前项目" }}」$detail（桌宠不代点）",
+                durationMs = 12_000,
             )
-            return ApprovalDecision.PASSTHROUGH
+            return
         }
-        if (!manualOnly) {
-            if (destructive && settings.cbApprovalDanger == CbDangerPolicy.AUTO) {
-                // 危险命令代放：WARN 提示 + 计入今日代点，主人必须能察觉
-                CbEventCenter.onHookAutoApproval(
-                    request.toolName, request.detail, danger = true,
-                    project = proj, workspace = ws, sessionTitle = title,
-                )
-                return ApprovalDecision.ALLOW
-            }
-            if (!destructive && settings.cbApprovalNormal == CbNormalPolicy.ALLOW) {
-                // 默认放行同样是代点：桌宠提示 + 计入今日代点次数，主人要能感觉到它又替自己点了
-                CbEventCenter.onHookAutoApproval(
-                    request.toolName, request.detail,
-                    project = proj, workspace = ws, sessionTitle = title,
-                )
-                return ApprovalDecision.ALLOW
-            }
+        try {
+            approvalBubble().notice(
+                { window?.characterBounds() },
+                title,
+                where.ifBlank { "当前项目" },
+                detail,
+                reason,
+            )
+        } catch (e: Exception) {
+            log.warn("手动确认提醒卡显示失败", e)
         }
-        // 「问，超时没人管就放行」两类命令都要生效：以前只给危险命令，
-        // 普通命令选了这一档实际却不会代点，跟设置里写的对不上
-        val normalTimeoutAllow = !manualOnly && !destructive &&
-            settings.cbApprovalNormal == CbNormalPolicy.ASK_THEN_ALLOW
-        val dangerTimeoutAllow = destructive && settings.cbApprovalDanger == CbDangerPolicy.ASK_THEN_ALLOW
-        val answer = approvalBubble().ask(
-            request,
-            { w.characterBounds() },
-            settings.cbApprovalTimeoutSeconds * 1_000,
-            // 视觉强调只给「一直人工」的敏感类；危险但策略为 ASK 时仍按朱红卡展示，
-            // 所以这里把危险也算进 risky，避免主人以为危险卡是普通确认
-            manualOnly || destructive,
-            normalTimeoutAllow || dangerTimeoutAllow,
-            // 会话索引查询放在这条 hook 线程上，别让 EDT 去扫盘
-            where,
-        )
-        return when (answer) {
-            "allow" -> ApprovalDecision.ALLOW
-            "deny" -> ApprovalDecision.DENY
-            APPROVAL_ANSWER_TIMEOUT -> {
-                // 超时代办按实际级别留痕：危险命令才标 danger，普通命令用普通文案
-                CbEventCenter.onHookAutoApproval(
-                    request.toolName, request.detail,
-                    danger = destructive, project = proj, workspace = ws, sessionTitle = title,
-                )
-                ApprovalDecision.ALLOW
-            }
-            else -> ApprovalDecision.PASSTHROUGH
+    }
+
+    /** 宿主动作已完成（命令开始执行 / 被拒绝 / 扣费已确认）：收起提醒卡；没有卡片时什么都不做 */
+    fun dismissManualNotice() {
+        try {
+            approvalBubble?.dismissNotice()
+        } catch (_: Exception) {
         }
     }
 
@@ -911,9 +1142,12 @@ class PetService : Disposable {
         stopRandomActions()
         stopWhisper()
         stopJoke()
+        demoTimer?.stop()
+        demoTimer = null
         clearNotices()
         CodeBuddyWatcher.getInstance().stop()
         CbWebObserver.stop()
+        HostConfirmWatcher.stop()
         SwingUtilities.invokeLater {
             destroyBubble()
             destroyWindow()

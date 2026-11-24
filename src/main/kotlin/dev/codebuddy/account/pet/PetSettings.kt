@@ -99,6 +99,19 @@ class PetSettings : PersistentStateComponent<PetSettings.State> {
         /** 危险命令策略（[CbDangerPolicy] 名称），两个通道共用 */
         var cbApprovalDanger: String = CbDangerPolicy.ASK.name,
         /**
+         * 危险命令按类别配置的策略（`DELETE=ASK;GIT_DESTRUCTIVE=ALLOW` 形式）。
+         *
+         * 空串表示还没配过，读取时回落到 [DEFAULT_RISK_POLICY]。
+         * 只对 hook（桌宠弹窗）通道生效：页面代点通道拿不到命令原文，无法分类。
+         */
+        var cbRiskRules: String = "",
+        /** 静默运行到期时间戳（epoch millis，0 表示未开启） */
+        var cbSilentUntil: Long = 0L,
+        /** 开启静默时所在 IDE 进程的令牌；重启后对不上即自动失效 */
+        var cbSilentBoot: String = "",
+        /** 静默是否连凭证 / 扣费红线一起放行（默认否） */
+        var cbSilentAllowRedline: Boolean = false,
+        /**
          * 是否同意插件改写宿主 `~/.codebuddy/settings.json`（[CbHookConsent] 名称）。
          *
          * 宿主配置是主人自己的文件，首次写入前必须问一句；拒绝过就不再自动写，
@@ -136,10 +149,17 @@ class PetSettings : PersistentStateComponent<PetSettings.State> {
      * 旧模型是「页面代点」与「桌宠 hook」两套开关并行、危险命令另有独立开关，
      * 彼此会打架；新模型只留「处理方式 / 普通命令 / 危险命令」三项。
      * 迁移只跑一次（[State.cbApprovalMigrated]），旧字段保留只为读到这里。
+     *
+     * **注意**：这里用 1 号版本判断，[migrateRiskRules] 用 2 号，两者互相独立。
+     * 合成一个版本号会让老用户升级后重跑旧折算、把现有设置覆盖回旧开关的值。
      */
     private fun migrateApprovalSettings() {
-        if (myState.cbApprovalMigrated >= MIGRATION_VERSION) return
-        myState.cbApprovalMigrated = MIGRATION_VERSION
+        val fromVersion = myState.cbApprovalMigrated
+        if (fromVersion >= MIGRATION_VERSION_APPROVAL) {
+            migrateRiskRules(fromVersion)
+            return
+        }
+        myState.cbApprovalMigrated = MIGRATION_VERSION_APPROVAL
 
         myState.cbApprovalMode = when {
             myState.cbHookApproveEnabled -> CbApprovalMode.HOOK.name
@@ -162,6 +182,34 @@ class PetSettings : PersistentStateComponent<PetSettings.State> {
         if (myState.cbHookApproveSeconds in MIN_HOOK_SECONDS..MAX_HOOK_SECONDS) {
             myState.cbApprovalTimeoutSeconds = myState.cbHookApproveSeconds
         }
+        migrateRiskRules(fromVersion)
+    }
+
+    /**
+     * 把「危险命令一刀切」折算成按类别配置。
+     *
+     * 只做一次，且只在主人还没配过（[State.cbRiskRules] 为空）时写入，
+     * 避免覆盖升级后已经手工调过的矩阵。
+     *
+     * @param fromVersion 迁移前的版本号：0 表示全新安装，此时**不写** cbRiskRules，
+     *        让读取逻辑回落到 [DEFAULT_RISK_POLICY]（删除 / Git 默认超时放行）。
+     *        如果也按旧档位折算，新用户会被写成一片 ASK，出厂默认等于没了。
+     */
+    private fun migrateRiskRules(fromVersion: Int) {
+        if (myState.cbApprovalMigrated >= MIGRATION_VERSION_RISK) return
+        myState.cbApprovalMigrated = MIGRATION_VERSION_RISK
+        // 静默是一次性状态：升级 / 重启都从关闭开始
+        myState.cbSilentUntil = 0L
+        myState.cbSilentBoot = ""
+        myState.cbSilentAllowRedline = false
+        if (myState.cbRiskRules.isNotBlank()) return
+        if (fromVersion < MIGRATION_VERSION_APPROVAL) return
+        val legacy = when (CbDangerPolicy.of(myState.cbApprovalDanger)) {
+            CbDangerPolicy.AUTO -> CbRiskPolicy.ALLOW
+            CbDangerPolicy.ASK_THEN_ALLOW -> CbRiskPolicy.ASK_THEN_ALLOW
+            CbDangerPolicy.ASK -> CbRiskPolicy.ASK
+        }
+        myState.cbRiskRules = CONFIGURABLE_RISK_KINDS.joinToString(";") { "${it.name}=${legacy.name}" }
     }
 
     var enabled: Boolean
@@ -324,6 +372,52 @@ class PetSettings : PersistentStateComponent<PetSettings.State> {
             myState.cbApprovalDanger = value.name
         }
 
+    /** 某个风险类别当前生效的策略；红线类恒为 [CbRiskPolicy.ASK] */
+    fun riskPolicyOf(kind: CbRiskKind): CbRiskPolicy {
+        if (!kind.configurable) return CbRiskPolicy.ASK
+        val configured = parseRiskRules(myState.cbRiskRules)[kind]
+        return configured ?: DEFAULT_RISK_POLICY[kind] ?: CbRiskPolicy.ASK
+    }
+
+    /** 改某一类的策略；红线类直接忽略（UI 也不允许改） */
+    fun setRiskPolicy(kind: CbRiskKind, policy: CbRiskPolicy) {
+        if (!kind.configurable) return
+        val map = parseRiskRules(myState.cbRiskRules).toMutableMap()
+        map[kind] = policy
+        myState.cbRiskRules = CONFIGURABLE_RISK_KINDS.joinToString(";") { k ->
+            "${k.name}=${(map[k] ?: DEFAULT_RISK_POLICY[k] ?: CbRiskPolicy.ASK).name}"
+        }
+    }
+
+    /** 静默运行到期时间戳（epoch millis，0 表示未开启） */
+    var cbSilentUntil: Long
+        get() = myState.cbSilentUntil
+        set(value) { myState.cbSilentUntil = value }
+
+    /** 开启静默时所在进程的令牌 */
+    var cbSilentBoot: String
+        get() = myState.cbSilentBoot
+        set(value) { myState.cbSilentBoot = value }
+
+    /** 静默是否连凭证 / 扣费一起放行 */
+    var cbSilentAllowRedline: Boolean
+        get() = myState.cbSilentAllowRedline
+        set(value) { myState.cbSilentAllowRedline = value }
+
+    /** 解析 `KIND=POLICY;...`；无法识别的项直接丢弃，不让坏配置卡住判定 */
+    private fun parseRiskRules(raw: String): Map<CbRiskKind, CbRiskPolicy> {
+        if (raw.isBlank()) return emptyMap()
+        val out = LinkedHashMap<CbRiskKind, CbRiskPolicy>()
+        for (part in raw.split(';')) {
+            val pair = part.split('=', limit = 2)
+            if (pair.size != 2) continue
+            val kind = CbRiskKind.values().firstOrNull { it.name == pair[0].trim() } ?: continue
+            val policy = CbRiskPolicy.values().firstOrNull { it.name == pair[1].trim() } ?: continue
+            out[kind] = policy
+        }
+        return out
+    }
+
     /** 桌宠弹窗等待秒数，收敛到 5~80（必须留出余量给 hook 自身的 55 秒上限） */
     var cbApprovalTimeoutSeconds: Int
         get() = myState.cbApprovalTimeoutSeconds.coerceIn(MIN_HOOK_SECONDS, MAX_HOOK_SECONDS)
@@ -389,8 +483,37 @@ class PetSettings : PersistentStateComponent<PetSettings.State> {
         const val MIN_HOOK_SECONDS = 5
         const val MAX_HOOK_SECONDS = 80
 
-        /** 确认策略迁移版本：加一档就说明旧开关已折算完成 */
-        private const val MIGRATION_VERSION = 1
+        /** 确认策略迁移版本 1：旧并行开关 → 处理方式 / 普通 / 危险三档 */
+        private const val MIGRATION_VERSION_APPROVAL = 1
+
+        /** 确认策略迁移版本 2：危险命令一刀切 → 按类别配置 + 静默字段初始化 */
+        private const val MIGRATION_VERSION_RISK = 2
+
+        /**
+         * 可配置的风险类别（红线两类不在其中，UI 只读展示）。
+         *
+         * 「普通」排第一：它是主人最常调的一项（想不想让日常命令打扰），
+         * 后面按危险程度从高到低排。
+         */
+        val CONFIGURABLE_RISK_KINDS: List<CbRiskKind> =
+            listOf(CbRiskKind.NORMAL) + CbRiskKind.values()
+                .filter { it.configurable && it != CbRiskKind.NORMAL }
+                .sortedBy { it.severity }
+
+        /**
+         * 各类别出厂默认策略。
+         *
+         * 删除与 Git 破坏给「超时放行」：误删通常能从备份或 reflog 恢复，卡得太死反而天天打断；
+         * 提权 / 系统 / 脚本 / 外发一律「一直等」，这几类出错不可回滚。
+         */
+        val DEFAULT_RISK_POLICY: Map<CbRiskKind, CbRiskPolicy> = mapOf(
+            CbRiskKind.DELETE to CbRiskPolicy.ASK_THEN_ALLOW,
+            CbRiskKind.GIT_DESTRUCTIVE to CbRiskPolicy.ASK_THEN_ALLOW,
+            CbRiskKind.SYSTEM to CbRiskPolicy.ASK,
+            CbRiskKind.PRIVILEGE to CbRiskPolicy.ASK,
+            CbRiskKind.SCRIPT to CbRiskPolicy.ASK,
+            CbRiskKind.EGRESS to CbRiskPolicy.ASK,
+        )
 
         /** 未设置坐标的哨兵值 */
         private const val NO_POSITION = Int.MIN_VALUE
@@ -444,6 +567,24 @@ enum class CbDangerPolicy(val label: String) {
 
     companion object {
         fun of(name: String?): CbDangerPolicy = CbDangerPolicy.values().firstOrNull { it.name == name } ?: ASK
+    }
+}
+
+/**
+ * 单个风险类别的处置策略，只用于 hook（桌宠弹窗）通道。
+ *
+ * 为什么页面代点通道不用它：页面通道只能看到确认卡上的文案，拿不到命令原文，
+ * 物理上无法区分「删除」和「提权」，所以仍沿用 [CbDangerPolicy] 的三档。
+ */
+enum class CbRiskPolicy(val label: String, val hint: String) {
+    ASK("问，一直等主人确认", "气泡常驻不代点，超时交回 CodeBuddy 原生确认框"),
+    ASK_THEN_ALLOW("问，超时没人管就放行", "气泡倒计时，超时后由桌宠代办并留审计"),
+    ALLOW("直接放行", "不弹窗直接允许，逐条记审计"),
+    ;
+
+    companion object {
+        fun of(name: String?): CbRiskPolicy =
+            CbRiskPolicy.values().firstOrNull { it.name == name } ?: ASK
     }
 }
 
