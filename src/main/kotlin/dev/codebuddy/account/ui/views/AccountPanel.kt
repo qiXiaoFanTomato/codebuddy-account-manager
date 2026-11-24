@@ -10,6 +10,7 @@ import com.intellij.openapi.options.ShowSettingsUtil
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.Task
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.ui.Messages
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBTextField
@@ -20,6 +21,7 @@ import dev.codebuddy.account.growth.GrowthTracker
 import dev.codebuddy.account.history.HistoryReader
 import dev.codebuddy.account.hotswap.CodeBuddyBridge
 import dev.codebuddy.account.model.CredentialSnapshot
+import dev.codebuddy.account.pet.CodeBuddyActions
 import dev.codebuddy.account.pet.QuickPhraseDialog
 import dev.codebuddy.account.quota.QuotaDisplayMode
 import dev.codebuddy.account.quota.QuotaSummary
@@ -138,6 +140,7 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
         onOpenUsageStats = { UsageStatsDialog.show(project) },
         onOpenSettings = { doOpenSettings() },
         onOpenPhrases = { QuickPhraseDialog.show(project.name) },
+        onResetCodeBuddy = { CodeBuddyActions.resetNodeService(project) },
     )
 
     private lateinit var viewTabs: SegmentedTabs
@@ -356,6 +359,11 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
         row.add(toolButton("切换") { doSwitch() })
         row.add(toolButton("智能调度") { doSmartSwitch() })
         row.add(toolButton("刷新额度") { doRefreshQuota() })
+        row.add(
+            toolButton("强制刷新", tooltip = "重启 CodeBuddy 内核并重新读取凭据（相当于 CodeBuddy 的「重置插件状态」）") {
+                doForceRefreshCodeBuddy()
+            }
+        )
         row.add(toolButton("额度视图") { setView(VIEW_QUOTA) })
         row.add(toolButton("重命名") { doEditAlias() })
         row.add(toolButton("删除", danger = true) { doDelete() })
@@ -493,6 +501,8 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
         )
         item("界面色调…") { showThemeMenu(btn) }
         item("回滚上一次切换") { doRollback() }
+        menu.addSeparator()
+        item("强制刷新 CodeBuddy") { doForceRefreshCodeBuddy() }
         item("强制登出") { doForceLogout() }
 
         // 标题栏右侧的 ⋯：与 HTML `.titlebar-tools` 同一位置
@@ -1580,6 +1590,107 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
         }
     }
 
+    /**
+     * 强制刷新 CodeBuddy：逐个重启全部打开项目窗口的 CodeBuddy Node 内核并重新读取凭据
+     * （等价于各窗口 CodeBuddy 设置里的「Reset Plugin Status」，不重启 IDE）。
+     *
+     * CodeBuddy 的内核是 per-project 的，一次只重启当前窗口会漏掉其它项目窗口，
+     * 因此这里遍历 [ProjectManager.getOpenProjects] 串行逐个重启：前一个重建完成再起下一个，
+     * 避免多个 Node 进程同时起停把 IDE 卡住。
+     *
+     * 用于侧边栏卡死、登录态 / 额度与账号库不同步而重启 IDE 又太重的场景。
+     */
+    private fun doForceRefreshCodeBuddy() {
+        if (!CodeBuddyBridge.isAvailable()) {
+            notify(
+                "未检测到 CodeBuddy",
+                "当前 IDE 未安装 CodeBuddy 插件（或版本不兼容），无法刷新。",
+                NotificationType.WARNING
+            )
+            return
+        }
+        val targets = ProjectManager.getInstance().openProjects.filterNot { it.isDisposed }
+        if (targets.isEmpty()) {
+            statusLabel.text = "没有已打开的项目窗口可刷新"
+            return
+        }
+
+        val ok = Messages.showYesNoDialog(
+            project,
+            "将逐个重启 ${targets.size} 个项目窗口的 CodeBuddy 内核（不重启 IDE）。\n\n" +
+                "• 每个窗口的 CodeBuddy Node 进程依次重建，完成一个再起下一个\n" +
+                "• 正在进行的对话请求会被中断，会话历史不受影响\n" +
+                "• 窗口越多耗时越长，过程中可继续使用 IDE\n\n确定刷新？",
+            "强制刷新 CodeBuddy",
+            "刷新",
+            "取消",
+            Messages.getQuestionIcon()
+        ) == Messages.YES
+        if (!ok) return
+        if (!beginAction("forceRefresh")) return
+        statusLabel.text = "正在逐个重启 ${targets.size} 个窗口的 CodeBuddy 内核…"
+
+        object : Task.Backgroundable(project, "重启 CodeBuddy 内核", true) {
+            private val failed = mutableListOf<String>()
+            private var done = 0
+
+            override fun run(indicator: ProgressIndicator) {
+                indicator.isIndeterminate = false
+                for ((index, p) in targets.withIndex()) {
+                    if (indicator.isCanceled) return
+                    indicator.fraction = (index + 1).toDouble() / targets.size
+                    indicator.text = "正在重启 ${p.name}（${index + 1}/${targets.size}）"
+                    if (CodeBuddyBridge.restartAgent(p)) done++ else failed += p.name
+                    // 相邻窗口之间留一点间隔，让上一个 Node 进程彻底退出
+                    if (index < targets.lastIndex) {
+                        runCatching { Thread.sleep(RESTART_GAP_MS) }
+                    }
+                }
+            }
+
+            override fun onSuccess() {
+                if (done > 0) {
+                    appendLog("已逐个重启 $done 个窗口的 CodeBuddy 内核", notice = true)
+                }
+                when {
+                    failed.isEmpty() -> notifySuccess(
+                        "CodeBuddy 已刷新",
+                        "已逐个重启 ${targets.size} 个窗口的 CodeBuddy 内核（IDE 未重启），侧边栏与额度显示应已恢复同步。"
+                    )
+
+                    done == 0 -> notify(
+                        "刷新失败",
+                        "全部窗口均未触发重启（可能是 CodeBuddy 版本变更导致重置动作缺失），请重启 IDE 后再试。\n\n" +
+                            failed.joinToString("\n") { "· $it" },
+                        NotificationType.ERROR
+                    )
+
+                    else -> notify(
+                        "部分窗口刷新失败",
+                        "成功 $done 个，失败 ${failed.size} 个：\n" +
+                            failed.joinToString("\n") { "· $it" },
+                        NotificationType.WARNING
+                    )
+                }
+            }
+
+            override fun onCancel() {
+                notify(
+                    "已中止刷新",
+                    "已重启 $done / ${targets.size} 个窗口的 CodeBuddy 内核，剩余窗口未处理。",
+                    NotificationType.WARNING
+                )
+            }
+
+            override fun onFinished() {
+                endAction("forceRefresh")
+                if (project.isDisposed) return
+                CodeBuddyStatusBarWidget.invalidateCache()
+                refresh()
+            }
+        }.queue()
+    }
+
     private fun doRefreshQuota() {
         val picked = gridView.selectedSnapshots()
         val targets = when {
@@ -1884,6 +1995,9 @@ class AccountPanel(private val project: Project) : JPanel(BorderLayout()) {
 
         /** 切换日志最多保留的行数（对应 `.log-bar` 的一小段历史） */
         const val MAX_LOG_LINES = 4
+
+        /** 逐个重启 CodeBuddy 内核时，相邻窗口之间的间隔（让上一个 Node 进程退出干净） */
+        const val RESTART_GAP_MS = 400L
     }
 }
 

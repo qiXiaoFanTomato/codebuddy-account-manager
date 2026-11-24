@@ -1,6 +1,7 @@
 package dev.codebuddy.account.ui.views
 
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.ui.Messages
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.util.ui.JBUI
 import dev.codebuddy.account.checkin.CheckinTracker
@@ -106,6 +107,8 @@ class DashboardPanel(
     private val onOpenSettings: () -> Unit,
     /** 「快捷短语」入口：管理常用短语并发送到 CodeBuddy 输入框 */
     private val onOpenPhrases: () -> Unit,
+    /** 「重启 CodeBuddy」入口：只调 CodeBuddy 自己的「重置插件状态」，返回 false 表示当前版本动作不可用（不会重启 IDE） */
+    private val onResetCodeBuddy: () -> Boolean = { false },
 ) : JPanel(BorderLayout()) {
 
     private val library = AccountLibrary.getInstance()
@@ -1108,6 +1111,10 @@ class DashboardPanel(
                 revokeHookConfig()
             }
         }
+        // 只重启 CodeBuddy 自己的 Node 内核与聊天面板，IDE 与其它插件的进程不动
+        card.actions.addAction("重启 CodeBuddy", "重启 CodeBuddy 的 Node 内核并重载聊天面板，IDE 不会关闭", ghost = true) {
+            restartCodeBuddy()
+        }
 
         val recent = CbEventCenter.recentEvents()
         val approvals = recent.count { it.type == "approval" }
@@ -1183,6 +1190,40 @@ class DashboardPanel(
             maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(CardMetrics.rowHeight))
             toolTipText = "在「桌宠设置 → CodeBuddy 确认」里修改"
         }
+    }
+
+    /**
+     * 重启 CodeBuddy：只调 CodeBuddy 自己的「重置插件状态」动作（`NodeProjectService.reset()`），
+     * 释放并重建 Node 侧进程、重置聊天面板，**IDE 进程不关**。
+     *
+     * 旧实现里动作不可用时会退回 `ApplicationEx.restart()`，点一下按钮就把整个 IDE 关掉重开，
+     * 与「只重启 CodeBuddy」的本意完全相反，该分支已移除：失败只做提示，
+     * 要不要重启 IDE 由主人自己决定（File → Restart IDE）。
+     */
+    private fun restartCodeBuddy() {
+        val yes = Messages.showYesNoDialog(
+            "重启 CodeBuddy 会重启它的 Node 服务并重载聊天面板，IDE 不会关闭；正在跑的对话会中断。",
+            "重启 CodeBuddy（IDEA 版）",
+            "立即重启",
+            "取消",
+            Messages.getQuestionIcon(),
+        )
+        if (yes != Messages.YES) return
+        if (onResetCodeBuddy()) {
+            PetNotifier.notify(
+                PetNotifier.Level.SUCCESS,
+                "CodeBuddy 正在重启",
+                "Node 服务与聊天面板重新加载中，IDE 不受影响；几秒后面板会自己恢复",
+            )
+            return
+        }
+        // 动作不可用（CodeBuddy 换版本 / 没装）：只提示，不重启 IDE
+        PetNotifier.notify(
+            PetNotifier.Level.WARN,
+            "没能重启 CodeBuddy",
+            "当前 CodeBuddy 版本没有提供可用的「重置插件状态」动作，IDE 未做任何处理；" +
+                "需要连带重载插件时请自行用 File → Restart IDE。",
+        )
     }
 
     /**

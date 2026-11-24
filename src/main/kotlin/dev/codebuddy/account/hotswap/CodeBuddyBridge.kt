@@ -7,6 +7,7 @@ import com.intellij.openapi.actionSystem.CommonDataKeys
 import com.intellij.openapi.actionSystem.DataContext
 import com.intellij.openapi.actionSystem.ex.ActionUtil
 import com.intellij.openapi.actionSystem.impl.SimpleDataContext
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.extensions.PluginId
 import com.intellij.openapi.project.Project
@@ -43,6 +44,9 @@ object CodeBuddyBridge {
 
     /** CodeBuddy 侧边栏（对话 webview）的 ToolWindow id */
     private const val CHAT_TOOL_WINDOW_ID = "com.tencent.code.intel.extension.WebviewBrowser"
+
+    /** 动作触发来源标识 */
+    private const val ACTION_PLACE = "CodeBuddyAccountManager"
 
     /** CodeBuddy 插件类加载器；未安装返回 null */
     fun pluginClassLoader(): ClassLoader? = try {
@@ -119,6 +123,9 @@ object CodeBuddyBridge {
     /**
      * 重启 CodeBuddy 的 Node 侧进程（等价于其 Settings 里的「Reset Plugin Status」）。
      * 调用后 CodeBuddy 会重新初始化并重新读取凭据。
+     *
+     * 动作触发会经过平台 `beforeActionPerformed` 回调（内部访问 FocusManager），
+     * 必须在 EDT 上执行；本方法可被任意线程调用，内部自行切到 EDT 同步等待。
      */
     fun restartAgent(project: Project): Boolean {
         return try {
@@ -132,7 +139,14 @@ object CodeBuddyBridge {
             val context = SimpleDataContext.builder()
                 .add(CommonDataKeys.PROJECT, project)
                 .build()
-            ActionUtil.invokeAction(action, context, "CodeBuddyAccountManager", null, null)
+            val app = ApplicationManager.getApplication()
+            if (app.isDispatchThread) {
+                ActionUtil.invokeAction(action, context, ACTION_PLACE, null, null)
+            } else {
+                app.invokeAndWait {
+                    ActionUtil.invokeAction(action, context, ACTION_PLACE, null, null)
+                }
+            }
             true
         } catch (e: Exception) {
             log.warn("重启 CodeBuddy 内核失败", e)
