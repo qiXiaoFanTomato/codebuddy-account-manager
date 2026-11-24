@@ -135,22 +135,29 @@ object ActivityFeed {
         }
         var currentName = ""
         var currentAt = ""
+        var currentFound = false
         var latestName = ""
         var latestAt = ""
         for (el in arr.asJsonArray) {
             val o = el.takeIf { it.isJsonObject }?.asJsonObject ?: continue
             val name = cleanTitle(o.text("name"))
-            if (name.isEmpty()) continue
             val at = o.text("lastMessageAt")
             if (currentId.isNotEmpty() && o.text("id") == currentId) {
+                currentFound = true
                 currentName = name
                 currentAt = at
             }
+            // 空标题（新建对话还没生成名字）不参与「最近会话」比较
+            if (name.isEmpty()) continue
             if (at > latestAt) {
                 latestAt = at
                 latestName = name
             }
         }
+        // 当前打开的就是最新一条、只是还没有标题：不能拿别的旧会话标题顶上，
+        // 否则提示里的「对话」会张冠李戴（2026-11-20 实测：正在跑新对话，
+        // 卡片却显示一周前那条会话的名字）
+        if (currentFound && currentName.isEmpty() && currentAt >= latestAt) return NEW_CHAT_TITLE
         return when {
             currentName.isEmpty() -> latestName
             latestName.isEmpty() -> currentName
@@ -183,7 +190,14 @@ object ActivityFeed {
         return found
     }
 
-    /** Data/<uid>/<布局>/<uid>/history/<workspace>/index.json：两种布局都试一次 */
+    /**
+     * Data/<uid>/<布局>/<uid>/history/<workspace>/index.json：两种布局都试一次。
+     *
+     * 同一个 workspace 在**多个账号目录**下都会留一份 index.json（换过账号 / 升级过布局），
+     * 目录遍历顺序不确定，取第一个会读到旧账号的陈旧副本——实测提示里冒出的对话标题
+     * 停在一周前，跟正在跑的那条完全对不上。这里取 index.json 修改时间最新的那一份：
+     * 正在用的账号必然写得最勤。
+     */
     private fun findIndexFile(ws: String): Path? {
         val root = try {
             CredentialPaths.dataRoot()
@@ -195,6 +209,8 @@ object ActivityFeed {
         } catch (_: Throwable) {
             return null
         }
+        var best: Path? = null
+        var bestAt = 0L
         for (uid in uids) {
             for (layout in LAYOUTS) {
                 val base = uid.resolve(layout)
@@ -208,11 +224,20 @@ object ActivityFeed {
                     // 目录名固定小写 MD5：日志文件名里的 hash 可能带大写，统一按小写找
                     val index = account.resolve("history").resolve(ws.lowercase(Locale.ROOT))
                         .resolve("index.json")
-                    if (Files.isRegularFile(index)) return index
+                    if (!Files.isRegularFile(index)) continue
+                    val at = try {
+                        Files.getLastModifiedTime(index).toMillis()
+                    } catch (_: Throwable) {
+                        0L
+                    }
+                    if (best == null || at > bestAt) {
+                        best = index
+                        bestAt = at
+                    }
                 }
             }
         }
-        return null
+        return best
     }
 
     /**
